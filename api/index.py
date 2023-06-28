@@ -1,4 +1,5 @@
 from flask import Flask, request, make_response
+import nltk
 from nltk.tokenize import word_tokenize
 import re
 import csv
