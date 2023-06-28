@@ -1,6 +1,8 @@
-from flask import Flask, request
+from flask import Flask, request, make_response
 from nltk.tokenize import word_tokenize
 import re
+import csv
+import json
 # from flask_cors import CORS
 
 app = Flask(__name__)
@@ -9,14 +11,18 @@ app = Flask(__name__)
 @app.route("/api/classify", methods=["POST"])
 def classify():
     file = request.files["file"]
-    print(file)
-    # Perform classification or processing on the uploaded file here
     
-    # Example: Read the file contents as a string
     file_contents = file.read().decode("utf-8")
-    print(file_contents)
-    # Return the file contents as a string
-    return file_contents
+    csv_data = list(csv.DictReader(file_contents.splitlines()))
+    
+    # Convert the CSV data to JSON
+    json_data = json.dumps(csv_data)
+    
+    response = make_response(json_data)    
+    response.headers["Content-Type"] = "application/json"
+    
+    # Return the JSON data
+    return json_data
 
 @app.route("/api/user")
 def hello_user():

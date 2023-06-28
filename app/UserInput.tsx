@@ -1,8 +1,10 @@
 "use client";
 import { useState } from "react";
+import ExpenseTable from "./ExpenseTable";
 
 export default function UserInput() {
   const [selectedFile, setSelectedFile] = useState(null);
+  const [expenseData, setExpenseData] = useState([]);
 
   const handleFileChange = (event) => {
     setSelectedFile(event.target.files[0]);
@@ -26,7 +28,7 @@ export default function UserInput() {
         })
         .then((data) => {
           // Handle the API response
-          console.log(data);
+          setExpenseData(data)
         })
         .catch((error) => {
           // Handle any error that occurred during the API call
@@ -36,6 +38,7 @@ export default function UserInput() {
   };
 
   return (
+    <div className="flex flex-col">
     <form onSubmit={handleFormSubmit}>
       <div className="flex flex-col">
         <label htmlFor="fileUpload" className="block mb-4">
@@ -56,5 +59,7 @@ export default function UserInput() {
         </button>
       </div>
     </form>
+    <ExpenseTable data={expenseData}/>
+    </div>
   );
 }
