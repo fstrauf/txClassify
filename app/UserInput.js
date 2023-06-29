@@ -1,65 +1,106 @@
 "use client";
+
 import { useState } from "react";
+import { Field, Formik, Form } from "formik";
 import ExpenseTable from "./ExpenseTable";
 
 export default function UserInput() {
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [expenseData, setExpenseData] = useState([]);
+  const [initialValues, setInititalValues] = useState({
+    filePath: "",
+    expenses: [],
+  });
 
-  const handleFileChange = (event) => {
-    setSelectedFile(event.target.files[0]);
+  const handleUpdateClasses = (event) => {
+    console.log(
+      "🚀 ~ file: UserInput.js:19 ~ handleUpdateClasses ~ event:",
+      event
+    );
   };
 
-  const handleFormSubmit = (event) => {
-    event.preventDefault();
+  const handleFileChange = (event, setFieldValue) => {
+    const file = event.currentTarget.files[0];
+    console.log("🚀 ~ file: UserInput.js:19 ~ handleFileChange ~ file:", file);
+    setFieldValue("filePath", file.name);
+    // setSelectedFileName(file.name);
+  };
 
-    if (selectedFile) {
+  const submitData = async (values, { resetForm, setSubmitting }) => {
+    setSubmitting(true);
+
+    console.log("🚀 ~ file: UserInput.js:34 ~ submitData ~ values.filePath:", values.filePath)
+    if (values) {
       const formData = new FormData();
-      formData.append("file", selectedFile);
+      formData.append("file", values.filePath);
+      
 
-      // Send the form data to the API endpoint
       fetch("/api/classify", {
         method: "POST",
         body: formData,
       })
-        .then((response) => {
-            console.log("🚀 ~ file: UserInput.tsx:24 ~ handleFormSubmit ~ response:", response)
-            return response.json()
-        })
+        .then((response) => response.json())
         .then((data) => {
+          console.log("🚀 ~ file: UserInput.js:36 ~ .then ~ data:", data);
+          // setInititalValues()
           // Handle the API response
-          setExpenseData(data)
+          // setExpenseData(data);
+          //reset formik state
         })
         .catch((error) => {
           // Handle any error that occurred during the API call
           console.error(error);
         });
     }
+    setSubmitting(false);
   };
 
   return (
     <div className="flex flex-col">
-    <form onSubmit={handleFormSubmit}>
-      <div className="flex flex-col">
-        <label htmlFor="fileUpload" className="block mb-4">
-          Upload new transactions to be classified:
-        </label>
-        <input
-          type="file"
-          id="fileUpload"
-          accept=".csv"
-          onChange={handleFileChange}
-          className="mb-4"
-        />
-        <button
-          type="submit"
-          className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-        >
-          Classify
-        </button>
-      </div>
-    </form>
-    <ExpenseTable data={expenseData}/>
+      <Formik
+        initialValues={initialValues}
+        onSubmit={submitData}
+        enableReinitialize
+      >
+        {({ isSubmitting, setFieldValue, values }) => (
+          <Form>
+            <div className="flex flex-col">
+              <label htmlFor="fileUpload" className="block mb-4">
+                Upload new transactions to be classified:
+              </label>
+              {/* <Field
+                type="file"
+                name='filePath'
+                id="fileUpload"
+                accept=".csv"
+                className="mb-4"
+                onChange={(event) => handleFileChange(event, setFieldValue)}
+              /> */}
+              <input
+                id="file"
+                name="file"
+                type="file"
+                onChange={(event) => {
+                  setFieldValue("filePath", event.currentTarget.files[0]);
+                }}
+              />
+              <button
+                type="submit"
+                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+              >
+                Classify
+              </button>
+            </div>
+            <ExpenseTable data={values?.expenses} />
+          </Form>
+        )}
+      </Formik>
+
+      <button
+        type="button"
+        className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+        onClick={handleUpdateClasses}
+      >
+        Update Categories
+      </button>
     </div>
   );
 }

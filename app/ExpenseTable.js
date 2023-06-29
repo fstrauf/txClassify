@@ -1,39 +1,53 @@
-import React from "react";
+import React, { useState } from "react";
 
 const ExpenseTable = ({ data }) => {
+  const [selectedCategories, setSelectedCategories] = useState({});
+
+  const handleCategoryChange = (event, index) => {
+    const { value } = event.target;
+    setSelectedCategories((prevState) => ({
+      ...prevState,
+      [index]: value,
+    }));
+  };
+
   return (
-    <div className="bg-white shadow-md rounded my-6">
-      <table className="max-w-screen-lg w-full table-auto overflow-auto">
+    <div className="bg-white shadow-md rounded my-6 text-xs">
+      <table className="max-w-screen-2xl w-full table-auto overflow-auto">
         <thead>
-          <tr className="bg-gray-200 text-gray-600 uppercase text-sm leading-normal">
-            <th className="py-3 px-6 text-left">Bank Account</th>
-            <th className="py-3 px-6 text-left">Date</th>
+          <tr className="bg-gray-200 text-gray-600 uppercase text-xs leading-normal">
+            <th className="py-3 px-6 text-left text-xs">Date</th>
+            <th className="py-3 px-6 text-left">Amount</th>
             <th className="py-3 px-6 text-left">Narrative</th>
-            <th className="py-3 px-6 text-left">Debit Amount</th>
-            <th className="py-3 px-6 text-left">Credit Amount</th>
             <th className="py-3 px-6 text-left">Categories</th>
-            <th className="py-3 px-6 text-left">Unnamed</th>
-            <th className="py-3 px-6 text-left">Cats</th>
-            <th className="py-3 px-6 text-left">Sum</th>
-            <th className="py-3 px-6 text-left">Month</th>
           </tr>
         </thead>
-        <tbody className="text-gray-600 text-sm font-light">
+        <tbody className="text-gray-600 text-xs font-light">
           {data.map((item, index) => (
             <tr
               key={index}
               className={(index % 2 === 0 ? "bg-white" : "bg-gray-50") + " border-b border-gray-200"}
             >
-              <td className="py-3 px-6 text-left whitespace-nowrap">{item["Bank Account"]}</td>
-              <td className="py-3 px-6 text-left">{item["Date"]}</td>
-              <td className="py-3 px-6 text-left">{item["Narrative"]}</td>
-              <td className="py-3 px-6 text-left">{item["Debit Amount"]}</td>
-              <td className="py-3 px-6 text-left">{item["Credit Amount"]}</td>
-              <td className="py-3 px-6 text-left">{item["Categories"]}</td>
-              <td className="py-3 px-6 text-left">{item["Unnamed: 6"]}</td>
-              <td className="py-3 px-6 text-left">{item["Cats"]}</td>
-              <td className="py-3 px-6 text-left">{item["Sum"]}</td>
-              <td className="py-3 px-6 text-left">{item["month"]}</td>
+              <td className="py-2 px-3 text-left">{item?.Date}</td>
+              <td className="py-2 px-3 text-left">{item?.Amount}</td>
+              <td className="py-2 px-3 text-left">{item?.Narrative}</td>
+              <td className="py-2 px-3 text-left">
+                <select
+                  value={selectedCategories[index] || item?.Categories}
+                  onChange={(event) => handleCategoryChange(event, index)}
+                >
+                  <option value="Groceries">Groceries</option>
+                  <option value="Shopping">Shopping</option>
+                  <option value="DinnerBars">Dinner/Bars</option>
+                  <option value="Medical">Medical</option>
+                  <option value="Transport">Transport</option>
+                  <option value="Utility">Utility</option>
+                  <option value="Travel">Travel</option>
+                  <option value="Charlotte">Charlotte</option>
+                  <option value="Business">Business</option>
+                  <option value="Living">Living</option>
+                </select>
+              </td>
             </tr>
           ))}
         </tbody>
