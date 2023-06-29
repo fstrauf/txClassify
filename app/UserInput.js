@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Field, Formik, Form } from "formik";
+import { Formik, Form } from "formik";
 import ExpenseTable from "./ExpenseTable";
 
 export default function UserInput() {
@@ -10,28 +10,30 @@ export default function UserInput() {
     expenses: [],
   });
 
-  const handleUpdateClasses = (event) => {
+  const handleUpdateClasses = (values) => {
     console.log(
       "🚀 ~ file: UserInput.js:19 ~ handleUpdateClasses ~ event:",
-      event
+      values
     );
   };
 
-  const handleFileChange = (event, setFieldValue) => {
-    const file = event.currentTarget.files[0];
-    console.log("🚀 ~ file: UserInput.js:19 ~ handleFileChange ~ file:", file);
-    setFieldValue("filePath", file.name);
-    // setSelectedFileName(file.name);
-  };
+  // const handleFileChange = (event, setFieldValue) => {
+  //   const file = event.currentTarget.files[0];
+  //   console.log("🚀 ~ file: UserInput.js:19 ~ handleFileChange ~ file:", file);
+  //   setFieldValue("filePath", file.name);
+  //   // setSelectedFileName(file.name);
+  // };
 
   const submitData = async (values, { resetForm, setSubmitting }) => {
     setSubmitting(true);
 
-    console.log("🚀 ~ file: UserInput.js:34 ~ submitData ~ values.filePath:", values.filePath)
+    console.log(
+      "🚀 ~ file: UserInput.js:34 ~ submitData ~ values.filePath:",
+      values.filePath
+    );
     if (values) {
       const formData = new FormData();
       formData.append("file", values.filePath);
-      
 
       fetch("/api/classify", {
         method: "POST",
@@ -40,7 +42,7 @@ export default function UserInput() {
         .then((response) => response.json())
         .then((data) => {
           console.log("🚀 ~ file: UserInput.js:36 ~ .then ~ data:", data);
-          // setInititalValues()
+          setInititalValues({ filePath: values.filePath, expenses: data });
           // Handle the API response
           // setExpenseData(data);
           //reset formik state
@@ -82,25 +84,26 @@ export default function UserInput() {
                   setFieldValue("filePath", event.currentTarget.files[0]);
                 }}
               />
-              <button
-                type="submit"
-                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-              >
-                Classify
-              </button>
+              <div className="flex gap-4">
+                <button
+                  type="submit"
+                  className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                >
+                  Classify
+                </button>
+                <button
+                  type="button"
+                  className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                  onClick={() => handleUpdateClasses(values)}
+                >
+                  Update Categories
+                </button>
+              </div>
             </div>
             <ExpenseTable data={values?.expenses} />
           </Form>
         )}
       </Formik>
-
-      <button
-        type="button"
-        className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-        onClick={handleUpdateClasses}
-      >
-        Update Categories
-      </button>
     </div>
   );
 }
