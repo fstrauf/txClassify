@@ -11,18 +11,28 @@ export default function UserInput() {
   });
 
   const handleUpdateClasses = (values) => {
+    if (values) {
+      const formData = new FormData();
+      formData.append("expenses", values.expenses);
+
+      fetch("/api/retrain", {
+        method: "POST",
+        body: formData,
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          console.log("🚀 ~ file: UserInput.js:36 ~ .then ~ data:", data);
+          setInititalValues({ filePath: values.filePath, expenses: data });
+        })
+        .catch((error) => {
+          console.error(error);
+        });
+    }
     console.log(
       "🚀 ~ file: UserInput.js:19 ~ handleUpdateClasses ~ event:",
       values
     );
   };
-
-  // const handleFileChange = (event, setFieldValue) => {
-  //   const file = event.currentTarget.files[0];
-  //   console.log("🚀 ~ file: UserInput.js:19 ~ handleFileChange ~ file:", file);
-  //   setFieldValue("filePath", file.name);
-  //   // setSelectedFileName(file.name);
-  // };
 
   const submitData = async (values, { resetForm, setSubmitting }) => {
     setSubmitting(true);
@@ -43,12 +53,8 @@ export default function UserInput() {
         .then((data) => {
           console.log("🚀 ~ file: UserInput.js:36 ~ .then ~ data:", data);
           setInititalValues({ filePath: values.filePath, expenses: data });
-          // Handle the API response
-          // setExpenseData(data);
-          //reset formik state
         })
         .catch((error) => {
-          // Handle any error that occurred during the API call
           console.error(error);
         });
     }
@@ -68,14 +74,6 @@ export default function UserInput() {
               <label htmlFor="fileUpload" className="block mb-4">
                 Upload new transactions to be classified:
               </label>
-              {/* <Field
-                type="file"
-                name='filePath'
-                id="fileUpload"
-                accept=".csv"
-                className="mb-4"
-                onChange={(event) => handleFileChange(event, setFieldValue)}
-              /> */}
               <input
                 id="file"
                 name="file"

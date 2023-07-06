@@ -49,8 +49,37 @@ def classify():
 
 
 
-@app.route("/api/user")
-def hello_user():
+@app.route("/api/retrain", methods=["POST"])
+def retrain():
+    data = request.json
+    df_reclassified = pd.DataFrame(data)
+    df_reclassified = df_reclassified.rename(columns={"Amount": "Debit Amount"})
+
+    print(df_reclassified)
+    # take all past expenses 
+    ## these would need to be created based on all past expenses
+    ## create a unified datastructure and decide whether to add a credit category
+    # add the newly trained expenses to a large list
+    # run the training for all expenses
+    # save all trained and all past expenses
+    
+    
+    
+    classified_file_path = "all_expenses_classified.csv"
+    df_classified_data = pd.read_csv(classified_file_path)
+    
+    df_combined = pd.concat([df_classified_data, df_reclassified], ignore_index=True)
+    
+    text_descriptions = df_combined["Narrative"]
+    text_BERT = text_descriptions.apply(lambda x: clean_text_BERT(x))
+
+    bert_input = text_BERT.tolist()
+    model = SentenceTransformer("paraphrase-mpnet-base-v2")
+    embeddings = model.encode(bert_input, show_progress_bar=True)
+    embedding_BERT = np.array(embeddings)
+    
+    np.save("trained_embeddings.npy", embedding_BERT)
+    
     return "<p>Hello, user!</p>"
 
 
@@ -96,14 +125,40 @@ def classify_expenses(df_unclassified_data, trained_embeddings_BERT, df_training
                 }
     return d_output
 
-def run_test(test_file_name):
+def run_test_classify(test_file_name):
     with app.test_client() as client:
         with open(test_file_name, "rb") as file:
             response = client.post("/api/classify", data={"file": file})
             # print(response.get_json())
+            
+def run_test_retrain(test_data):
+    with app.test_client() as client:
+        response = client.post("/api/retrain", json=test_data)
+        print(response.get_json())
 
 if __name__ == "__main__":
     # test_file_name = "new_expenses.csv"
-    # run_test(test_file_name)
-    app.run()
+    # run_test_classify(test_file_name)
+    # app.run()
     
+    test_data = [
+        {
+            "Date": "27/05/2023",
+            "Amount": -27.88,
+            "Narrative": "CRUISIN MOTORHOMES CAMBRIDGE AUS Card xx6552 Value Date: 25/05/2023",
+            "Categories": "Travel"
+        },
+        {
+            "Date": "26/05/2023",
+            "Amount": -5.44,
+            "Narrative": "TRANSPORTFORNSW TAP SYDNEY AUS Card xx0033 Value Date: 23/05/2023",
+            "Categories": "Transport"
+        },
+        {
+            "Date": "24/05/2023",
+            "Amount": -7.58,
+            "Narrative": "Girdlers Dee Why Dee Why NS AUS Card xx6552 Value Date: 22/05/2023",
+            "Categories": "DinnerBars"
+        }
+    ]
+    run_test_retrain(test_data)
