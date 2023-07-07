@@ -72,13 +72,8 @@ def convertToCSV():
 def retrain():
     try:
         data = request.json
-        data_list = [data] if isinstance(data, dict) else data
-
-        df_reclassified = pd.DataFrame(data_list)
+        df_reclassified = pd.DataFrame(data)
         
-        data_list = [data] if isinstance(data, dict) else data
-        df_reclassified = pd.DataFrame(data_list)
-
         df_reclassified = df_reclassified.rename(columns={"Amount": "Debit Amount"})
 
         classified_file_path = "all_expenses_classified.csv"
