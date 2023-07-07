@@ -12,18 +12,8 @@ export default function UserInput() {
 
   const handleUpdateClasses = (values) => {
     if (values) {
-      // const formData = new FormData();
-      // formData.append("expenses", values.expenses);
-      // console.log("🚀 ~ file: UserInput.js:17 ~ handleUpdateClasses ~ formData:", formData)
-
-      console.log(
-        "🚀 ~ file: UserInput.js:19 ~ handleUpdateClasses ~ event:",
-        values
-      );
       
-      const requestBody = values.expenses
-      console.log("🚀 ~ file: UserInput.js:27 ~ handleUpdateClasses ~ requestBody:", requestBody)
-  
+      const requestBody = values.expenses      
 
       fetch("/api/retrain", {
         method: "POST",
@@ -31,15 +21,11 @@ export default function UserInput() {
         headers: {
           "Content-Type": "application/json",
         },
-        // headers: {
-        //   "Content-Type": "application/json",
-        // },
       })
         .then((response) => response.json())
         .then((data) => {
           console.log("🚀 ~ file: UserInput.js:36 ~ .then ~ data:", data);
-          console.log("Successfully retrained based on user inputs");
-          // setInititalValues({ filePath: values.filePath, expenses: data });
+          console.log("Successfully retrained based on user inputs");          
         })
         .catch((error) => {
           console.error(error);
@@ -50,12 +36,14 @@ export default function UserInput() {
 
   const handleExportData = (values) => {
     if (values) {
-      const formData = new FormData();
-      formData.append("expenses", JSON.stringify(values.expenses));
+      const requestBody = values.expenses  
   
       fetch("/api/convertToCSV", {
         method: "POST",
-        body: formData,
+        body: JSON.stringify(requestBody),
+        headers: {
+          "Content-Type": "application/json",
+        },
       })
         .then((response) => response.text())
         .then((csvData) => {
