@@ -12,27 +12,68 @@ export default function UserInput() {
 
   const handleUpdateClasses = (values) => {
     if (values) {
-      const formData = new FormData();
-      formData.append("expenses", values.expenses);
+      // const formData = new FormData();
+      // formData.append("expenses", values.expenses);
+      // console.log("🚀 ~ file: UserInput.js:17 ~ handleUpdateClasses ~ formData:", formData)
+
+      console.log(
+        "🚀 ~ file: UserInput.js:19 ~ handleUpdateClasses ~ event:",
+        values
+      );
+      
+      const requestBody = values.expenses
+      console.log("🚀 ~ file: UserInput.js:27 ~ handleUpdateClasses ~ requestBody:", requestBody)
+  
 
       fetch("/api/retrain", {
         method: "POST",
-        body: formData,
+        body: JSON.stringify(requestBody),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        // headers: {
+        //   "Content-Type": "application/json",
+        // },
       })
         .then((response) => response.json())
         .then((data) => {
           console.log("🚀 ~ file: UserInput.js:36 ~ .then ~ data:", data);
-          setInititalValues({ filePath: values.filePath, expenses: data });
+          console.log("Successfully retrained based on user inputs");
+          // setInititalValues({ filePath: values.filePath, expenses: data });
         })
         .catch((error) => {
           console.error(error);
         });
     }
-    console.log(
-      "🚀 ~ file: UserInput.js:19 ~ handleUpdateClasses ~ event:",
-      values
-    );
+
   };
+
+  const handleExportData = (values) => {
+    if (values) {
+      const formData = new FormData();
+      formData.append("expenses", JSON.stringify(values.expenses));
+  
+      fetch("/api/convertToCSV", {
+        method: "POST",
+        body: formData,
+      })
+        .then((response) => response.text())
+        .then((csvData) => {
+          const csvFile = new Blob([csvData], { type: "text/csv" });
+          const csvURL = URL.createObjectURL(csvFile);
+          const downloadLink = document.createElement("a");
+          downloadLink.href = csvURL;
+          downloadLink.download = "exported_data.csv";
+          downloadLink.click();
+          URL.revokeObjectURL(csvURL);
+          console.log("CSV file exported successfully");
+        })
+        .catch((error) => {
+          console.error(error);
+        });
+    }
+  };
+  
 
   const submitData = async (values, { resetForm, setSubmitting }) => {
     setSubmitting(true);
@@ -95,6 +136,13 @@ export default function UserInput() {
                   onClick={() => handleUpdateClasses(values)}
                 >
                   Update Categories
+                </button>
+                <button
+                  type="button"
+                  className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                  onClick={() => handleExportData(values)}
+                >
+                  Export New Data
                 </button>
               </div>
             </div>
