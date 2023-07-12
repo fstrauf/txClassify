@@ -4,13 +4,13 @@ import { Field, FieldArray } from 'formik'
 const ExpenseTable = ({ data }) => {
   const [selectedCategories, setSelectedCategories] = useState({});
 
-  const handleCategoryChange = (event, index) => {
-    const { value } = event.target;
-    setSelectedCategories((prevState) => ({
-      ...prevState,
-      [index]: value,
-    }));
-  };
+  // const handleCategoryChange = (event, index) => {
+  //   const { value } = event.target;
+  //   setSelectedCategories((prevState) => ({
+  //     ...prevState,
+  //     [index]: value,
+  //   }));
+  // };
 
   return (
     <div className="relative overflow-x-auto bg-white shadow-md rounded my-6 text-xs">
