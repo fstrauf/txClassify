@@ -6,19 +6,38 @@ from flask import Flask, request, make_response
 import nltk
 from nltk.tokenize import word_tokenize
 import re
+
 # import csv
 # import json
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+import os
+
+# from faunadb import query as q
+# from faunadb.client import FaunaClient
+# from faunadb.objects import Ref
+import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Initialize FaunaDB client with the Fauna DB secret from the environment file
+# client = FaunaClient(secret=os.environ.get("FAUNA_DB_SECRET"))
+
+url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+supabase: Client = create_client(url, key)
 
 # from flask_cors import CORS
 
 app = Flask(__name__)
 # CORS(app)
 
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
 
 
 @app.route("/api/classify", methods=["POST"])
@@ -55,16 +74,70 @@ def classify():
     # Return the JSON data
     return json_data
 
+
+@app.route("/api/adminUploadFauna", methods=["POST"])
+def adminUploadFauna():
+    file = request.files["file"]
+    file_contents = file.read().decode("utf-8")
+    csv_data = StringIO(file_contents)
+
+    all_classified_expenses = pd.read_csv(
+        csv_data,
+        header=None,
+        names=["Date", "Narrative", "Debit Amount", "Credit Amount", "Categories"],
+    )
+
+    json_expenses = all_classified_expenses.to_json(orient="records")
+    expenses_list = json.loads(json_expenses)
+
+    result = client.query(
+        q.map_(
+            q.lambda_(
+                "data",
+                q.create(
+                    q.collection("Expenses"),
+                    {"data": q.var("data")},
+                ),
+            ),
+            expenses_list,
+        )
+    )
+    return result
+
+
+@app.route("/api/adminUpload", methods=["POST"])
+def adminUpload():
+    file = request.files["file"]
+    file_contents = file.read().decode("utf-8")
+    csv_data = StringIO(file_contents)
+
+    all_classified_expenses = pd.read_csv(
+        csv_data,
+        header=None,
+        names=["date", "description", "debitamount", "creditamount", "category"],
+    )
+    
+    all_classified_expenses["creditamount"] = all_classified_expenses["creditamount"].fillna(0)
+
+    json_expenses = all_classified_expenses.to_json(orient="records")
+    expenses_list = json.loads(json_expenses)
+
+    data, count = supabase.table('expenses').insert(expenses_list).execute()
+
+    response = make_response({"message": "Success: Retraining completed successfully!"})
+    response.headers["Content-Type"] = "application/json"
+    return response
+
 @app.route("/api/convertToCSV", methods=["POST"])
 def convertToCSV():
     data = request.json
     df = pd.DataFrame(data)
-    
+
     csv_data = df.to_csv(index=False)
     response = make_response(csv_data)
     response.headers["Content-Disposition"] = "attachment; filename=exported_data.csv"
     response.headers["Content-type"] = "text/csv"
-    
+
     return response
 
 
@@ -73,7 +146,7 @@ def retrain():
     try:
         data = request.json
         df_reclassified = pd.DataFrame(data)
-        
+
         df_reclassified = df_reclassified.rename(columns={"Amount": "Debit Amount"})
 
         classified_file_path = "all_expenses_classified.csv"
@@ -95,16 +168,17 @@ def retrain():
         np.save("trained_embeddings.npy", embedding_BERT)
         df_combined.to_csv("all_expenses_classified.csv", index=False)
 
-        response = make_response({"message": "Success: Retraining completed successfully!"})
+        response = make_response(
+            {"message": "Success: Retraining completed successfully!"}
+        )
         response.headers["Content-Type"] = "application/json"
         return response
 
     except Exception as e:
         response = make_response({"error": str(e)})
-        response = make_response({"error": ''})
+        response = make_response({"error": ""})
         response.headers["Content-Type"] = "application/json"
         return response
-
 
 def clean_text_BERT(text):
     text = text.lower()
@@ -157,6 +231,13 @@ def run_test_classify(test_file_name):
             # print(response.get_json())
 
 
+def run_test_adminUpload(test_file_name):
+    with app.test_client() as client:
+        with open(test_file_name, "rb") as file:
+            response = client.post("/api/adminUpload", data={"file": file})
+            # print(response.get_json())
+
+
 def run_test_retrain(test_data):
     with app.test_client() as client:
         response = client.post("/api/retrain", json=test_data)
@@ -164,11 +245,9 @@ def run_test_retrain(test_data):
 
 
 if __name__ == "__main__":
-    
-    app.run()
-    # test_file_name = "new_expenses.csv"
-    # run_test_classify(test_file_name)
-    
+    # app.run()
+    test_file_name = "all_expenses_classified.csv"
+    run_test_adminUpload(test_file_name)
 
     # test_data = [
     #     {
