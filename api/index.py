@@ -1,7 +1,7 @@
-import datetime
+# import datetime
 from io import StringIO
 import json
-import logging
+# import logging
 from flask import Flask, request, make_response
 import nltk
 from nltk.tokenize import word_tokenize
@@ -24,9 +24,6 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
-
-# Initialize FaunaDB client with the Fauna DB secret from the environment file
-# client = FaunaClient(secret=os.environ.get("FAUNA_DB_SECRET"))
 
 url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
