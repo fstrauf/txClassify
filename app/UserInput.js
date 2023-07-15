@@ -8,36 +8,11 @@ import ExpenseTable from "./ExpenseTable";
 
 
 
-export default async function UserInput() {
+export default function UserInput() {
   const [initialValues, setInititalValues] = useState({
     filePath: "",
     expenses: [],
   });
-
-  // const supabase = createServerComponentClient({ cookies });
-
-  // const { data: expenses } = await supabase.from("expenses").select();
-
-
-  // var faunadb = require("faunadb");
-  // var q = faunadb.query;
-
-  // var client = new faunadb.Client({
-  //   secret: "fnAFIypPOgAARE8lGiZDiwplIFu6-BIEj2-NADbN",
-  //   // NOTE: Use the correct endpoint for your database's Region Group.
-  //   endpoint: "https://db.fauna.com:443/",
-  // });
-
-  // var createP = client.query(
-  //   q.Create(q.Collection("Expenses"), {
-  //     data: {
-  //       date: "2020-01-02",
-  //       description: "new",
-  //       debitAmount: 150,
-  //       creditAmount: 0,
-  //     },
-  //   })
-  // );
 
   const handleUpdateClasses = (values) => {
     if (values) {
@@ -111,10 +86,6 @@ export default async function UserInput() {
   const submitData = async (values, { resetForm, setSubmitting }) => {
     setSubmitting(true);
 
-    console.log(
-      "🚀 ~ file: UserInput.js:34 ~ submitData ~ values.filePath:",
-      values.filePath
-    );
     if (values) {
       const formData = new FormData();
       formData.append("file", values.filePath);
