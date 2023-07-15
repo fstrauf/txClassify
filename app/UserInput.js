@@ -3,17 +3,45 @@
 import { useState } from "react";
 import { Formik, Form } from "formik";
 import ExpenseTable from "./ExpenseTable";
+// import { createServerComponentClient } from "@supabase/auth-helpers-nextjs";
+// import { cookies } from "next/headers";
 
-export default function UserInput() {
+
+
+export default async function UserInput() {
   const [initialValues, setInititalValues] = useState({
     filePath: "",
     expenses: [],
   });
 
+  // const supabase = createServerComponentClient({ cookies });
+
+  // const { data: expenses } = await supabase.from("expenses").select();
+
+
+  // var faunadb = require("faunadb");
+  // var q = faunadb.query;
+
+  // var client = new faunadb.Client({
+  //   secret: "fnAFIypPOgAARE8lGiZDiwplIFu6-BIEj2-NADbN",
+  //   // NOTE: Use the correct endpoint for your database's Region Group.
+  //   endpoint: "https://db.fauna.com:443/",
+  // });
+
+  // var createP = client.query(
+  //   q.Create(q.Collection("Expenses"), {
+  //     data: {
+  //       date: "2020-01-02",
+  //       description: "new",
+  //       debitAmount: 150,
+  //       creditAmount: 0,
+  //     },
+  //   })
+  // );
+
   const handleUpdateClasses = (values) => {
     if (values) {
-      
-      const requestBody = values.expenses      
+      const requestBody = values.expenses;
 
       fetch("/api/retrain", {
         method: "POST",
@@ -25,19 +53,18 @@ export default function UserInput() {
         .then((response) => response.json())
         .then((data) => {
           console.log("🚀 ~ file: UserInput.js:36 ~ .then ~ data:", data);
-          console.log("Successfully retrained based on user inputs");          
+          console.log("Successfully retrained based on user inputs");
         })
         .catch((error) => {
           console.error(error);
         });
     }
-
   };
 
   const handleExportData = (values) => {
     if (values) {
-      const requestBody = values.expenses  
-  
+      const requestBody = values.expenses;
+
       fetch("/api/convertToCSV", {
         method: "POST",
         body: JSON.stringify(requestBody),
@@ -61,7 +88,25 @@ export default function UserInput() {
         });
     }
   };
-  
+
+  const adminUpload = (values) => {
+    if (values) {
+      const formData = new FormData();
+      formData.append("file", values.filePath);
+      fetch("/api/adminUpload", {
+        method: "POST",
+        body: formData,
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          console.log("🚀 ~ file: UserInput.js:93 ~ .then ~ data:", data);
+          // setInititalValues({ filePath: values.filePath, expenses: data });
+        })
+        .catch((error) => {
+          console.error(error);
+        });
+    }
+  };
 
   const submitData = async (values, { resetForm, setSubmitting }) => {
     setSubmitting(true);
@@ -135,9 +180,18 @@ export default function UserInput() {
               </div>
             </div>
             <ExpenseTable data={values?.expenses} />
+            <h2>Admin Stuff</h2>
+            <button
+              type="button"
+              className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+              onClick={() => adminUpload(values)}
+            >
+              Upload all past classified expenses
+            </button>
           </Form>
         )}
       </Formik>
+
     </div>
   );
 }
