@@ -29,13 +29,7 @@ url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
 supabase: Client = create_client(url, key)
 
-# from flask_cors import CORS
-
 app = Flask(__name__)
-# CORS(app)
-
-# logging.basicConfig(level=logging.DEBUG)
-
 
 @app.route("/api/classify", methods=["POST"])
 def classify():
@@ -52,15 +46,22 @@ def classify():
     # print(df_unclassified_data)
 
     trained_embeddings_BERT = np.load("trained_embeddings.npy")
-    classified_file_path = "all_expenses_classified.csv"
-    df_classified_data = pd.read_csv(classified_file_path)
+    
+    # response = supabase.table('expenses').select("*").execute()
+    # df_classified_data = pd.DataFrame(response.data)
+    # classified_file_path = "all_expenses_classified.csv"
+    # df_classified_data = pd.read_csv(classified_file_path)
+    # print(df_classified_data)
+    
     print("Found trained data")
 
     output = classify_expenses(
-        df_unclassified_data, trained_embeddings_BERT, df_classified_data
+        # df_unclassified_data, trained_embeddings_BERT, df_classified_data
+        df_unclassified_data, trained_embeddings_BERT
     )
 
     df_output = pd.DataFrame.from_dict(output)
+    print(df_output)
 
     # Convert the DataFrame to JSON
     json_data = df_output.to_json(orient="records")
@@ -70,37 +71,6 @@ def classify():
 
     # Return the JSON data
     return json_data
-
-
-@app.route("/api/adminUploadFauna", methods=["POST"])
-def adminUploadFauna():
-    file = request.files["file"]
-    file_contents = file.read().decode("utf-8")
-    csv_data = StringIO(file_contents)
-
-    all_classified_expenses = pd.read_csv(
-        csv_data,
-        header=None,
-        names=["Date", "Narrative", "Debit Amount", "Credit Amount", "Categories"],
-    )
-
-    json_expenses = all_classified_expenses.to_json(orient="records")
-    expenses_list = json.loads(json_expenses)
-
-    result = client.query(
-        q.map_(
-            q.lambda_(
-                "data",
-                q.create(
-                    q.collection("Expenses"),
-                    {"data": q.var("data")},
-                ),
-            ),
-            expenses_list,
-        )
-    )
-    return result
-
 
 @app.route("/api/adminUpload", methods=["POST"])
 def adminUpload():
@@ -191,7 +161,7 @@ def clean_text_BERT(text):
     return result
 
 
-def classify_expenses(df_unclassified_data, trained_embeddings_BERT, df_training_data):
+def classify_expenses(df_unclassified_data, trained_embeddings_BERT):
     desc_new_data = df_unclassified_data["Narrative"]
     amount = df_unclassified_data["Amount"]
     date = df_unclassified_data["Date"]
@@ -207,10 +177,15 @@ def classify_expenses(df_unclassified_data, trained_embeddings_BERT, df_training
     similarity_df = pd.DataFrame(similarity_new_data)
 
     index_similarity = similarity_df.idxmax(axis=1)
+    
+    # i need to make sure that the indices match
+    indexes = index_similarity.tolist()
+    response = supabase.table('expenses').select("*").in_("id", indexes).execute()
+    relevant_rows = response.data
+    data_inspect = pd.DataFrame(relevant_rows)
+    # data_inspect = df_training_data.iloc[index_similarity, :].reset_index(drop=True)
 
-    data_inspect = df_training_data.iloc[index_similarity, :].reset_index(drop=True)
-
-    annotation = data_inspect["Categories"]
+    annotation = data_inspect["category"]
 
     d_output = {
         "Date": date,
@@ -243,8 +218,11 @@ def run_test_retrain(test_data):
 
 if __name__ == "__main__":
     # app.run()
-    test_file_name = "all_expenses_classified.csv"
-    run_test_adminUpload(test_file_name)
+    # test_file_name = "all_expenses_classified.csv"    
+    # run_test_adminUpload(test_file_name)
+    
+    test_file_name = "01_ExpenseDetails_2023 - CSVData (9).csv"    
+    run_test_classify(test_file_name)
 
     # test_data = [
     #     {
