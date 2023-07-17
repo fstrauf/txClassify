@@ -1,26 +1,19 @@
-# import datetime
+
 from io import StringIO
+import io
 import json
-# import logging
 from flask import Flask, request, make_response
-import nltk
+# import nltk
 from nltk.tokenize import word_tokenize
 import re
-
-# import csv
-# import json
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import os
-
-# from faunadb import query as q
-# from faunadb.client import FaunaClient
-# from faunadb.objects import Ref
-import os
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import tempfile
 
 # Load environment variables from .env file
 load_dotenv()
@@ -111,29 +104,41 @@ def convertToCSV():
 @app.route("/api/retrain", methods=["POST"])
 def retrain():
     try:
-        data = request.json
-        df_reclassified = pd.DataFrame(data)
+        new_reclassified = request.json
+        df_reclassified = pd.DataFrame(new_reclassified)
 
-        df_reclassified = df_reclassified.rename(columns={"Amount": "Debit Amount"})
+        # df_reclassified = df_reclassified.rename(columns={"Amount": "debitamount"})
 
-        classified_file_path = "all_expenses_classified.csv"
-        df_classified_data = pd.read_csv(classified_file_path)
+        # classified_file_path = "all_expenses_classified.csv"        
+        # df_classified_data = pd.read_csv(classified_file_path)
+        response = supabase.table('expenses').select("*").execute()
+        df_classified_data = pd.DataFrame(response.data)
+        # print("🚀 ~ file: index.py:123 ~ df_classified_data:", df_classified_data)
+        
 
         df_combined = pd.concat(
             [df_classified_data, df_reclassified], ignore_index=True
         )
         df_combined = df_combined.drop_duplicates()
+        # print("🚀 ~ file: index.py:130 ~ df_combined:", df_combined)
 
-        text_descriptions = df_combined["Narrative"]
+        text_descriptions = df_combined["description"]
         text_BERT = text_descriptions.apply(lambda x: clean_text_BERT(x))
 
         bert_input = text_BERT.tolist()
         model = SentenceTransformer("paraphrase-mpnet-base-v2")
         embeddings = model.encode(bert_input, show_progress_bar=True)
         embedding_BERT = np.array(embeddings)
+        
+        with tempfile.NamedTemporaryFile(suffix=".npy", delete=False) as temp_file:
+            np.save(temp_file, embedding_BERT)
 
-        np.save("trained_embeddings.npy", embedding_BERT)
-        df_combined.to_csv("all_expenses_classified.csv", index=False)
+        response = supabase.storage.from_('BERT_DATA').upload("embedding_BERT.npy", temp_file.name)
+        print("🚀 ~ file: index.py:137 ~ response:", response)
+
+        data, count = supabase.table('expenses').insert(new_reclassified).execute()
+        # np.save("trained_embeddings.npy", embedding_BERT)
+        # df_combined.to_csv("all_expenses_classified.csv", index=False)
 
         response = make_response(
             {"message": "Success: Retraining completed successfully!"}
@@ -143,7 +148,6 @@ def retrain():
 
     except Exception as e:
         response = make_response({"error": str(e)})
-        response = make_response({"error": ""})
         response.headers["Content-Type"] = "application/json"
         return response
 
@@ -221,27 +225,27 @@ if __name__ == "__main__":
     # test_file_name = "all_expenses_classified.csv"    
     # run_test_adminUpload(test_file_name)
     
-    test_file_name = "01_ExpenseDetails_2023 - CSVData (9).csv"    
-    run_test_classify(test_file_name)
+    # test_file_name = "01_ExpenseDetails_2023 - CSVData (9).csv"    
+    # run_test_classify(test_file_name)
 
-    # test_data = [
-    #     {
-    #         "Date": "27/05/2023",
-    #         "Amount": -27.88,
-    #         "Narrative": "CRUISIN MOTORHOMES CAMBRIDGE AUS Card xx6552 Value Date: 25/05/2023",
-    #         "Categories": "Travel",
-    #     },
-    #     {
-    #         "Date": "26/05/2023",
-    #         "Amount": -5.44,
-    #         "Narrative": "TRANSPORTFORNSW TAP SYDNEY AUS Card xx0033 Value Date: 23/05/2023",
-    #         "Categories": "Transport",
-    #     },
-    #     {
-    #         "Date": "24/05/2023",
-    #         "Amount": -7.58,
-    #         "Narrative": "Girdlers Dee Why Dee Why NS AUS Card xx6552 Value Date: 22/05/2023",
-    #         "Categories": "DinnerBars",
-    #     },
-    # ]
-    # run_test_retrain(test_data)
+    test_data = [
+        {
+            "date": "27/05/2023",
+            "debitamount": -27.88,
+            "description": "Aldi shopping",
+            "category": "Groceries",
+        },
+        {
+            "date": "26/05/2023",
+            "debitamount": -5.44,
+            "description": "Beers at the pub",
+            "category": "DinnerBars",
+        },
+        {
+            "date": "24/05/2023",
+            "debitamount": -7.58,
+            "description": "Coffee at tge beach",
+            "category": "DinnerBars",
+        },
+    ]
+    run_test_retrain(test_data)
