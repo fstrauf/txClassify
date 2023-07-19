@@ -1,0 +1,6 @@
+functions-framework==3.*
+pandas
+nltk
+git+https://github.com/UKPLab/sentence-transformers
+np
+google-cloud-storage
