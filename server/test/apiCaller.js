@@ -1,129 +1,37 @@
 const Replicate = require("replicate");
+const fs = require("fs");
+const csv = require("csv-parser");
 
 const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
-const text_batch = [
-  "Hennes Mauritz NSW Sydney",
-  "Direct Debit Explore Develo ASFW",
-  "GOGET SYDNEY",
-  "Harris Farm Markets",
-  "International Transaction Fee",
-  "FORMFACADEBASIC WALNUT",
-  "HISTOPATH MACQUARIE PAR",
-  "PAYPAL AIRPORT",
-  "KOINLY GREATER LONDO GBR",
-  "THE TRINITY SYDNEY",
-  "THE REJECT SHOP BROOKVALE",
-  "Brazilian Flame Dee Dee Why",
-  "HAIR CUTTERS DEE WHY",
-  "CBA TRAVEL INSURANCE NORTH SYDNEY",
-  "POST WARRINGAH MALL BROOKVALE",
-  "WARRINGAH BROOKVALE",
-  "CRYPTOTAXCALCULATOR DEE WHY",
-  "Direct Debit Explore Develo AVAZKXA",
-  "Direct Debit Explore Develo AYBRP",
-  "MCDONALDSDXB AIRPORT DUBAI ARE AUD",
-  "International Transaction Fee",
-  "Direct Debit Explore Develo AZDDD",
-  "ADOBE CREATIVE CLOUD Sydney",
-  "KRSSHOPAUD SINGAPORE SGP AUD",
-  "Direct Debit Explore Develo AVSZV",
-  "GOOGLEGOOGLE STORAGE SYDNEY",
-  "APPLECOM Sydney",
-  "Direct Debit Explore Develo AVWSCW",
-  "Direct Debit Explore Develo ARLAXU",
-  "NOTION LABS INC SAN FRANCISCO",
-  "Direct Debit Explore Develo ACRZG",
-  "GOGET SYDNEY",
-  "Direct Debit Explore Develo AFRVBSC",
-  "gelato matteo Collaroy",
-  "SMPAdanos Barangaroo Barangaroo",
-  "KIDSTUFF WARRINGAH Brookvale",
-  "Direct Debit Explore Develo AHWDAU",
-  "MEDALDIMobile CHATSWOOD",
-  "Google Storage Barangaroo",
-  "VIVOBAREFOOT CHELTENHAM",
-  "MARRICKVILLE PORK Ultimo",
-  "Direct Debit Explore Develo ARSLMS",
-  "CENTRELINK NetBank BPAY",
-  "MEAT EMPORIUM SYDNEY",
-  "TAX OFFICE PAYMENTS CommBank app BPAY",
-  "Direct Debit Explore Develo AUNXDAXE",
-  "AND COFFEE SYDNEY",
-  "Direct Debit Explore Develo AVXUNW",
-  "SALEPEPE BROOKVALE BALGOWLAH",
-  "ALLIANCE OPCO MOSMAN",
-  "Direct Debit Explore Develo AXWWCBHF",
-  "Adobe Sydney",
-  "SYDNEY OPERA HOUSE TRU SYDNEY",
-  "PRP DIAGNSTIC IMAGING DEE WHY",
-  "Return Harris Farm Markets",
-  "Direct Debit Explore Develo AASB",
-  "CAFE PEPITA North Curl",
-  "NORTHERN BEACHES LIBRA DEE WHY",
-  "GOOGLEYOUTUBE SYDNEY",
-  "COTTON WARRINGAH",
-  "COTTON KIDS BROOKVALE",
-  "BWS LIQUOR NOWRA",
-  "EZICampco Property Tamarama",
-  "ALDI STORES NOWRA NOWRA",
-  "VITAMINS BROOKVAL BROOKVALE",
-  "THEICONIC SYDNEY",
-  "Direct Debit Explore Develo AASB",
-  "RESOURCES ULTIMO",
-  "OURCOW CASINO",
-  "Direct Debit Explore Develo AATSAD",
-  "SUSHI HUB WARRINGAH BROOKVALE",
-  "Kidstuff George Sydney",
-  "Iiko Mazesoba Sydney",
-  "HAVEN SPECIALTY Haymarket",
-  "REFLECTIONSSEALROCK SEAL ROCKS",
-  "Direct Debit Explore Develo AALZFH",
-  "Reflections Byron Bay BYRON BAY",
-  "The Newport Newport",
-  "DEVON CAFE BARANGARO BARANGAROO NSWAU",
-  "UBERCARSHARE SYDNEY",
-  "Transfer other Bank NetBank Dee Why Pde",
-  "MARK EDWARD RUFF FRENCHES FORE",
-  "Planet Mino Brookvale",
-  "Northern Beaches Libra Dee Why",
-  "POST DEE WHYRET DEE WHY",
-  "Direct Debit Explore Develo AACMNZF",
-  "WWWVIBERCOM LUXEMBOURG LUX",
-  "Direct Debit TPG Internet DNFKAARGHP",
-  "DEPT HOME AFFAIRS CommBank app BPAY",
-  "CAMPERVAN RENTAL SHOP DARLINGHURST",
-  "GOOGLEGOOGLE STORAGE Sydney",
-  "TREACHERY CAMP SEAL ROCKS",
-  "MAD MEX TUGGERAH TUGGERAH",
-  "COLES TUGGERAH",
-  "KMART TUGGERAH",
-  "COTTON MEGA FORSTER",
-  "MNJ FORSTER FORSTER",
-  "CRUISIN MOTORHOMES CARINGBAH",
-  "REFLECTIONSSCOTTSHEAD ADIN",
-  "DRUID ALCHEMY Gorokan",
-  "Transfer HAFSHEJANI PayID Phone from CommBank App Haircuts",
-];
-
 async function runModel() {
-//   const output = await replicate.run(
-//     "replicate/all-mpnet-base-v2:b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305",
-//     {
-//       input: {
-//         text_batch: JSON.stringify(text_batch),
-//       },
-//     }
-//   );
+  let text_batch = await new Promise((resolve, reject) => {
+    let data = [];
+    fs.createReadStream("new_data.csv")
+      // fs.createReadStream("trained_data.csv")
+      .pipe(csv({ headers: false }))
+      .on("data", (row) => {
+        // Get the keys of the row (column names)
+        const keys = Object.keys(row);
+        // Push the value of the second column (index 1) into the array
+        data.push(row[keys[1]]);
+      })
+      .on("end", () => {
+        resolve(data);
+      })
+      .on("error", reject);
+  });
+
   const prediction = await replicate.predictions.create({
     version: "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305",
     input: {
       text_batch: JSON.stringify(text_batch),
     },
-    webhook: "https://pythonhandler-yxxxtrqkpa-ts.a.run.app",
-    // webhook: "https://155a-2406-2d40-41b4-d10-3509-3185-7000-8781.ngrok-free.app",
+    // webhook: "https://pythonhandler-yxxxtrqkpa-ts.a.run.app",
+    // webhook: "https://65d5-206-83-122-86.ngrok-free.app/saveTrainedData",
+    webhook: "https://65d5-206-83-122-86.ngrok-free.app/classify",
     webhook_events_filter: ["completed"],
   });
 
