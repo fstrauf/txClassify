@@ -18,6 +18,7 @@
     "@types/react-dom": "18.2.4",
     "autoprefixer": "10.4.14",
     "concurrently": "^8.0.1",
+    "csv-parser": "^3.0.0",
     "eslint": "8.40.0",
     "eslint-config-next": "13.4.2",
     "faunadb": "^4.8.0",
