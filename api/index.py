@@ -123,6 +123,7 @@ def retrain():
         # print("🚀 ~ file: index.py:130 ~ df_combined:", df_combined)
 
         text_descriptions = df_combined["description"]
+        #drop text duplicates here too
         text_BERT = text_descriptions.apply(lambda x: clean_text_BERT(x))
 
         bert_input = text_BERT.tolist()
