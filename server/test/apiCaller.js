@@ -31,7 +31,7 @@ async function runModel() {
     },
     // webhook: "https://pythonhandler-yxxxtrqkpa-ts.a.run.app",
     // webhook: "https://65d5-206-83-122-86.ngrok-free.app/saveTrainedData",
-    webhook: "https://65d5-206-83-122-86.ngrok-free.app/classify",
+    webhook: "https://ca1b-45-252-255-129.ngrok-free.app/classify",
     webhook_events_filter: ["completed"],
   });
 
