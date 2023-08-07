@@ -4,10 +4,15 @@ from flask import Flask, request
 from google.cloud import storage
 import numpy as np
 import tempfile
+import requests
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
+from urllib.parse import urlparse, parse_qs
 
 app = Flask(__name__)
+
+# googleScriptAPI = "https://script.google.com/macros/s/AKfycby3MVHQKrMBzDVeWKxy77gdvuWhXa-m-LUMnvoqLHrcHcJg53FzEeDLd-GaXLSeA8zM/exec"
+googleScriptAPI = "https://script.google.com/macros/s/"
 
 
 @app.route("/saveTrainedData", methods=["POST"])
@@ -15,37 +20,46 @@ def handle_webhook():
     """Handle incoming webhook from Replicate."""
     data = request.get_json()
     print("Status:", data.get("status"))
-
-    bucket_name = "txclassify"  # Replace with your bucket name
-    file_name = "trained_embeddings.npy"
+    
+    webhookUrl = data.get("webhook")
+    customerName, sheetApi = extract_params_from_url(webhookUrl)
+    
+    bucket_name = "txclassify"
+    file_name = customerName + ".npy"
 
     embeddings_array = json_to_embeddings(data)
 
     save_to_gcs(bucket_name, file_name, embeddings_array)
-    return "", 200  # Respond with a 200 status code
+
+    new_dict = {"status": "saveTrainedData", "data": None}
+
+    new_json = json.dumps(new_dict)
+    requests.post(sheetApi, data=new_json)
+    
+    return "", 200 
 
 
 @app.route("/classify", methods=["POST"])
 def handle_classify_webhook():
     """Handle incoming webhook from Replicate."""
     data = request.get_json()
+    
     print("Status:", data.get("status"))
+    
+    webhookUrl = data.get("webhook")
+    customerName, sheetApi = extract_params_from_url(webhookUrl)
     
     data_string = data.get("input").get("text_batch")
 
-    # Convert the string representation of the list into an actual list
     data_list = json.loads(data_string)
 
-    # Convert the list into a DataFrame
     df_unclassified_data = pd.DataFrame(data_list, columns=["description"])
     print("🚀 ~ file: main.py:41 ~ df_unclassified_data:", df_unclassified_data)
 
     new_embeddings = json_to_embeddings(data)
 
-    ## turn input to df_unclassified
-
-    bucket_name = "txclassify"  # Replace with your bucket name
-    file_name = "trained_embeddings.npy"
+    bucket_name = "txclassify" 
+    file_name = customerName + ".npy"
     trained_embeddings = fetch_from_gcs(bucket_name, file_name)
 
     output = classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings)
@@ -53,10 +67,15 @@ def handle_classify_webhook():
     df_output = pd.DataFrame.from_dict(output)
     print(df_output)
 
-    # Convert the DataFrame to JSON
-    json_data = df_output.to_json(orient="records")
+    data_dict = df_output.to_dict(orient="records")
 
-    return "", 200  # Respond with a 200 status code
+    new_dict = {"status": "classify", "data": data_dict}
+
+    new_json = json.dumps(new_dict)
+
+    response = requests.post(sheetApi, data=new_json)
+
+    return {"google_apps_script_status_code": response.status_code}, 200
 
 
 def classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings):
@@ -65,12 +84,7 @@ def classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings):
     similarity_new_data = cosine_similarity(new_embeddings, trained_embeddings)
     similarity_df = pd.DataFrame(similarity_new_data)
 
-    index_similarity = similarity_df.idxmax(axis=1)
-    # print("🚀 ~ file: main.py:70 ~ index_similarity:", index_similarity)
-
-    # i need to make sure that the indices match
-
-    # annotation = data_inspect["category"]
+    index_similarity = similarity_df.idxmax(axis=1)   
 
     d_output = {
         "description": desc_new_data,
@@ -95,6 +109,7 @@ def save_to_gcs(bucket_name, file_name, embeddings_array):
     # Save the numpy array as a .npy file
     with blob.open("wb") as f:
         np.save(f, embeddings_array)
+        print("embedding saved")
 
 
 def fetch_from_gcs(bucket_name, file_name):
@@ -111,7 +126,20 @@ def fetch_from_gcs(bucket_name, file_name):
 
     return embeddings_array
 
+def extract_params_from_url(webhookUrl):
+    
+    parsed_url = urlparse(webhookUrl)
+    
+    query_params = parse_qs(parsed_url.query)
+    
+    customerName = query_params.get("customerName", [None])[0]  
+    sheetApi = query_params.get("sheetApi", [None])[0] 
+    
+    sheetApi = googleScriptAPI + sheetApi + "/exec"
+
+    return customerName, sheetApi
+
 
 if __name__ == "__main__":
-    # app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-    app.run(debug=True, host="0.0.0.0", port=3000)
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    # app.run(debug=True, host="0.0.0.0", port=3000)
