@@ -131,9 +131,12 @@ def extract_params_from_url(webhookUrl):
     parsed_url = urlparse(webhookUrl)
     
     query_params = parse_qs(parsed_url.query)
+    print("🚀 ~ file: main.py:134 ~ query_params:", query_params)
     
     customerName = query_params.get("customerName", [None])[0]  
+    print("🚀 ~ file: main.py:137 ~ customerName:", customerName)
     sheetApi = query_params.get("sheetApi", [None])[0] 
+    print("🚀 ~ file: main.py:139 ~ sheetApi:", sheetApi)
     
     sheetApi = googleScriptAPI + sheetApi + "/exec"
 
