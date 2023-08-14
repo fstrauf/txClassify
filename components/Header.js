@@ -15,7 +15,7 @@ export default function Header() {
         />
       </div>
       <h1 className="ml-3 text-xl">
-        <Link href="/">Expense Sorter</Link>
+        <Link href="/">Expense Sorted</Link>
       </h1>
     </header>
   );
