@@ -6,7 +6,7 @@ import Footer from "../components/Footer";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata = {
-  title: "Expense Sorter",
+  title: "Expense Sorted",
   description: "Categorise your expenses using ML",
 };
 
