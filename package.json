@@ -7,6 +7,7 @@
     "next-dev": "next dev",
     "dev": "concurrently \"npm run next-dev\" \"npm run flask-dev\"",
     "build": "next build",
+    "postbuild": "next-sitemap",
     "start": "next start",
     "lint": "next lint"
   },
@@ -24,6 +25,7 @@
     "faunadb": "^4.8.0",
     "formik": "^2.4.2",
     "next": "13.4.3",
+    "next-sitemap": "^4.2.2",
     "postcss": "8.4.23",
     "react": "18.2.0",
     "react-dom": "18.2.0",
