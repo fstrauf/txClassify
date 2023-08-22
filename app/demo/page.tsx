@@ -20,31 +20,31 @@ export default function Demo() {
     setDataTab(event.target.value);
   };
 
-  async function callCleanAndPredict(training_data:[]) {
-    const apiMode = 'saveTrainedData' //saveTrainedData || classify
-    const customerName = 'Flo'
-    const sheetApi = 'https://www.expensesorted.com/api/finishedTrainingHook'
-    var body = {training_data, apiMode, customerName, sheetApi}
-    try {
-      console.log('Running Prediction')
-      const response = await fetch("/api/cleanAndPredict", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+  // async function callCleanAndPredict(training_data:[]) {
+  //   const apiMode = 'saveTrainedData' //saveTrainedData || classify
+  //   const customerName = 'Flo'
+  //   const sheetApi = 'https://www.expensesorted.com/api/finishedTrainingHook'
+  //   var body = {training_data, apiMode, customerName, sheetApi}
+  //   try {
+  //     console.log('Running Prediction')
+  //     const response = await fetch("/api/cleanAndPredict", {
+  //       method: "POST",
+  //       body: JSON.stringify(body),
+  //     });
 
-      if (response.ok) {
-        const data = await response.json();
-        console.log("🚀 ~ file: page.tsx:37 ~ runPrediction ~ data:", data)
+  //     if (response.ok) {
+  //       const data = await response.json();
+  //       console.log("🚀 ~ file: page.tsx:37 ~ runPrediction ~ data:", data)
 
-      } else {
-        console.error("API call failed with status:", response.status);
-        // Handle the error case
-      }
-    } catch (error) {
-      console.error("An error occurred:", error);
-      // Handle the error case
-    }
-  }
+  //     } else {
+  //       console.error("API call failed with status:", response.status);
+  //       // Handle the error case
+  //     }
+  //   } catch (error) {
+  //     console.error("An error occurred:", error);
+  //     // Handle the error case
+  //   }
+  // }
 
   
   // async function runPrediction(training_data: undefined) {
@@ -118,7 +118,7 @@ export default function Demo() {
       <main className="flex-grow flex items-center justify-center p-10">
         <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
           <h1 className="text-3xl font-bold leading-tight text-center">
-            Train Your Model
+            Step 1: Train Your Model
           </h1>
 
           <label className="block">
@@ -158,6 +158,52 @@ export default function Demo() {
             className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
           >
             Train
+          </button>
+        </div>
+      </main>
+      <main className="flex-grow flex items-center justify-center p-10">
+        <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
+          <h1 className="text-3xl font-bold leading-tight text-center">
+            Step 2: Classify your Expenses
+          </h1>
+          <p>Add your expenses to the sheet tab: new_dump</p>
+          <label className="block">
+            Upload JSON Key File:
+            <input
+              type="file"
+              onChange={handleJsonKeyFileChange}
+              accept=".json"
+              className="mt-1"
+            />
+          </label>
+
+          <label className="block">
+            Spreadsheet ID:
+            <input
+              type="text"
+              defaultValue="185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
+              value={spreadsheetLink}
+              onChange={handleSpreadsheetLinkChange}
+              className="mt-1 text-black w-full"
+            />
+          </label>
+
+          <label className="block">
+            Range:
+            <input
+              type="text"
+              defaultValue="C2:C200"
+              value={dataTab}
+              onChange={handleDataTabChange}
+              className="mt-1 text-black w-full"
+            />
+          </label>
+
+          <button
+            onClick={handleTrainClick}
+            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+          >
+            Classify
           </button>
         </div>
       </main>
