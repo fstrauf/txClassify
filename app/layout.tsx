@@ -2,6 +2,7 @@ import "./globals.css";
 import { Inter } from "next/font/google";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
+import { UserProvider } from "@auth0/nextjs-auth0/client";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -17,12 +18,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.className} flex flex-col min-h-screen`}>
-        <Header />
-        <div className="flex-grow">{children}</div>
-
-        <Footer />
-      </body>
+      <UserProvider>
+        <body className={`${inter.className} flex flex-col min-h-screen`}>
+          <Header />
+          <div className="flex-grow">{children}</div>
+          <Footer />
+        </body>
+      </UserProvider>
     </html>
   );
 }

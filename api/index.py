@@ -18,8 +18,8 @@ import tempfile
 # Load environment variables from .env file
 load_dotenv()
 
-url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
-key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+# url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+# key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
 supabase: Client = create_client(url, key)
 
 app = Flask(__name__)
