@@ -15,13 +15,8 @@ export async function POST(req) {
       return NextResponse.json({ error: "Missing parameters" }, { status: 400 });
     }
 
-    // Read the content of the credentials file
     const credentialsContent = await credentialsFile.text();
-
-    // Create a temporary directory
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "txClassify-"));
-
-    // Create a temporary path for the credentials file
     const credentialsPath = path.join(tempDir, "temporaryCredentials.json");
 
     // Write the credentials content to the temporary path

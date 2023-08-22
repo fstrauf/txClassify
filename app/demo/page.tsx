@@ -20,6 +20,33 @@ export default function Demo() {
     setDataTab(event.target.value);
   };
 
+  
+  async function runPrediction(training_data: undefined) {
+    const apiMode = 'saveTrainedData' //saveTrainedData || classify
+    const customerName = 'Flo'
+    const sheetApi = 'https://www.expensesorted.com/api/finishedTrainingHook'
+    var body = {training_data, apiMode, customerName, sheetApi}
+    try {
+      console.log('Running Prediction')
+      const response = await fetch("/api/runPrediction", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log("🚀 ~ file: page.tsx:37 ~ runPrediction ~ data:", data)
+
+      } else {
+        console.error("API call failed with status:", response.status);
+        // Handle the error case
+      }
+    } catch (error) {
+      console.error("An error occurred:", error);
+      // Handle the error case
+    }
+  }
+
   const handleTrainClick = async () => {
     // Provide the necessary parameters
     const spreadsheetId = spreadsheetLink;
@@ -46,6 +73,8 @@ export default function Demo() {
         const data = await response.json();
         console.log("Fetched data:", data);
         // Continue with processing the fetched data as needed
+        await runPrediction(data)
+
       } else {
         console.error("API call failed with status:", response.status);
         // Handle the error case
@@ -107,3 +136,5 @@ export default function Demo() {
     </div>
   );
 }
+
+
