@@ -10,6 +10,7 @@ export async function POST(req) {
     const credentialsFile = formData.get("credentialsFile");
     const spreadsheetId = formData.get("spreadsheetId");
     let range = formData.get("range");
+    console.log("🚀 ~ file: route.js:13 ~ POST ~ range:", range)
 
     if (!credentialsFile || !spreadsheetId || !range) {
       return NextResponse.json({ error: "Missing parameters" }, { status: 400 });
@@ -38,8 +39,8 @@ export async function POST(req) {
     });
 
     const sheetData = response.data.values;
-    const cleanedSheetData = sheetData.flat().filter((item) => item !== "");
-
+    // const cleanedSheetData = sheetData.flat().filter((item) => item !== "");
+    const cleanedSheetData = sheetData
     // Clean up by removing the temporary directory
     fs.rmSync(tempDir, { recursive: true, force: true });
 

@@ -8,11 +8,54 @@ import requests
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
 from urllib.parse import urlparse, parse_qs
+import os
+import re
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)  # Allow all origins
+
+api_key = os.environ.get('replicate_API_KEY')
 
 # googleScriptAPI = "https://script.google.com/macros/s/AKfycby3MVHQKrMBzDVeWKxy77gdvuWhXa-m-LUMnvoqLHrcHcJg53FzEeDLd-GaXLSeA8zM/exec"
 googleScriptAPI = "https://script.google.com/macros/s/"
+
+@app.route("/runTraining", methods=["POST"])
+def runTraining():
+    data = request.form
+    file = request.files["credentialsFile"]
+    file_contents = file.read().decode("utf-8")
+    sheetId = data.get("spreadsheetId")
+    
+    range = data.get("range")
+    
+    # Save the credentials contents to a temporary file
+    temp_credentials_path = "temporaryCredentials.json"
+    with open(temp_credentials_path, "w") as temp_file:
+        temp_file.write(file_contents)
+    
+    sheetData = getSpreadsheetData(temp_credentials_path, sheetId, range)
+    
+    df = pd.DataFrame(sheetData, columns=["index","description"])
+    df["description"] = df["description"].apply(clean_Text)
+    df = df.drop_duplicates(subset=["description"])
+    print("🚀 ~ file: main.py:30 ~ df:", df)
+    # response_data = {"message": "Success"}
+    return {"message": "Success"}, 200
+    
+def getSpreadsheetData(keyFile, sheetId, range):
+    print("🚀 ~ file: main.py:48 ~ range:", range)
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    from google.oauth2.service_account import Credentials 
+    creds = Credentials.from_service_account_file(keyFile, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    service = build("sheets", "v4", credentials=creds)
+    
+    sheetAndRange = "Details!$" + range
+    
+    result = service.spreadsheets().values().get(spreadsheetId=sheetId, range=sheetAndRange).execute()
+    values = result.get("values", [])
+    return values
 
 
 @app.route("/saveTrainedData", methods=["POST"])
@@ -142,7 +185,18 @@ def extract_params_from_url(webhookUrl):
 
     return customerName, sheetApi
 
+def clean_Text(text):
+    text = re.sub(
+        r"[^\w\s]|https?://\S+|www\.\S+|https?:/\S+|[^\x00-\x7F]+|\d+|\b\w{1,2}\b|xx|Value Date|Card|AUS|USA|USD|PTY|LTD|Tap and Pay|TAP AND PAY",
+        "",
+        str(text).strip(),
+    )
+    text = re.sub(r'\s+', ' ', text)  
+    return text.strip()  
+
+
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    # app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(port=3001)
     # app.run(debug=True, host="0.0.0.0", port=3000)

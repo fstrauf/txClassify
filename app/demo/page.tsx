@@ -6,7 +6,7 @@ export default function Demo() {
   const [spreadsheetLink, setSpreadsheetLink] = useState(
     "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
   );
-  const [dataTab, setDataTab] = useState("C2:C200");
+  const [dataTab, setDataTab] = useState("A2:B200");
 
   const handleJsonKeyFileChange = (event) => {
     setJsonKeyFile(event.target.files[0]);
@@ -20,15 +20,14 @@ export default function Demo() {
     setDataTab(event.target.value);
   };
 
-  
-  async function runPrediction(training_data: undefined) {
+  async function callCleanAndPredict(training_data:[]) {
     const apiMode = 'saveTrainedData' //saveTrainedData || classify
     const customerName = 'Flo'
     const sheetApi = 'https://www.expensesorted.com/api/finishedTrainingHook'
     var body = {training_data, apiMode, customerName, sheetApi}
     try {
       console.log('Running Prediction')
-      const response = await fetch("/api/runPrediction", {
+      const response = await fetch("/api/cleanAndPredict", {
         method: "POST",
         body: JSON.stringify(body),
       });
@@ -47,6 +46,33 @@ export default function Demo() {
     }
   }
 
+  
+  // async function runPrediction(training_data: undefined) {
+  //   const apiMode = 'saveTrainedData' //saveTrainedData || classify
+  //   const customerName = 'Flo'
+  //   const sheetApi = 'https://www.expensesorted.com/api/finishedTrainingHook'
+  //   var body = {training_data, apiMode, customerName, sheetApi}
+  //   try {
+  //     console.log('Running Prediction')
+  //     const response = await fetch("/api/runPrediction", {
+  //       method: "POST",
+  //       body: JSON.stringify(body),
+  //     });
+
+  //     if (response.ok) {
+  //       const data = await response.json();
+  //       console.log("🚀 ~ file: page.tsx:37 ~ runPrediction ~ data:", data)
+
+  //     } else {
+  //       console.error("API call failed with status:", response.status);
+  //       // Handle the error case
+  //     }
+  //   } catch (error) {
+  //     console.error("An error occurred:", error);
+  //     // Handle the error case
+  //   }
+  // }
+
   const handleTrainClick = async () => {
     // Provide the necessary parameters
     const spreadsheetId = spreadsheetLink;
@@ -64,7 +90,7 @@ export default function Demo() {
     }
 
     try {
-      const response = await fetch("/api/getSheetData", {
+      const response = await fetch("/api/cleanAndPredict", {
         method: "POST",
         body: formData,
       });
@@ -73,7 +99,7 @@ export default function Demo() {
         const data = await response.json();
         console.log("Fetched data:", data);
         // Continue with processing the fetched data as needed
-        await runPrediction(data)
+        // await callCleanAndPredict(data)
 
       } else {
         console.error("API call failed with status:", response.status);
