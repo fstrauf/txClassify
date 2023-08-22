@@ -89,6 +89,8 @@ export default function Demo() {
       formData.append("range", range);
     }
 
+    formData.append('customerName', 'fs')
+
     try {
       const response = await fetch("/api/cleanAndPredict", {
         method: "POST",
