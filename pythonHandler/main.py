@@ -15,10 +15,11 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)  # Allow all origins
 
-api_key = os.environ.get('replicate_API_KEY')
+api_key = os.environ.get("replicate_API_KEY")
 
 # googleScriptAPI = "https://script.google.com/macros/s/AKfycby3MVHQKrMBzDVeWKxy77gdvuWhXa-m-LUMnvoqLHrcHcJg53FzEeDLd-GaXLSeA8zM/exec"
 googleScriptAPI = "https://script.google.com/macros/s/"
+
 
 @app.route("/runTraining", methods=["POST"])
 def runTraining():
@@ -26,34 +27,73 @@ def runTraining():
     file = request.files["credentialsFile"]
     file_contents = file.read().decode("utf-8")
     sheetId = data.get("spreadsheetId")
-    
+    customerName = data.get("customerName")
+
     range = data.get("range")
-    
+
     # Save the credentials contents to a temporary file
     temp_credentials_path = "temporaryCredentials.json"
     with open(temp_credentials_path, "w") as temp_file:
         temp_file.write(file_contents)
-    
+
     sheetData = getSpreadsheetData(temp_credentials_path, sheetId, range)
-    
-    df = pd.DataFrame(sheetData, columns=["index","description"])
-    df["description"] = df["description"].apply(clean_Text)
-    df = df.drop_duplicates(subset=["description"])
+    df = cleanSpreadSheetData(sheetData)
+    storeCleanedSheetOrder(df, customerName)
+    runPrediction('saveTrainedData',customerName,'https://www.expensesorted.com/api/finishedTrainingHook',df['description'].tolist())
+
     print("🚀 ~ file: main.py:30 ~ df:", df)
     # response_data = {"message": "Success"}
     return {"message": "Success"}, 200
-    
+
+
+def runPrediction(apiMode, customerName, sheetApi, training_data):
+    import replicate
+
+    model = replicate.models.get("replicate/all-mpnet-base-v2")
+    version = model.versions.get(
+        "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
+    )
+    prediction = replicate.predictions.create(
+        version=version,
+        input={"text_batch": json.dumps(training_data)},
+        webhook = f"https://pythonhandler-yxxxtrqkpa-ts.a.run.app/{apiMode}?customerName={customerName}&sheetApi={sheetApi}",
+        webhook_events_filter=["completed"],
+    )
+    return prediction
+
+
+def storeCleanedSheetOrder(df, customerName):
+    bucket_name = "txclassify"
+    file_name = customerName + "_index.npy"
+    save_to_gcs(bucket_name, file_name, df.index.to_numpy())
+
+
+def cleanSpreadSheetData(sheetData):
+    df = pd.DataFrame(sheetData, columns=["index", "description"])
+    df["description"] = df["description"].apply(clean_Text)
+    df = df.drop_duplicates(subset=["description"])
+    return df
+
+
 def getSpreadsheetData(keyFile, sheetId, range):
     print("🚀 ~ file: main.py:48 ~ range:", range)
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
-    from google.oauth2.service_account import Credentials 
-    creds = Credentials.from_service_account_file(keyFile, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    from google.oauth2.service_account import Credentials
+
+    creds = Credentials.from_service_account_file(
+        keyFile, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
     service = build("sheets", "v4", credentials=creds)
-    
+
     sheetAndRange = "Details!$" + range
-    
-    result = service.spreadsheets().values().get(spreadsheetId=sheetId, range=sheetAndRange).execute()
+
+    result = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=sheetId, range=sheetAndRange)
+        .execute()
+    )
     values = result.get("values", [])
     return values
 
@@ -63,10 +103,10 @@ def handle_webhook():
     """Handle incoming webhook from Replicate."""
     data = request.get_json()
     print("Status:", data.get("status"))
-    
+
     webhookUrl = data.get("webhook")
     customerName, sheetApi = extract_params_from_url(webhookUrl)
-    
+
     bucket_name = "txclassify"
     file_name = customerName + ".npy"
 
@@ -78,20 +118,20 @@ def handle_webhook():
 
     new_json = json.dumps(new_dict)
     requests.post(sheetApi, data=new_json)
-    
-    return "", 200 
+
+    return "", 200
 
 
 @app.route("/classify", methods=["POST"])
 def handle_classify_webhook():
     """Handle incoming webhook from Replicate."""
     data = request.get_json()
-    
+
     print("Status:", data.get("status"))
-    
+
     webhookUrl = data.get("webhook")
     customerName, sheetApi = extract_params_from_url(webhookUrl)
-    
+
     data_string = data.get("input").get("text_batch")
 
     data_list = json.loads(data_string)
@@ -101,7 +141,7 @@ def handle_classify_webhook():
 
     new_embeddings = json_to_embeddings(data)
 
-    bucket_name = "txclassify" 
+    bucket_name = "txclassify"
     file_name = customerName + ".npy"
     trained_embeddings = fetch_from_gcs(bucket_name, file_name)
 
@@ -127,7 +167,7 @@ def classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings):
     similarity_new_data = cosine_similarity(new_embeddings, trained_embeddings)
     similarity_df = pd.DataFrame(similarity_new_data)
 
-    index_similarity = similarity_df.idxmax(axis=1)   
+    index_similarity = similarity_df.idxmax(axis=1)
 
     d_output = {
         "description": desc_new_data,
@@ -169,21 +209,22 @@ def fetch_from_gcs(bucket_name, file_name):
 
     return embeddings_array
 
+
 def extract_params_from_url(webhookUrl):
-    
     parsed_url = urlparse(webhookUrl)
-    
+
     query_params = parse_qs(parsed_url.query)
     print("🚀 ~ file: main.py:134 ~ query_params:", query_params)
-    
-    customerName = query_params.get("customerName", [None])[0]  
+
+    customerName = query_params.get("customerName", [None])[0]
     print("🚀 ~ file: main.py:137 ~ customerName:", customerName)
-    sheetApi = query_params.get("sheetApi", [None])[0] 
+    sheetApi = query_params.get("sheetApi", [None])[0]
     print("🚀 ~ file: main.py:139 ~ sheetApi:", sheetApi)
-    
+
     sheetApi = googleScriptAPI + sheetApi + "/exec"
 
     return customerName, sheetApi
+
 
 def clean_Text(text):
     text = re.sub(
@@ -191,9 +232,8 @@ def clean_Text(text):
         "",
         str(text).strip(),
     )
-    text = re.sub(r'\s+', ' ', text)  
-    return text.strip()  
-
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 if __name__ == "__main__":
