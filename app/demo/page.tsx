@@ -8,15 +8,15 @@ export default function Demo() {
   );
   const [dataTab, setDataTab] = useState("A2:B200");
 
-  const handleJsonKeyFileChange = (event) => {
+  const handleJsonKeyFileChange = (event: any) => {
     setJsonKeyFile(event.target.files[0]);
   };
 
-  const handleSpreadsheetLinkChange = (event) => {
+  const handleSpreadsheetLinkChange = (event: any) => {
     setSpreadsheetLink(event.target.value);
   };
 
-  const handleDataTabChange = (event) => {
+  const handleDataTabChange = (event:any) => {
     setDataTab(event.target.value);
   };
 
