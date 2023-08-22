@@ -1,10 +1,11 @@
 // components/Header.js
 import Image from "next/image";
 import Link from "next/link";
+import Login from './Login'
 
 export default function Header() {
   return (
-    <header className="w-full bg-[#1E1E1E] text-white p-4 flex items-center">
+    <header className="w-full bg-[#1E1E1E] text-white p-4 flex items-center justify-between">
       <div className="relative">
         <Image
           width={32}
@@ -17,6 +18,7 @@ export default function Header() {
       <h1 className="ml-3 text-xl">
         <Link href="/">Expense Sorted</Link>
       </h1>
+      <Login/>
     </header>
   );
 }
