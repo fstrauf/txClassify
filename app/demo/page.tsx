@@ -6,7 +6,8 @@ export default function Demo() {
   const [spreadsheetLink, setSpreadsheetLink] = useState(
     "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
   );
-  const [dataTab, setDataTab] = useState("A2:B200");
+  const [dataTabTraining, setDataTabTraining] = useState("A2:G200");
+  const [dataTabClassify, setDataTabClassify] = useState("A1:C200");
 
   const handleJsonKeyFileChange = (event: any) => {
     setJsonKeyFile(event.target.files[0]);
@@ -16,8 +17,12 @@ export default function Demo() {
     setSpreadsheetLink(event.target.value);
   };
 
-  const handleDataTabChange = (event:any) => {
-    setDataTab(event.target.value);
+  const handleDataTabTrainingChange = (event:any) => {
+    setDataTabTraining(event.target.value);
+  };
+
+  const handleDataTabClassifyChange = (event:any) => {
+    setDataTabClassify(event.target.value);
   };
 
   // async function callCleanAndPredict(training_data:[]) {
@@ -76,7 +81,7 @@ export default function Demo() {
   const handleTrainClick = async () => {
     // Provide the necessary parameters
     const spreadsheetId = spreadsheetLink;
-    const range = dataTab;
+    const range = dataTabTraining;
 
     const formData = new FormData();
     if (jsonKeyFile) {
@@ -100,16 +105,46 @@ export default function Demo() {
       if (response.ok) {
         const data = await response.json();
         console.log("Fetched data:", data);
-        // Continue with processing the fetched data as needed
-        // await callCleanAndPredict(data)
-
       } else {
         console.error("API call failed with status:", response.status);
-        // Handle the error case
       }
     } catch (error) {
       console.error("An error occurred:", error);
-      // Handle the error case
+    }
+  };
+
+  const handleClassifyClick = async () => {
+    // Provide the necessary parameters
+    const spreadsheetId = spreadsheetLink;
+    const range = dataTabTraining;
+
+    const formData = new FormData();
+    if (jsonKeyFile) {
+      formData.append("credentialsFile", jsonKeyFile);
+    }
+    if (spreadsheetId) {
+      formData.append("spreadsheetId", spreadsheetId);
+    }
+    if (range) {
+      formData.append("range", range);
+    }
+
+    formData.append('customerName', 'fs')
+
+    try {
+      const response = await fetch("/api/cleanAndClassify", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log("Fetched data:", data);
+      } else {
+        console.error("API call failed with status:", response.status);
+      }
+    } catch (error) {
+      console.error("An error occurred:", error);
     }
   };
 
@@ -146,9 +181,9 @@ export default function Demo() {
             Range:
             <input
               type="text"
-              defaultValue="C2:C200"
-              value={dataTab}
-              onChange={handleDataTabChange}
+              defaultValue="A2:G200"
+              value={dataTabTraining}
+              onChange={handleDataTabTrainingChange}
               className="mt-1 text-black w-full"
             />
           </label>
@@ -193,14 +228,14 @@ export default function Demo() {
             <input
               type="text"
               defaultValue="C2:C200"
-              value={dataTab}
-              onChange={handleDataTabChange}
+              value={dataTabClassify}
+              onChange={handleDataTabClassifyChange}
               className="mt-1 text-black w-full"
             />
           </label>
 
           <button
-            onClick={handleTrainClick}
+            onClick={handleClassifyClick}
             className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
           >
             Classify
