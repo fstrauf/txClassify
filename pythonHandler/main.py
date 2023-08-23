@@ -20,9 +20,8 @@ api_key = os.environ.get("replicate_API_KEY")
 # googleScriptAPI = "https://script.google.com/macros/s/AKfycby3MVHQKrMBzDVeWKxy77gdvuWhXa-m-LUMnvoqLHrcHcJg53FzEeDLd-GaXLSeA8zM/exec"
 googleScriptAPI = "https://script.google.com/macros/s/"
 
-
-@app.route("/runTraining", methods=["POST"])
-def runTraining():
+@app.route("/runClassify", methods=["POST"])
+def runClassify():
     data = request.form
     file = request.files["credentialsFile"]
     file_contents = file.read().decode("utf-8")
@@ -36,10 +35,40 @@ def runTraining():
     with open(temp_credentials_path, "w") as temp_file:
         temp_file.write(file_contents)
 
-    sheetData = getSpreadsheetData(temp_credentials_path, sheetId, range)
-    df = cleanSpreadSheetData(sheetData)
+    sheetData = getSpreadsheetData(temp_credentials_path, sheetId, "new_dump!$" + range)
+    df = cleanSpreadSheetData(sheetData,["date", "debit","description"])
+    prediction = runPrediction('classify',customerName,'https://www.expensesorted.com/api/finishedTrainingHook',df['description'].tolist())
+    print("🚀 ~ file: main.py:41 ~ prediction:", prediction)
+
+    print("🚀 ~ file: main.py:30 ~ df:", df)
+    # response_data = {"message": "Success"}
+    return {"message": "Success"}, 200
+
+@app.route("/runTraining", methods=["POST"])
+def runTraining():
+    data = request.form
+    file = request.files["credentialsFile"]
+    file_contents = file.read().decode("utf-8")
+    sheetId = data.get("spreadsheetId")
+    customerName = data.get("customerName")
+
+    data_range = data.get("range")
+
+    # Save the credentials contents to a temporary file
+    temp_credentials_path = "temporaryCredentials.json"
+    with open(temp_credentials_path, "w") as temp_file:
+        temp_file.write(file_contents)
+
+    sheetData = getSpreadsheetData(temp_credentials_path, sheetId, "Details!$" + data_range)
+    df = cleanSpreadSheetData(sheetData,["index", "description","source","date","debit","credit","category"])
+    df.to_csv("cleaned_trained.csv")
+    df = df.drop_duplicates(subset=["description"])
+    # df['item_id'] = range(1, len(df) + 1)
+    df['item_id'] = range(0, len(df))
+    df.to_csv("cleaned_trained_dropped.csv")
     storeCleanedSheetOrder(df, customerName)
-    runPrediction('saveTrainedData',customerName,'https://www.expensesorted.com/api/finishedTrainingHook',df['description'].tolist())
+    prediction = runPrediction('saveTrainedData',customerName,'https://www.expensesorted.com/api/finishedTrainingHook',df['description'].tolist())
+    print("🚀 ~ file: main.py:66 ~ prediction:", prediction)
 
     print("🚀 ~ file: main.py:30 ~ df:", df)
     # response_data = {"message": "Success"}
@@ -56,7 +85,8 @@ def runPrediction(apiMode, customerName, sheetApi, training_data):
     prediction = replicate.predictions.create(
         version=version,
         input={"text_batch": json.dumps(training_data)},
-        webhook = f"https://pythonhandler-yxxxtrqkpa-ts.a.run.app/{apiMode}?customerName={customerName}&sheetApi={sheetApi}",
+        # webhook = f"https://pythonhandler-yxxxtrqkpa-ts.a.run.app/{apiMode}?customerName={customerName}&sheetApi={sheetApi}",
+        webhook = f"https://555d-120-88-75-106.ngrok-free.app/{apiMode}?customerName={customerName}&sheetApi={sheetApi}",
         webhook_events_filter=["completed"],
     )
     return prediction
@@ -65,13 +95,22 @@ def runPrediction(apiMode, customerName, sheetApi, training_data):
 def storeCleanedSheetOrder(df, customerName):
     bucket_name = "txclassify"
     file_name = customerName + "_index.npy"
-    save_to_gcs(bucket_name, file_name, df.index.to_numpy())
+    
+    data_dict = {
+        "item_id": df["item_id"].to_numpy(),
+        "category": df["category"].to_numpy(),
+        "description": df["description"].to_numpy()
+    }
+    
+    structured_array = np.array(list(zip(data_dict["item_id"], data_dict["category"], data_dict["description"])),
+                                dtype=[("item_id", int), ("category", object), ("description", object)])
+    
+    save_to_gcs(bucket_name, file_name, structured_array)
 
 
-def cleanSpreadSheetData(sheetData):
-    df = pd.DataFrame(sheetData, columns=["index", "description"])
-    df["description"] = df["description"].apply(clean_Text)
-    df = df.drop_duplicates(subset=["description"])
+def cleanSpreadSheetData(sheetData, columns):
+    df = pd.DataFrame(sheetData, columns=columns)
+    df["description"] = df["description"].apply(clean_Text)    
     return df
 
 
@@ -84,20 +123,18 @@ def getSpreadsheetData(keyFile, sheetId, range):
     creds = Credentials.from_service_account_file(
         keyFile, scopes=["https://www.googleapis.com/auth/spreadsheets"]
     )
-    service = build("sheets", "v4", credentials=creds)
-
-    sheetAndRange = "Details!$" + range
+    service = build("sheets", "v4", credentials=creds)    
 
     result = (
         service.spreadsheets()
         .values()
-        .get(spreadsheetId=sheetId, range=sheetAndRange)
+        .get(spreadsheetId=sheetId, range=range)
         .execute()
     )
     values = result.get("values", [])
     return values
 
-
+# Webhook
 @app.route("/saveTrainedData", methods=["POST"])
 def handle_webhook():
     """Handle incoming webhook from Replicate."""
@@ -121,7 +158,7 @@ def handle_webhook():
 
     return "", 200
 
-
+# Webhook
 @app.route("/classify", methods=["POST"])
 def handle_classify_webhook():
     """Handle incoming webhook from Replicate."""
@@ -137,7 +174,6 @@ def handle_classify_webhook():
     data_list = json.loads(data_string)
 
     df_unclassified_data = pd.DataFrame(data_list, columns=["description"])
-    print("🚀 ~ file: main.py:41 ~ df_unclassified_data:", df_unclassified_data)
 
     new_embeddings = json_to_embeddings(data)
 
@@ -148,7 +184,22 @@ def handle_classify_webhook():
     output = classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings)
 
     df_output = pd.DataFrame.from_dict(output)
-    print(df_output)
+    print("🚀 ~ file: main.py:178 ~ df_output:", df_output)
+    
+    trainedIndexCategories = fetch_from_gcs(bucket_name,customerName + "_index.npy")
+    print("🚀 ~ file: main.py:181 ~ trainedIndexCategories:", trainedIndexCategories)
+    
+    trained_categories_df = pd.DataFrame(trainedIndexCategories)
+    
+    # Merge the two DataFrames based on the index
+    combined_df = df_output.merge(trained_categories_df, left_on="categoryIndex", right_on="item_id", how="left")
+
+    # Drop the unnecessary columns
+    combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
+    print("🚀 ~ file: main.py:199 ~ combined_df:", combined_df)
+    
+    # append new expenses to main sheet.
+    # I don't have access to the sheet from here as I don't have the credentials or the sheet data.
 
     data_dict = df_output.to_dict(orient="records")
 
@@ -168,7 +219,7 @@ def classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings):
     similarity_df = pd.DataFrame(similarity_new_data)
 
     index_similarity = similarity_df.idxmax(axis=1)
-
+    # Which trained embedding is the new embedding most similar to?
     d_output = {
         "description": desc_new_data,
         "categoryIndex": index_similarity,
@@ -205,7 +256,7 @@ def fetch_from_gcs(bucket_name, file_name):
         blob.download_to_filename(temp_file.name)
 
         # Load the numpy array from the temporary file
-        embeddings_array = np.load(temp_file.name)
+        embeddings_array = np.load(temp_file.name, allow_pickle=True)
 
     return embeddings_array
 
@@ -214,12 +265,8 @@ def extract_params_from_url(webhookUrl):
     parsed_url = urlparse(webhookUrl)
 
     query_params = parse_qs(parsed_url.query)
-    print("🚀 ~ file: main.py:134 ~ query_params:", query_params)
-
     customerName = query_params.get("customerName", [None])[0]
-    print("🚀 ~ file: main.py:137 ~ customerName:", customerName)
     sheetApi = query_params.get("sheetApi", [None])[0]
-    print("🚀 ~ file: main.py:139 ~ sheetApi:", sheetApi)
 
     sheetApi = googleScriptAPI + sheetApi + "/exec"
 
