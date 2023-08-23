@@ -6,7 +6,7 @@ export default function Demo() {
   const [spreadsheetLink, setSpreadsheetLink] = useState(
     "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
   );
-  const [dataTabTraining, setDataTabTraining] = useState("A2:G200");
+  const [dataTabTraining, setDataTabTraining] = useState("A2:F200");
   const [dataTabClassify, setDataTabClassify] = useState("A1:C200");
 
   const handleJsonKeyFileChange = (event: any) => {
@@ -116,7 +116,7 @@ export default function Demo() {
   const handleClassifyClick = async () => {
     // Provide the necessary parameters
     const spreadsheetId = spreadsheetLink;
-    const range = dataTabTraining;
+    const range = dataTabClassify;
 
     const formData = new FormData();
     if (jsonKeyFile) {
@@ -156,7 +156,7 @@ export default function Demo() {
             Step 1: Train Your Model
           </h1>
 
-          <label className="block">
+          {/* <label className="block">
             Upload JSON Key File:
             <input
               type="file"
@@ -164,7 +164,7 @@ export default function Demo() {
               accept=".json"
               className="mt-1"
             />
-          </label>
+          </label> */}
 
           <label className="block">
             Spreadsheet ID:
@@ -202,7 +202,7 @@ export default function Demo() {
             Step 2: Classify your Expenses
           </h1>
           <p>Add your expenses to the sheet tab: new_dump</p>
-          <label className="block">
+          {/* <label className="block">
             Upload JSON Key File:
             <input
               type="file"
@@ -210,7 +210,7 @@ export default function Demo() {
               accept=".json"
               className="mt-1"
             />
-          </label>
+          </label> */}
 
           <label className="block">
             Spreadsheet ID:
