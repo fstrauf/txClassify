@@ -18,12 +18,14 @@ export default function Home() {
             Hook this up to your Google Sheet and speed up your monthly
             workflow.
           </p>
-          <Link
-            className="bg-first items-center justify-center hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out"
-            href="/fuck-you-money-sheet"
-          >
-            Get the Google Sheet Template
-          </Link>
+          <div className="text-center">
+            <Link
+              className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out inline-block"
+              href="/fuck-you-money-sheet"
+            >
+              Get the Google Sheet Template
+            </Link>
+          </div>
           <div className="mt-6">
             <Image
               width={852}
