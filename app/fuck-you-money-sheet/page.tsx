@@ -29,6 +29,7 @@ export default function FuckYouMoneySheet() {
               src="/f-you-money-overview.png"
               className="rounded-md"
               alt="Expense Sorter"
+              priority={true}
             />
           </div>
           <nav className="flex space-x-4">
