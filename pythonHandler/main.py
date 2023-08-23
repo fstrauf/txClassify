@@ -11,6 +11,8 @@ from urllib.parse import urlparse, parse_qs
 import os
 import re
 from flask_cors import CORS
+from googleapiclient.discovery import build
+from google.oauth2.service_account import Credentials
 
 app = Flask(__name__)
 CORS(app)  # Allow all origins
@@ -35,7 +37,7 @@ def runClassify():
     with open(temp_credentials_path, "w") as temp_file:
         temp_file.write(file_contents)
 
-    sheetData = getSpreadsheetData(temp_credentials_path, sheetId, "new_dump!$" + range)
+    sheetData = getSpreadsheetData(sheetId, "new_dump!$" + range)
     df = cleanSpreadSheetData(sheetData,["date", "debit","description"])
     prediction = runPrediction('classify',customerName,'https://www.expensesorted.com/api/finishedTrainingHook',df['description'].tolist())
     print("🚀 ~ file: main.py:41 ~ prediction:", prediction)
@@ -59,7 +61,7 @@ def runTraining():
     with open(temp_credentials_path, "w") as temp_file:
         temp_file.write(file_contents)
 
-    sheetData = getSpreadsheetData(temp_credentials_path, sheetId, "Details!$" + data_range)
+    sheetData = getSpreadsheetData(sheetId, "Details!$" + data_range)
     df = cleanSpreadSheetData(sheetData,["index", "description","source","date","debit","credit","category"])
     df.to_csv("cleaned_trained.csv")
     df = df.drop_duplicates(subset=["description"])
@@ -114,15 +116,10 @@ def cleanSpreadSheetData(sheetData, columns):
     return df
 
 
-def getSpreadsheetData(keyFile, sheetId, range):
-    print("🚀 ~ file: main.py:48 ~ range:", range)
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-    from google.oauth2.service_account import Credentials
-
-    creds = Credentials.from_service_account_file(
-        keyFile, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
+def getSpreadsheetData(sheetId, range):
+    google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
+    print("🚀 ~ file: main.py:121 ~ google_service_account:", google_service_account)
+    creds = get_service_account_credentials(json.loads(google_service_account))
     service = build("sheets", "v4", credentials=creds)    
 
     result = (
@@ -133,6 +130,15 @@ def getSpreadsheetData(keyFile, sheetId, range):
     )
     values = result.get("values", [])
     return values
+
+def get_service_account_credentials(json_content):
+    creds = Credentials.from_service_account_info(
+        json_content,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return creds
+
+
 
 # Webhook
 @app.route("/saveTrainedData", methods=["POST"])
