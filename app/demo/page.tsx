@@ -1,82 +1,30 @@
-'use client'
+"use client";
+import Link from "next/link";
 import React, { useState } from "react";
 
 export default function Demo() {
-  const [jsonKeyFile, setJsonKeyFile] = useState(null);
+  // const [jsonKeyFile, setJsonKeyFile] = useState(null);
   const [spreadsheetLink, setSpreadsheetLink] = useState(
     "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
   );
   const [dataTabTraining, setDataTabTraining] = useState("A2:F200");
   const [dataTabClassify, setDataTabClassify] = useState("A1:C200");
 
-  const handleJsonKeyFileChange = (event: any) => {
-    setJsonKeyFile(event.target.files[0]);
-  };
+  // const handleJsonKeyFileChange = (event: any) => {
+  //   setJsonKeyFile(event.target.files[0]);
+  // };
 
   const handleSpreadsheetLinkChange = (event: any) => {
     setSpreadsheetLink(event.target.value);
   };
 
-  const handleDataTabTrainingChange = (event:any) => {
+  const handleDataTabTrainingChange = (event: any) => {
     setDataTabTraining(event.target.value);
   };
 
-  const handleDataTabClassifyChange = (event:any) => {
+  const handleDataTabClassifyChange = (event: any) => {
     setDataTabClassify(event.target.value);
   };
-
-  // async function callCleanAndPredict(training_data:[]) {
-  //   const apiMode = 'saveTrainedData' //saveTrainedData || classify
-  //   const customerName = 'Flo'
-  //   const sheetApi = 'https://www.expensesorted.com/api/finishedTrainingHook'
-  //   var body = {training_data, apiMode, customerName, sheetApi}
-  //   try {
-  //     console.log('Running Prediction')
-  //     const response = await fetch("/api/cleanAndPredict", {
-  //       method: "POST",
-  //       body: JSON.stringify(body),
-  //     });
-
-  //     if (response.ok) {
-  //       const data = await response.json();
-  //       console.log("🚀 ~ file: page.tsx:37 ~ runPrediction ~ data:", data)
-
-  //     } else {
-  //       console.error("API call failed with status:", response.status);
-  //       // Handle the error case
-  //     }
-  //   } catch (error) {
-  //     console.error("An error occurred:", error);
-  //     // Handle the error case
-  //   }
-  // }
-
-  
-  // async function runPrediction(training_data: undefined) {
-  //   const apiMode = 'saveTrainedData' //saveTrainedData || classify
-  //   const customerName = 'Flo'
-  //   const sheetApi = 'https://www.expensesorted.com/api/finishedTrainingHook'
-  //   var body = {training_data, apiMode, customerName, sheetApi}
-  //   try {
-  //     console.log('Running Prediction')
-  //     const response = await fetch("/api/runPrediction", {
-  //       method: "POST",
-  //       body: JSON.stringify(body),
-  //     });
-
-  //     if (response.ok) {
-  //       const data = await response.json();
-  //       console.log("🚀 ~ file: page.tsx:37 ~ runPrediction ~ data:", data)
-
-  //     } else {
-  //       console.error("API call failed with status:", response.status);
-  //       // Handle the error case
-  //     }
-  //   } catch (error) {
-  //     console.error("An error occurred:", error);
-  //     // Handle the error case
-  //   }
-  // }
 
   const handleTrainClick = async () => {
     // Provide the necessary parameters
@@ -84,9 +32,9 @@ export default function Demo() {
     const range = dataTabTraining;
 
     const formData = new FormData();
-    if (jsonKeyFile) {
-      formData.append("credentialsFile", jsonKeyFile);
-    }
+    // if (jsonKeyFile) {
+    //   formData.append("credentialsFile", jsonKeyFile);
+    // }
     if (spreadsheetId) {
       formData.append("spreadsheetId", spreadsheetId);
     }
@@ -94,7 +42,7 @@ export default function Demo() {
       formData.append("range", range);
     }
 
-    formData.append('customerName', 'fs')
+    formData.append("customerName", "fs");
 
     try {
       const response = await fetch("/api/cleanAndPredict", {
@@ -119,9 +67,9 @@ export default function Demo() {
     const range = dataTabClassify;
 
     const formData = new FormData();
-    if (jsonKeyFile) {
-      formData.append("credentialsFile", jsonKeyFile);
-    }
+    // if (jsonKeyFile) {
+    //   formData.append("credentialsFile", jsonKeyFile);
+    // }
     if (spreadsheetId) {
       formData.append("spreadsheetId", spreadsheetId);
     }
@@ -129,7 +77,7 @@ export default function Demo() {
       formData.append("range", range);
     }
 
-    formData.append('customerName', 'fs')
+    formData.append("customerName", "fs");
 
     try {
       const response = await fetch("/api/cleanAndClassify", {
@@ -155,17 +103,9 @@ export default function Demo() {
           <h1 className="text-3xl font-bold leading-tight text-center">
             Step 1: Train Your Model
           </h1>
-
-          {/* <label className="block">
-            Upload JSON Key File:
-            <input
-              type="file"
-              onChange={handleJsonKeyFileChange}
-              accept=".json"
-              className="mt-1"
-            />
-          </label> */}
-
+          <p>you need to authorise this email to edit your sheet (it's a service account that allows the script to read and write the classified expenses.</p>
+          <p>The tool will currently only work with the <Link href='/fuck-you-money-sheet'>Fuck You Money Sheet</Link></p>
+          <p>Add some classified expenses to the 'Details' tab prior to training</p>
           <label className="block">
             Spreadsheet ID:
             <input
@@ -201,17 +141,10 @@ export default function Demo() {
           <h1 className="text-3xl font-bold leading-tight text-center">
             Step 2: Classify your Expenses
           </h1>
-          <p>Add your expenses to the sheet tab: new_dump</p>
-          {/* <label className="block">
-            Upload JSON Key File:
-            <input
-              type="file"
-              onChange={handleJsonKeyFileChange}
-              accept=".json"
-              className="mt-1"
-            />
-          </label> */}
-
+          
+          <p>you need to authorise this email to edit your sheet (it's a service account that allows the script to read and write the classified expenses.</p>
+          <p>The tool will currently only work with the <Link href='/fuck-you-money-sheet'>Fuck You Money Sheet</Link></p>
+          <p>Add your expenses to the sheet tab: 'new_dump' - use the format of the example values</p>
           <label className="block">
             Spreadsheet ID:
             <input
@@ -245,5 +178,3 @@ export default function Demo() {
     </div>
   );
 }
-
-
