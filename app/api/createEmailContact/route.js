@@ -21,7 +21,12 @@ export async function POST(req) {
     console.log("SendFox API Response Headers:", response.headers);
 
     if (response.ok) {
-      const jsonResponse = await response.json();
+      const rawResponse = await response.arrayBuffer();
+      const decompressedResponse = gunzipSync(Buffer.from(rawResponse));
+
+      // Parse the decompressed response as JSON
+      const jsonResponse = JSON.parse(decompressedResponse.toString());
+
       return NextResponse.json(jsonResponse);
     } else {
       console.error("Error creating contact:", response.statusText);
