@@ -23,7 +23,7 @@ api_key = os.environ.get("replicate_API_KEY")
 
 # googleScriptAPI = "https://script.google.com/macros/s/AKfycby3MVHQKrMBzDVeWKxy77gdvuWhXa-m-LUMnvoqLHrcHcJg53FzEeDLd-GaXLSeA8zM/exec"
 googleScriptAPI = "https://script.google.com/macros/s/"
-mainSheetId = "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
+# sheetId = "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
 
 
 @app.route("/runClassify", methods=["POST"])
@@ -53,7 +53,7 @@ def runClassify():
 def runTraining():
     data = request.form
     sheetId = data.get("spreadsheetId")
-    customerName = data.get("customerName")
+    # customerName = data.get("customerName")
 
     data_range = data.get("range")
 
@@ -65,11 +65,11 @@ def runTraining():
     df = df.drop_duplicates(subset=["description"])
     df["item_id"] = range(0, len(df))
 
-    storeCleanedSheetOrder(df, customerName)
+    storeCleanedSheetOrder(df, sheetId)
 
     res = runPrediction(        
         "saveTrainedData",
-        customerName,
+        sheetId,
         "https://www.expensesorted.com/api/finishedTrainingHook",
         df["description"].tolist(),
     )
@@ -89,13 +89,13 @@ def handle_webhook():
     print("Status:", data.get("status"))
 
     webhookUrl = data.get("webhook")
-    customerName, sheetApi, runKey  = extract_params_from_url(webhookUrl)
+    sheetId, sheetApi, runKey  = extract_params_from_url(webhookUrl)
     
     if checkHasRunYet(runKey,"Expense-Detail!$P3:P3"):
         return "Training has already run", 200
 
     bucket_name = "txclassify"
-    file_name = customerName + ".npy"
+    file_name = sheetId + ".npy"
 
     embeddings_array = json_to_embeddings(data)
 
@@ -120,7 +120,7 @@ def handle_classify_webhook():
     print("Status:", data.get("status"))
 
     webhookUrl = data.get("webhook")
-    customerName, sheetApi, runKey = extract_params_from_url(webhookUrl)
+    sheetId, sheetApi, runKey = extract_params_from_url(webhookUrl)
     
     if checkHasRunYet(runKey,"Expense-Detail!$P2:P2"):
         return "Classify has already run", 200
@@ -134,7 +134,7 @@ def handle_classify_webhook():
     new_embeddings = json_to_embeddings(data)
 
     bucket_name = "txclassify"
-    file_name = customerName + ".npy"
+    file_name = sheetId + ".npy"
     trained_embeddings = fetch_from_gcs(bucket_name, file_name)
 
     output = classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings)
@@ -142,7 +142,7 @@ def handle_classify_webhook():
     df_output = pd.DataFrame.from_dict(output)
     print("🚀 ~ file: main.py:178 ~ df_output:", df_output)
 
-    trainedIndexCategories = fetch_from_gcs(bucket_name, customerName + "_index.npy")
+    trainedIndexCategories = fetch_from_gcs(bucket_name, sheetId + "_index.npy")
 
     trained_categories_df = pd.DataFrame(trainedIndexCategories)
 
@@ -154,7 +154,7 @@ def handle_classify_webhook():
     # Drop the unnecessary columns
     combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
 
-    newExpenses = getSpreadsheetData(mainSheetId, "new_dump!$A1:C200")
+    newExpenses = getSpreadsheetData(sheetId, "new_dump!$A1:C200")
     
     df_newExpenses = prepSpreadSheetData(newExpenses, combined_df)
 
@@ -197,7 +197,7 @@ def prepSpreadSheetData(newExpenses, combined_df):
     ]
     return df_newExpenses
     
-def updateRunStatus(new_value, data_range):
+def updateRunStatus(new_value, data_range, sheetId):
     google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     creds = get_service_account_credentials(json.loads(google_service_account))
     service = build("sheets", "v4", credentials=creds)
@@ -210,7 +210,7 @@ def updateRunStatus(new_value, data_range):
     # Execute the update request
     try:
         response = service.spreadsheets().values().update(
-            spreadsheetId=mainSheetId,
+            spreadsheetId=sheetId,
             range=data_range,
             valueInputOption="RAW",
             body=update_request
@@ -222,10 +222,10 @@ def updateRunStatus(new_value, data_range):
         print(f"An error occurred: {e}")
 
 
-def checkHasRunYet(runKey, data_range):
+def checkHasRunYet(runKey, data_range, sheetId):
     print("🚀 ~ file: main.py:223 ~ runKey:", runKey)
 
-    storedTimestamps = getSpreadsheetData(mainSheetId, data_range)
+    storedTimestamps = getSpreadsheetData(sheetId, data_range)
     if storedTimestamps:
         storedTimestamp = storedTimestamps[0][0]  # Extract the timestamp string
         print("🚀 ~ file: main.py:226 ~ storedTimestamp:", storedTimestamp)
@@ -235,7 +235,7 @@ def checkHasRunYet(runKey, data_range):
     return False
 
     
-def runPrediction(apiMode, customerName, sheetApi, training_data):
+def runPrediction(apiMode, sheetId, sheetApi, training_data):
     import replicate
     
     runKey = generate_timestamp()
@@ -251,13 +251,13 @@ def runPrediction(apiMode, customerName, sheetApi, training_data):
         version=version,
         input={"text_batch": json.dumps(training_data)},
         # webhook = f"https://pythonhandler-yxxxtrqkpa-ts.a.run.app/{apiMode}?customerName={customerName}&sheetApi={sheetApi}",
-        webhook=f"https://555d-120-88-75-106.ngrok-free.app/{apiMode}?customerName={customerName}&runKey={runKey}&sheetApi={sheetApi}",
+        webhook=f"https://555d-120-88-75-106.ngrok-free.app/{apiMode}?sheetId={sheetId}&runKey={runKey}&sheetApi={sheetApi}",
         webhook_events_filter=["completed"],
     )
     return prediction
 
 
-def append_mainSheet(df):
+def append_mainSheet(df, sheetId):
     google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     creds = get_service_account_credentials(json.loads(google_service_account))
     service = build("sheets", "v4", credentials=creds)
@@ -269,7 +269,7 @@ def append_mainSheet(df):
         service.spreadsheets()
         .values()
         .append(
-            spreadsheetId=mainSheetId,
+            spreadsheetId=sheetId,
             range="Expense-Detail!$A1:G",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
@@ -303,7 +303,7 @@ def append_mainSheet(df):
     #         ],
     #         "fields": "userEnteredFormat.backgroundColor",
     #         "range": {
-    #             "sheetId": mainSheetId,  # Update with the actual sheet ID
+    #             "sheetId": sheetId,  # Update with the actual sheet ID
     #             "startRowIndex": last_row_index,  # Update with the actual row index
     #             "endRowIndex": last_row_index + 1,
     #             "startColumnIndex": 0,
@@ -314,7 +314,7 @@ def append_mainSheet(df):
 
     # # Execute the update request
     # batch_update_request = {"requests": [update_request]}
-    # service.spreadsheets().batchUpdate(spreadsheetId=mainSheetId, body=batch_update_request).execute()
+    # service.spreadsheets().batchUpdate(spreadsheetId=sheetId, body=batch_update_request).execute()
 
 
 def classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings):
