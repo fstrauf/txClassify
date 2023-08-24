@@ -1,13 +1,12 @@
 import Link from "next/link";
+import CopyableText from "./copyableText";
 
 export default function Instructions() {
   return (
     <ol className="list-decimal ml-8 prose prose-invert mx-auto">
       <li>
         Share your sheet with{" "}
-        <span className="bg-first text-white">
-          expense-sorted@txclassify.iam.gserviceaccount.com
-        </span>{" "}
+        <CopyableText textToCopy='expense-sorted@txclassify.iam.gserviceaccount.com'/>
         (it's a service account that allows the script to read and write the
         classified expenses.
       </li>
