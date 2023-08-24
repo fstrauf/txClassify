@@ -7,3 +7,4 @@ scikit-learn
 google-api-python-client
 Flask-Cors
 google-auth
+gunicorn
