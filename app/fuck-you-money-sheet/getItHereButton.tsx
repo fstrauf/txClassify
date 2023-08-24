@@ -42,7 +42,7 @@ export default function GetItHereButton() {
           target="_blank"
           rel="noopener noreferrer"
         >
-          Download Now
+          Download Spreadsheet
         </a>
       ) : (
         <button
