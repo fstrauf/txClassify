@@ -62,7 +62,7 @@ export default function Demo() {
       formData.append("range", range);
     }
 
-    formData.append("customerName", spreadsheetId);
+    formData.append("spreadsheetId", spreadsheetId);
 
     try {
       const response = await fetch("/api/cleanAndClassify", {
@@ -124,7 +124,7 @@ export default function Demo() {
             >
               Train
             </button>
-            <p className="prose prose-invert">{statusText}</p>
+            {/* <p className="prose prose-invert text-xs">{statusText}</p> */}
           </div>
         </div>
       </div>

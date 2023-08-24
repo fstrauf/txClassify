@@ -30,7 +30,7 @@ googleScriptAPI = "https://script.google.com/macros/s/"
 def runClassify():
     data = request.form
     sheetId = data.get("spreadsheetId")
-    customerName = data.get("customerName")
+    # sheetId = data.get("customerName")
 
     data_range = data.get("range")
 
@@ -39,7 +39,7 @@ def runClassify():
 
     runPrediction(
         "classify",
-        customerName,
+        sheetId,
         "https://www.expensesorted.com/api/finishedTrainingHook",
         df["description"].tolist(),
     )
@@ -91,7 +91,7 @@ def handle_webhook():
     webhookUrl = data.get("webhook")
     sheetId, sheetApi, runKey  = extract_params_from_url(webhookUrl)
     
-    if checkHasRunYet(runKey,"Expense-Detail!$P3:P3"):
+    if checkHasRunYet(runKey,"Expense-Detail!$P3:P3",sheetId):
         return "Training has already run", 200
 
     bucket_name = "txclassify"
@@ -103,7 +103,7 @@ def handle_webhook():
 
     new_dict = {"status": "saveTrainedData", "data": None}
     
-    updateRunStatus(runKey, "Expense-Detail!$P3:P3")
+    updateRunStatus(runKey, "Expense-Detail!$P3:P3", sheetId)
 
     new_json = json.dumps(new_dict)
     requests.post(sheetApi, data=new_json)
@@ -122,7 +122,7 @@ def handle_classify_webhook():
     webhookUrl = data.get("webhook")
     sheetId, sheetApi, runKey = extract_params_from_url(webhookUrl)
     
-    if checkHasRunYet(runKey,"Expense-Detail!$P2:P2"):
+    if checkHasRunYet(runKey,"Expense-Detail!$P2:P2",sheetId):
         return "Classify has already run", 200
 
     data_string = data.get("input").get("text_batch")
@@ -163,7 +163,7 @@ def handle_classify_webhook():
     except:
         return "error", 500
     
-    updateRunStatus(runKey,"Expense-Detail!$P2:P2")
+    updateRunStatus(runKey,"Expense-Detail!$P2:P2",sheetId)
 
     # data_dict = df_output.to_dict(orient="records")
 
@@ -370,13 +370,13 @@ def extract_params_from_url(webhookUrl):
     parsed_url = urlparse(webhookUrl)
 
     query_params = parse_qs(parsed_url.query)
-    customerName = query_params.get("customerName", [None])[0]
+    sheetId = query_params.get("sheetId", [None])[0]
     sheetApi = query_params.get("sheetApi", [None])[0]
     runKey = query_params.get("runKey", [None])[0]
 
     sheetApi = googleScriptAPI + sheetApi + "/exec"
 
-    return customerName, sheetApi, runKey
+    return sheetId, sheetApi, runKey
 
 
 def clean_Text(text):
