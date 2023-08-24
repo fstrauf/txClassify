@@ -9,12 +9,12 @@ import requests
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
 from urllib.parse import urlparse, parse_qs
-import os
 import re
 from flask_cors import CORS
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
 from datetime import datetime
+import replicate
 
 app = Flask(__name__)
 CORS(app)  # Allow all origins
@@ -238,9 +238,7 @@ def checkHasRunYet(runKey, data_range, sheetId):
     return False
 
 
-def runPrediction(apiMode, sheetId, sheetApi, training_data):
-    import replicate
-
+def runPrediction(apiMode, sheetId, sheetApi, training_data):    
     runKey = generate_timestamp()
     print("🚀 ~ file: main.py:238 ~ runKey:", runKey)
 
