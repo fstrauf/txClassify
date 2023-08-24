@@ -28,7 +28,7 @@ export default function Demo() {
       formData.append("range", range);
     }
 
-    formData.append("customerName", spreadsheetId);
+    // formData.append("customerName", spreadsheetId);
 
     try {
       setStatusText(`Training started based on sheet ${spreadsheetId}`)
@@ -56,7 +56,7 @@ export default function Demo() {
     const formData = new FormData();
 
     if (spreadsheetId) {
-      formData.append("spreadsheetId", spreadsheetId);
+      // formData.append("spreadsheetId", spreadsheetId);
     }
     if (range) {
       formData.append("range", range);
@@ -117,14 +117,14 @@ export default function Demo() {
               className="mt-1 text-black w-full"
             />
           </label> */}
-          <div className="flex">
+          <div className="flex gap-3">
             <button
               onClick={handleTrainClick}
               className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
             >
               Train
             </button>
-            <p>{statusText}</p>
+            <p className="prose prose-invert">{statusText}</p>
           </div>
         </div>
       </div>
