@@ -18,7 +18,8 @@ export async function POST(req) {
     console.log("SendFox API Response Status:", response.status);
     const responseText = await response.text();
     console.log("SendFox API Response Text:", responseText);
-  
+    console.log("SendFox API Response Headers:", response.headers);
+
     if (response.ok) {
       const jsonResponse = await response.json();
       return NextResponse.json(jsonResponse);
