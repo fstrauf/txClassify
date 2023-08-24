@@ -56,25 +56,26 @@ def runTraining():
     # customerName = data.get("customerName")
 
     data_range = data.get("range")
+    print("🚀 ~ file: main.py:59 ~ data_range:", data_range)
 
     sheetData = getSpreadsheetData(sheetId, "Expense-Detail!$" + data_range)
-    df = cleanSpreadSheetData(
+    print("🚀 ~ file: main.py:62 ~ sheetData:", sheetData)
+    df = cleanSpreadSheetData(        
         sheetData,
-        ["date", "description", "source", "debit", "credit", "category"],
+        ["source", "date", "description", "debit", "credit", "category"],
     )
+    print("🚀 ~ file: main.py:64 ~ df:", df)
     df = df.drop_duplicates(subset=["description"])
     df["item_id"] = range(0, len(df))
 
     storeCleanedSheetOrder(df, sheetId)
 
-    res = runPrediction(        
-        "saveTrainedData",
+    res = runPrediction(
+        "training",
         sheetId,
         "https://www.expensesorted.com/api/finishedTrainingHook",
         df["description"].tolist(),
     )
-    
-    print("🚀 ~ file: main.py:71 ~ res:", res)
 
     print("🚀 ~ file: main.py:30 ~ df:", df)
 
@@ -82,16 +83,16 @@ def runTraining():
 
 
 # Webhook
-@app.route("/saveTrainedData", methods=["POST"])
+@app.route("/training", methods=["POST"])
 def handle_webhook():
     """Handle incoming webhook from Replicate."""
     data = request.get_json()
     print("Status:", data.get("status"))
 
     webhookUrl = data.get("webhook")
-    sheetId, sheetApi, runKey  = extract_params_from_url(webhookUrl)
-    
-    if checkHasRunYet(runKey,"Expense-Detail!$P3:P3",sheetId):
+    sheetId, sheetApi, runKey = extract_params_from_url(webhookUrl)
+
+    if checkHasRunYet(runKey, "Expense-Detail!$P3:P3", sheetId):
         return "Training has already run", 200
 
     bucket_name = "txclassify"
@@ -102,7 +103,7 @@ def handle_webhook():
     save_to_gcs(bucket_name, file_name, embeddings_array)
 
     new_dict = {"status": "saveTrainedData", "data": None}
-    
+
     updateRunStatus(runKey, "Expense-Detail!$P3:P3", sheetId)
 
     new_json = json.dumps(new_dict)
@@ -115,71 +116,71 @@ def handle_webhook():
 @app.route("/classify", methods=["POST"])
 def handle_classify_webhook():
     """Handle incoming webhook from Replicate."""
-    data = request.get_json()
-
-    print("Status:", data.get("status"))
-
-    webhookUrl = data.get("webhook")
-    sheetId, sheetApi, runKey = extract_params_from_url(webhookUrl)
-    
-    if checkHasRunYet(runKey,"Expense-Detail!$P2:P2",sheetId):
-        return "Classify has already run", 200
-
-    data_string = data.get("input").get("text_batch")
-
-    data_list = json.loads(data_string)
-
-    df_unclassified_data = pd.DataFrame(data_list, columns=["description"])
-
-    new_embeddings = json_to_embeddings(data)
-
-    bucket_name = "txclassify"
-    file_name = sheetId + ".npy"
-    trained_embeddings = fetch_from_gcs(bucket_name, file_name)
-
-    output = classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings)
-
-    df_output = pd.DataFrame.from_dict(output)
-    print("🚀 ~ file: main.py:178 ~ df_output:", df_output)
-
-    trainedIndexCategories = fetch_from_gcs(bucket_name, sheetId + "_index.npy")
-
-    trained_categories_df = pd.DataFrame(trainedIndexCategories)
-
-    # Merge the two DataFrames based on the index
-    combined_df = df_output.merge(
-        trained_categories_df, left_on="categoryIndex", right_on="item_id", how="left"
-    )
-
-    # Drop the unnecessary columns
-    combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
-
-    newExpenses = getSpreadsheetData(sheetId, "new_dump!$A1:C200")
-    
-    df_newExpenses = prepSpreadSheetData(newExpenses, combined_df)
-
     try:
-        append_mainSheet(df_newExpenses)
-    except:
-        return "error", 500
-    
-    updateRunStatus(runKey,"Expense-Detail!$P2:P2",sheetId)
+        data = request.get_json()
 
-    # data_dict = df_output.to_dict(orient="records")
+        print("Status:", data.get("status"))
 
-    # new_dict = {"status": "classify", "data": data_dict}
+        webhookUrl = data.get("webhook")
+        sheetId, sheetApi, runKey = extract_params_from_url(webhookUrl)
 
-    # new_json = json.dumps(new_dict)
+        if checkHasRunYet(runKey, "Expense-Detail!$P2:P2", sheetId):
+            return "Classify has already run", 200
 
-    # response = requests.post(sheetApi, data=new_json)
+        data_string = data.get("input").get("text_batch")
 
-    # return {"google_apps_script_status_code": response.status_code}, 200
-    return "", 200
+        data_list = json.loads(data_string)
+
+        df_unclassified_data = pd.DataFrame(data_list, columns=["description"])
+
+        new_embeddings = json_to_embeddings(data)
+
+        bucket_name = "txclassify"
+        file_name = sheetId + ".npy"
+        trained_embeddings = fetch_from_gcs(bucket_name, file_name)
+
+        output = classify_expenses(
+            df_unclassified_data, trained_embeddings, new_embeddings
+        )
+
+        df_output = pd.DataFrame.from_dict(output)
+        print("🚀 ~ file: main.py:178 ~ df_output:", df_output)
+
+        trainedIndexCategories = fetch_from_gcs(bucket_name, sheetId + "_index.npy")
+
+        trained_categories_df = pd.DataFrame(trainedIndexCategories)
+
+        # Merge the two DataFrames based on the index
+        combined_df = df_output.merge(
+            trained_categories_df,
+            left_on="categoryIndex",
+            right_on="item_id",
+            how="left",
+        )
+
+        # Drop the unnecessary columns
+        combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
+
+        newExpenses = getSpreadsheetData(sheetId, "new_dump!$A1:C200")
+
+        df_newExpenses = prepSpreadSheetData(newExpenses, combined_df)
+
+        append_mainSheet(df_newExpenses, sheetId)  # Explicitly pass sheetId here
+
+        updateRunStatus(runKey, "Expense-Detail!$P2:P2", sheetId)
+
+        return "", 200
+
+    except Exception as e:
+        error_message = f"An error occurred: {str(e)}"
+        return error_message, 500
+
 
 def generate_timestamp():
     current_time = datetime.now()
     timestamp = current_time.strftime("%Y-%m-%d-%H-%M-%S")
     return timestamp
+
 
 def prepSpreadSheetData(newExpenses, combined_df):
     df_newExpenses = pd.DataFrame(newExpenses, columns=["date", "debit", "description"])
@@ -193,28 +194,32 @@ def prepSpreadSheetData(newExpenses, combined_df):
 
     # Reorder the columns in the DataFrame
     df_newExpenses = df_newExpenses[
-        ["date", "description", "source", "debit", "credit", "category"]
+        ["source", "date", "description", "debit", "credit", "category"]
     ]
     return df_newExpenses
-    
+
+
 def updateRunStatus(new_value, data_range, sheetId):
     google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     creds = get_service_account_credentials(json.loads(google_service_account))
     service = build("sheets", "v4", credentials=creds)
 
     # Prepare the update request
-    update_request = {
-        "values": [[new_value]]
-    }
+    update_request = {"values": [[new_value]]}
 
     # Execute the update request
     try:
-        response = service.spreadsheets().values().update(
-            spreadsheetId=sheetId,
-            range=data_range,
-            valueInputOption="RAW",
-            body=update_request
-        ).execute()
+        response = (
+            service.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=sheetId,
+                range=data_range,
+                valueInputOption="RAW",
+                body=update_request,
+            )
+            .execute()
+        )
 
         print("🚀 ~ Update response:", response)
         print("Cell value updated successfully.")
@@ -223,21 +228,19 @@ def updateRunStatus(new_value, data_range, sheetId):
 
 
 def checkHasRunYet(runKey, data_range, sheetId):
-    print("🚀 ~ file: main.py:223 ~ runKey:", runKey)
 
     storedTimestamps = getSpreadsheetData(sheetId, data_range)
     if storedTimestamps:
         storedTimestamp = storedTimestamps[0][0]  # Extract the timestamp string
-        print("🚀 ~ file: main.py:226 ~ storedTimestamp:", storedTimestamp)
-        
+
         if runKey == storedTimestamp:
             return True
     return False
 
-    
+
 def runPrediction(apiMode, sheetId, sheetApi, training_data):
     import replicate
-    
+
     runKey = generate_timestamp()
     print("🚀 ~ file: main.py:238 ~ runKey:", runKey)
 
@@ -245,7 +248,7 @@ def runPrediction(apiMode, sheetId, sheetApi, training_data):
     version = model.versions.get(
         "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
     )
-    
+
     # &runKey={runKey}
     prediction = replicate.predictions.create(
         version=version,
@@ -416,7 +419,6 @@ def cleanSpreadSheetData(sheetData, columns):
 
 
 def getSpreadsheetData(sheetId, range):
-    print("🚀 ~ file: main.py:419 ~ range:", range)
     google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     creds = get_service_account_credentials(json.loads(google_service_account))
     service = build("sheets", "v4", credentials=creds)
