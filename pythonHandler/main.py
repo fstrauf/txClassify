@@ -416,6 +416,7 @@ def cleanSpreadSheetData(sheetData, columns):
 
 
 def getSpreadsheetData(sheetId, range):
+    print("🚀 ~ file: main.py:419 ~ range:", range)
     google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     creds = get_service_account_credentials(json.loads(google_service_account))
     service = build("sheets", "v4", credentials=creds)

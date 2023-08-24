@@ -10,6 +10,8 @@ export default function Demo() {
   const [dataTabTraining, setDataTabTraining] = useState("A2:F200");
   const [dataTabClassify, setDataTabClassify] = useState("A1:C200");
 
+  const [statusText, setStatusText] = useState("");
+
   const handleSpreadsheetLinkChange = (event: any) => {
     setSpreadsheetLink(event.target.value);
   };
@@ -29,6 +31,7 @@ export default function Demo() {
     formData.append("customerName", spreadsheetId);
 
     try {
+      setStatusText(`Training started based on sheet ${spreadsheetId}`)
       const response = await fetch("/api/cleanAndPredict", {
         method: "POST",
         body: formData,
@@ -37,6 +40,7 @@ export default function Demo() {
       if (response.ok) {
         const data = await response.json();
         console.log("Fetched data:", data);
+        setStatusText(`Training still running - this can take a couple of minutes`)
       } else {
         console.error("API call failed with status:", response.status);
       }
@@ -89,7 +93,9 @@ export default function Demo() {
             spreadsheetLink={spreadsheetLink}
             handleSpreadsheetLinkChange={handleSpreadsheetLinkChange}
           />
-          <p className="prose prose-invert">Range A2:F200 of sheet 'Expense Detail' is selected</p>
+          <p className="prose prose-invert">
+            Range A2:F200 of sheet 'Expense Detail' is selected
+          </p>
           {/* <label className="block">
             Spreadsheet ID:
             <input
@@ -111,13 +117,15 @@ export default function Demo() {
               className="mt-1 text-black w-full"
             />
           </label> */}
-
-          <button
-            onClick={handleTrainClick}
-            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-          >
-            Train
-          </button>
+          <div className="flex">
+            <button
+              onClick={handleTrainClick}
+              className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+            >
+              Train
+            </button>
+            <p>{statusText}</p>
+          </div>
         </div>
       </div>
       <div className="flex-grow flex items-center justify-center p-10">
@@ -129,8 +137,10 @@ export default function Demo() {
           <SpreadSheetInput
             spreadsheetLink={spreadsheetLink}
             handleSpreadsheetLinkChange={handleSpreadsheetLinkChange}
-          />          
-          <p className="prose prose-invert">Range A1:C200 of sheet 'new_dump' is selected</p>
+          />
+          <p className="prose prose-invert">
+            Range A1:C200 of sheet 'new_dump' is selected
+          </p>
           {/* <label className="block">
             Spreadsheet ID:
             <div className="m-6">
