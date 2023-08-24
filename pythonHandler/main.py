@@ -19,7 +19,7 @@ import replicate
 app = Flask(__name__)
 CORS(app)  # Allow all origins
 
-api_key = os.environ.get("replicate_API_KEY")
+# api_key = os.environ.get("replicate_API_KEY")
 
 # googleScriptAPI = "https://script.google.com/macros/s/AKfycby3MVHQKrMBzDVeWKxy77gdvuWhXa-m-LUMnvoqLHrcHcJg53FzEeDLd-GaXLSeA8zM/exec"
 googleScriptAPI = "https://script.google.com/macros/s/"
