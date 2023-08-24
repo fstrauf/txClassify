@@ -5,6 +5,7 @@ import GetItHereButton from "./getItHereButton";
 import Instructions from "./instructions";
 import Intro from "./intro";
 
+
 export default function FuckYouMoneySheet() {
 
 
@@ -15,7 +16,7 @@ export default function FuckYouMoneySheet() {
           <h1 className="text-3xl font-bold leading-tight text-center">
             Fuck you Money - Cost of Living Tracking Google Sheet
           </h1>
-          <GetItHereButton/>
+          <GetItHereButton />
           <div className="mt-6">
             <Image
               width={3214 / 2}
@@ -40,8 +41,8 @@ export default function FuckYouMoneySheet() {
               Instructions
             </Link>
           </nav>
-          <Intro/>
-          <Instructions/>
+          <Intro />
+          <Instructions />
         </div>
       </main>
     </div>
