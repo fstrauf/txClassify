@@ -14,7 +14,11 @@ export async function POST(req) {
       },
       body: JSON.stringify({ email, lists: ["441356"] }),
     });
-
+  
+    console.log("SendFox API Response Status:", response.status);
+    const responseText = await response.text();
+    console.log("SendFox API Response Text:", responseText);
+  
     if (response.ok) {
       const jsonResponse = await response.json();
       return NextResponse.json(jsonResponse);
@@ -26,4 +30,5 @@ export async function POST(req) {
     console.error("Error submitting email:", error);
     return NextResponse.error("Error submitting email");
   }
+  
 }
