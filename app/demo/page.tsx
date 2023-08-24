@@ -1,11 +1,9 @@
 "use client";
 import React, { useState } from "react";
 import Instructions from "./instructions";
-import Image from "next/image";
 import SpreadSheetInput from "./spreadSheetInput";
 
 export default function Demo() {
-  // const [jsonKeyFile, setJsonKeyFile] = useState(null);
   const [spreadsheetLink, setSpreadsheetLink] = useState(
     "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
   );
@@ -15,14 +13,6 @@ export default function Demo() {
   const handleSpreadsheetLinkChange = (event: any) => {
     setSpreadsheetLink(event.target.value);
   };
-
-  // const handleDataTabTrainingChange = (event: any) => {
-  //   setDataTabTraining(event.target.value);
-  // };
-
-  // const handleDataTabClassifyChange = (event: any) => {
-  //   setDataTabClassify(event.target.value);
-  // };
 
   const handleTrainClick = async () => {
     const spreadsheetId = spreadsheetLink;
@@ -36,7 +26,7 @@ export default function Demo() {
       formData.append("range", range);
     }
 
-    formData.append("customerName", "fs");
+    formData.append("customerName", spreadsheetId);
 
     try {
       const response = await fetch("/api/cleanAndPredict", {
@@ -68,7 +58,7 @@ export default function Demo() {
       formData.append("range", range);
     }
 
-    formData.append("customerName", "fs");
+    formData.append("customerName", spreadsheetId);
 
     try {
       const response = await fetch("/api/cleanAndClassify", {
@@ -99,7 +89,7 @@ export default function Demo() {
             spreadsheetLink={spreadsheetLink}
             handleSpreadsheetLinkChange={handleSpreadsheetLinkChange}
           />
-          <p className="prose prose-invert">Range A1:C200 of sheet 'new_dump' is selected</p>
+          <p className="prose prose-invert">Range A2:F200 of sheet 'Expense Detail' is selected</p>
           {/* <label className="block">
             Spreadsheet ID:
             <input
@@ -139,8 +129,8 @@ export default function Demo() {
           <SpreadSheetInput
             spreadsheetLink={spreadsheetLink}
             handleSpreadsheetLinkChange={handleSpreadsheetLinkChange}
-          />
-          <p className="prose prose-invert">Range A2:F200 of sheet 'Expense Detail' is selected</p>
+          />          
+          <p className="prose prose-invert">Range A1:C200 of sheet 'new_dump' is selected</p>
           {/* <label className="block">
             Spreadsheet ID:
             <div className="m-6">
