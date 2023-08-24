@@ -248,13 +248,15 @@ def runPrediction(apiMode, sheetId, sheetApi, training_data):
     version = model.versions.get(
         "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
     )
+    
+    url = 'https://pythonhandler-yxxxtrqkpa-ts.a.run.app'
+    # url = 'https://555d-120-88-75-106.ngrok-free.app'
 
     # &runKey={runKey}
     prediction = replicate.predictions.create(
         version=version,
         input={"text_batch": json.dumps(training_data)},
-        # webhook = f"https://pythonhandler-yxxxtrqkpa-ts.a.run.app/{apiMode}?customerName={customerName}&sheetApi={sheetApi}",
-        webhook=f"https://555d-120-88-75-106.ngrok-free.app/{apiMode}?sheetId={sheetId}&runKey={runKey}&sheetApi={sheetApi}",
+        webhook=f"{url}/{apiMode}?sheetId={sheetId}&runKey={runKey}&sheetApi={sheetApi}",
         webhook_events_filter=["completed"],
     )
     return prediction
@@ -441,6 +443,6 @@ def get_service_account_credentials(json_content):
 
 
 if __name__ == "__main__":
-    # app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-    app.run(port=3001)
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    # app.run(port=3001)
     # app.run(debug=True, host="0.0.0.0", port=3000)
