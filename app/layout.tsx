@@ -7,8 +7,8 @@ import { UserProvider } from "@auth0/nextjs-auth0/client";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata = {
-  title: "Expense Sorted",
-  description: "Categorise your expenses using ML",
+  title: "Expense Sorted - Categorise your expenses",
+  description: "Automatically categorise your monthly expenses using AI. Hook this App up to your Google Sheet and get your monthly budgeting done in no time.",
 };
 
 export default function RootLayout({
