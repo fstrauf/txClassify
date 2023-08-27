@@ -66,6 +66,7 @@ def runTraining():
     )
     print("🚀 ~ file: main.py:64 ~ df:", df)
     df = df.drop_duplicates(subset=["description"])
+    print("🚀 ~ file: main.py:69 ~ df:", df)
     df["item_id"] = range(0, len(df))
 
     storeCleanedSheetOrder(df, sheetId)
@@ -441,6 +442,5 @@ def get_service_account_credentials(json_content):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-    # app.run(port=3001)
-    # app.run(debug=True, host="0.0.0.0", port=3000)
+    # app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(port=3001)
