@@ -1,7 +1,7 @@
 // components/Header.js
 import Image from "next/image";
 import Link from "next/link";
-import Login from "./Login";
+import {NavBarButtons} from "../components/nav-bar-buttons";
 
 export default function Header() {
   return (
@@ -23,7 +23,8 @@ export default function Header() {
           <Link href="/">Expense Sorted</Link>
         </h1>
       </div>
-
+      <NavBarButtons />
+      {/* <NavBarButtons /> */}
       {/* <Login /> */}
     </header>
   );
