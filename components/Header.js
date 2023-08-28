@@ -1,4 +1,3 @@
-// components/Header.js
 import Image from "next/image";
 import Link from "next/link";
 import {NavBarButtons} from "../components/nav-bar-buttons";
@@ -24,8 +23,7 @@ export default function Header() {
         </h1>
       </div>
       <NavBarButtons />
-      {/* <NavBarButtons /> */}
-      {/* <Login /> */}
+
     </header>
   );
 }
