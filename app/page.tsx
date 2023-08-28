@@ -4,10 +4,14 @@ import References from "../components/References";
 import FAQ from "../components/FAQ";
 import Features from "../components/Features";
 import Link from "next/link";
+import Head from "next/head";
 
 export default function Home() {
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-br from-first via-second to-third">
+      <Head>
+        <link rel="canonical" href="https://www.expensesorted.com/" />
+      </Head>
       <main className="flex-grow flex items-center justify-center p-10">
         <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
           <h1 className="text-3xl font-bold leading-tight text-center">
