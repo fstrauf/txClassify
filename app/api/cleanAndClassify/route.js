@@ -5,8 +5,8 @@ export async function POST(req) {
   const formData  = await req.formData();
   console.log("🚀 ~ file: route.js:6 ~ POST ~ formData:", formData)
 
-  const apiUrl = "https://3efe-65-181-3-157.ngrok-free.app/runClassify";
-  // const apiUrl = "https://pythonhandler-yxxxtrqkpa-ts.a.run.app/runClassify"
+  const apiUrl = `${process.env.BACKEND_API}/runClassify`;
+ 
   try {
     const response = await fetch(apiUrl, {
       method: "POST",
