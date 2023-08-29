@@ -96,6 +96,7 @@ def handle_webhook():
     sheetId, sheetApi, runKey, userId = extract_params_from_url(webhookUrl)
 
     if check_has_run_yet(runKey, "training", userId, None):
+        print("Training has already run")
         return "Training has already run", 200
 
     bucket_name = "txclassify"
@@ -129,6 +130,7 @@ def handle_classify_webhook():
         config = getUserConfig(userId)
 
         if check_has_run_yet(runKey, "categorisation", userId, config):
+            print("Classify has already run")
             return "Classify has already run", 200
 
         data_string = data.get("input").get("text_batch")
