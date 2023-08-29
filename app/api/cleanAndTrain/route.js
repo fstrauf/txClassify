@@ -5,7 +5,7 @@ export async function POST(req) {
   const formData  = await req.formData();
   console.log("🚀 ~ file: route.js:6 ~ POST ~ formData:", formData)
 
-  const apiUrl = `${process.env.BACKEND_API}/runClassify`;
+  const apiUrl = `${process.env.BACKEND_API}/runTraining`;
   
   try {
     const response = await fetch(apiUrl, {
