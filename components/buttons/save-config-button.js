@@ -9,7 +9,6 @@ const supabase = createClient(
 );
 
 export const SaveConfigButton = ({ config }) => {
-  console.log("🚀 ~ file: save-config-button.js:12 ~ SaveConfigButton ~ config:", config)
   const { user } = useUser();
   const [saveActive, setSaveActive] = useState(false);
 
