@@ -15,31 +15,32 @@ from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import replicate
+from supabase import create_client, Client
+
+url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+supabase: Client = create_client(url, key)
 
 app = Flask(__name__)
 CORS(app)  # Allow all origins
 
-# api_key = os.environ.get("replicate_API_KEY")
-
-# googleScriptAPI = "https://script.google.com/macros/s/AKfycby3MVHQKrMBzDVeWKxy77gdvuWhXa-m-LUMnvoqLHrcHcJg53FzEeDLd-GaXLSeA8zM/exec"
 googleScriptAPI = "https://script.google.com/macros/s/"
-# sheetId = "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"
-
 
 @app.route("/runClassify", methods=["POST"])
 def runClassify():
     data = request.form
     sheetId = data.get("spreadsheetId")
-    # sheetId = data.get("customerName")
+    userId = data.get("userId")
 
     data_range = data.get("range")
 
-    sheetData = getSpreadsheetData(sheetId, "new_dump!$" + data_range)
+    sheetData = getSpreadsheetData(sheetId, data_range)
     df = cleanSpreadSheetData(sheetData, ["date", "debit", "description"])
 
     runPrediction(
         "classify",
         sheetId,
+        userId,
         "https://www.expensesorted.com/api/finishedTrainingHook",
         df["description"].tolist(),
     )
@@ -53,14 +54,14 @@ def runClassify():
 def runTraining():
     data = request.form
     sheetId = data.get("spreadsheetId")
-    # customerName = data.get("customerName")
+    userId = data.get("userId")
 
     data_range = data.get("range")
     print("🚀 ~ file: main.py:59 ~ data_range:", data_range)
 
-    sheetData = getSpreadsheetData(sheetId, "Expense-Detail!$" + data_range)
+    sheetData = getSpreadsheetData(sheetId, data_range)
     print("🚀 ~ file: main.py:62 ~ sheetData:", sheetData)
-    df = cleanSpreadSheetData(        
+    df = cleanSpreadSheetData(
         sheetData,
         ["source", "date", "description", "debit", "credit", "category"],
     )
@@ -74,6 +75,7 @@ def runTraining():
     res = runPrediction(
         "training",
         sheetId,
+        userId,
         "https://www.expensesorted.com/api/finishedTrainingHook",
         df["description"].tolist(),
     )
@@ -91,9 +93,9 @@ def handle_webhook():
     print("Status:", data.get("status"))
 
     webhookUrl = data.get("webhook")
-    sheetId, sheetApi, runKey = extract_params_from_url(webhookUrl)
+    sheetId, sheetApi, runKey, userId = extract_params_from_url(webhookUrl)
 
-    if checkHasRunYet(runKey, "Expense-Detail!$P3:P3", sheetId):
+    if check_has_run_yet(runKey, "training", userId, None):
         return "Training has already run", 200
 
     bucket_name = "txclassify"
@@ -105,7 +107,7 @@ def handle_webhook():
 
     new_dict = {"status": "saveTrainedData", "data": None}
 
-    updateRunStatus(runKey, "Expense-Detail!$P3:P3", sheetId)
+    updateRunStatus(runKey, "training", userId)
 
     new_json = json.dumps(new_dict)
     requests.post(sheetApi, data=new_json)
@@ -123,9 +125,10 @@ def handle_classify_webhook():
         print("Status:", data.get("status"))
 
         webhookUrl = data.get("webhook")
-        sheetId, sheetApi, runKey = extract_params_from_url(webhookUrl)
+        sheetId, sheetApi, runKey, userId = extract_params_from_url(webhookUrl)
+        config = getUserConfig(userId)
 
-        if checkHasRunYet(runKey, "Expense-Detail!$P2:P2", sheetId):
+        if check_has_run_yet(runKey, "categorisation", userId, config):
             return "Classify has already run", 200
 
         data_string = data.get("input").get("text_batch")
@@ -162,13 +165,13 @@ def handle_classify_webhook():
         # Drop the unnecessary columns
         combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
 
-        newExpenses = getSpreadsheetData(sheetId, "new_dump!$A1:C200")
+        newExpenses = getSpreadsheetData(sheetId, config["categorisationRange"])
 
         df_newExpenses = prepSpreadSheetData(newExpenses, combined_df)
 
         append_mainSheet(df_newExpenses, sheetId)  # Explicitly pass sheetId here
 
-        updateRunStatus(runKey, "Expense-Detail!$P2:P2", sheetId)
+        updateRunStatus(runKey, "categorisation", userId)
 
         return "", 200
 
@@ -182,6 +185,15 @@ def generate_timestamp():
     timestamp = current_time.strftime("%Y-%m-%d-%H-%M-%S")
     return timestamp
 
+def getUserConfig(userId):
+    response = supabase.table("account").select("*").eq("userId", userId).execute()
+    
+    if response.data:
+        config = response.data[0]  # Assuming the fetched data is a list of dictionaries
+        print("🚀 ~ file: main.py:195 ~ config:", config)
+        return config
+    
+    return {}  # Return an empty dictionary if no data was found for the user
 
 def prepSpreadSheetData(newExpenses, combined_df):
     df_newExpenses = pd.DataFrame(newExpenses, columns=["date", "debit", "description"])
@@ -199,47 +211,35 @@ def prepSpreadSheetData(newExpenses, combined_df):
     ]
     return df_newExpenses
 
+def updateRunStatus(new_value, mode, userId):
 
-def updateRunStatus(new_value, data_range, sheetId):
-    google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
-    creds = get_service_account_credentials(json.loads(google_service_account))
-    service = build("sheets", "v4", credentials=creds)
+    if mode == "training":
+        response = supabase.table("account").upsert({"userId": userId, "runStatusTraining": new_value}).execute()
+    else:
+        response = supabase.table("account").upsert({"userId": userId, "runStatusCategorisation": new_value}).execute()
+    
+    print("🚀 ~ file: main.py:221 ~ response:", response)
 
-    # Prepare the update request
-    update_request = {"values": [[new_value]]}
+    return response
 
-    # Execute the update request
-    try:
-        response = (
-            service.spreadsheets()
-            .values()
-            .update(
-                spreadsheetId=sheetId,
-                range=data_range,
-                valueInputOption="RAW",
-                body=update_request,
-            )
-            .execute()
-        )
+def check_has_run_yet(run_key, mode, user_id, config):
+    if not config:
+        config = getUserConfig(user_id)
 
-        print("🚀 ~ Update response:", response)
-        print("Cell value updated successfully.")
-    except HTTPError as e:
-        print(f"An error occurred: {e}")
+    if mode == "training":
+        stored_timestamps = config["runStatusTraining"]
+    else:
+        stored_timestamps = config["runStatusCategorisation"]
 
+    if stored_timestamps:
+        stored_timestamp = stored_timestamps[0][0]  # Extract the timestamp string
 
-def checkHasRunYet(runKey, data_range, sheetId):
-
-    storedTimestamps = getSpreadsheetData(sheetId, data_range)
-    if storedTimestamps:
-        storedTimestamp = storedTimestamps[0][0]  # Extract the timestamp string
-
-        if runKey == storedTimestamp:
+        if run_key == stored_timestamp:
             return True
     return False
 
 
-def runPrediction(apiMode, sheetId, sheetApi, training_data):    
+def runPrediction(apiMode, sheetId, userId, sheetApi, training_data):
     runKey = generate_timestamp()
     print("🚀 ~ file: main.py:238 ~ runKey:", runKey)
 
@@ -247,15 +247,15 @@ def runPrediction(apiMode, sheetId, sheetApi, training_data):
     version = model.versions.get(
         "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
     )
-    
-    url = 'https://pythonhandler-yxxxtrqkpa-ts.a.run.app'
-    # url = 'https://555d-120-88-75-106.ngrok-free.app'
+
+    # url = "https://pythonhandler-yxxxtrqkpa-ts.a.run.app"
+    url = 'https://3efe-65-181-3-157.ngrok-free.app'
 
     # &runKey={runKey}
     prediction = replicate.predictions.create(
         version=version,
         input={"text_batch": json.dumps(training_data)},
-        webhook=f"{url}/{apiMode}?sheetId={sheetId}&runKey={runKey}&sheetApi={sheetApi}",
+        webhook=f"{url}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}",
         webhook_events_filter=["completed"],
     )
     return prediction
@@ -377,10 +377,11 @@ def extract_params_from_url(webhookUrl):
     sheetId = query_params.get("sheetId", [None])[0]
     sheetApi = query_params.get("sheetApi", [None])[0]
     runKey = query_params.get("runKey", [None])[0]
+    userId = query_params.get("userId", [None])[0]
 
     sheetApi = googleScriptAPI + sheetApi + "/exec"
 
-    return sheetId, sheetApi, runKey
+    return sheetId, sheetApi, runKey, userId
 
 
 def clean_Text(text):

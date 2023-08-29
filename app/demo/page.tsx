@@ -86,10 +86,11 @@ const Demo = () => {
     if (trainingRange) {
       formData.append("range", trainingRange);
     }
+    formData.append("userId", user?.sub)
 
     try {
       setStatusText(`Training started based on sheet ${expenseSheetId}`);
-      const response = await fetch("/api/cleanAndPredict", {
+      const response = await fetch("/api/cleanAndTrain", {
         method: "POST",
         body: formData,
       });
@@ -116,7 +117,7 @@ const Demo = () => {
     if (categorisationRange) {
       formData.append("range", categorisationRange);
     }
-
+    formData.append("userId", user?.sub)
     formData.append("spreadsheetId", expenseSheetId);
 
     try {
@@ -160,6 +161,7 @@ const Demo = () => {
               <button
                 onClick={handleTrainClick}
                 className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                type="button"
               >
                 Train
               </button>
@@ -189,6 +191,7 @@ const Demo = () => {
               <button
                 onClick={handleClassifyClick}
                 className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                type="button"
               >
                 Classify
               </button>

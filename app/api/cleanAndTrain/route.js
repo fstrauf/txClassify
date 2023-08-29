@@ -5,8 +5,8 @@ export async function POST(req) {
   const formData  = await req.formData();
   console.log("🚀 ~ file: route.js:6 ~ POST ~ formData:", formData)
 
-  // const apiUrl = "https://8793-2406-2d40-4625-c100-c97a-bd26-d717-ba41.ngrok-free.app/runTraining";
-  const apiUrl = "https://pythonhandler-yxxxtrqkpa-ts.a.run.app/runTraining"
+  const apiUrl = "https://3efe-65-181-3-157.ngrok-free.app/runTraining";
+  // const apiUrl = "https://pythonhandler-yxxxtrqkpa-ts.a.run.app/runTraining"
   try {
     const response = await fetch(apiUrl, {
       method: "POST",
