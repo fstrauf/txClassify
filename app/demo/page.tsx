@@ -9,18 +9,24 @@ import ProtectedPage from "../../components/ProtectedPage";
 import { SaveConfigButton } from "../../components/buttons/save-config-button";
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 );
+
+interface ConfigType {
+  expenseSheetId: string;
+  trainingRange: string;
+  categorisationRange: string;
+}
 
 const Demo = () => {
   const { user } = useUser();
 
   const [statusText, setStatusText] = useState("");
-  const [config, setConfig] = useState({
-    // expenseSheetId: "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
-    // trainingRange: "Expense-Detail!A2:F200",
-    // categorisationRange: "new_dump!A1:C200",
+  const [config, setConfig] = useState<ConfigType>({
+    expenseSheetId: "",
+    trainingRange: "",
+    categorisationRange: "",
   });
 
   const [data, setData] = useState({});
@@ -77,7 +83,8 @@ const Demo = () => {
   };
 
   const handleTrainClick = async () => {
-    const { expenseSheetId, trainingRange } = config;
+    const { expenseSheetId, trainingRange } = config || {};
+
     const formData = new FormData();
 
     if (expenseSheetId) {
@@ -86,7 +93,10 @@ const Demo = () => {
     if (trainingRange) {
       formData.append("range", trainingRange);
     }
-    formData.append("userId", user?.sub)
+    const userId = user?.sub; // Extract user sub
+    if (userId) {
+      formData.append("userId", userId);
+    }
 
     try {
       setStatusText(`Training started based on sheet ${expenseSheetId}`);
@@ -117,7 +127,10 @@ const Demo = () => {
     if (categorisationRange) {
       formData.append("range", categorisationRange);
     }
-    formData.append("userId", user?.sub)
+    const userId = user?.sub; // Extract user sub
+    if (userId) {
+      formData.append("userId", userId);
+    }
     formData.append("spreadsheetId", expenseSheetId);
 
     try {
