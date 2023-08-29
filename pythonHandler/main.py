@@ -21,6 +21,8 @@ url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
 supabase: Client = create_client(url, key)
 
+BACKEND_API = os.environ.get("BACKEND_API")
+
 app = Flask(__name__)
 CORS(app)  # Allow all origins
 
@@ -251,13 +253,13 @@ def runPrediction(apiMode, sheetId, userId, sheetApi, training_data):
     )
 
     # url = "https://pythonhandler-yxxxtrqkpa-ts.a.run.app"
-    url = 'https://3efe-65-181-3-157.ngrok-free.app'
+    # url = 'https://3efe-65-181-3-157.ngrok-free.app'
 
     # &runKey={runKey}
     prediction = replicate.predictions.create(
         version=version,
         input={"text_batch": json.dumps(training_data)},
-        webhook=f"{url}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}",
+        webhook=f"{BACKEND_API}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}",
         webhook_events_filter=["completed"],
     )
     return prediction
@@ -290,38 +292,6 @@ def append_mainSheet(df, sheetId):
         print("Data appended successfully.")
     except HTTPError as e:
         print(f"An error occurred: {e}")
-
-    # Set the background color of the appended data
-    # last_row_index = response.get('updates', {}).get('updatedRows', 0) - 1
-    # last_row_range = f"A{last_row_index + 2}:G{last_row_index + 2}"  # Adjust the range
-    # update_request = {
-    #     "updateCells": {
-    #         "rows": [
-    #             {
-    #                 "values": [
-    #                     {
-    #                         "userEnteredFormat": {
-    #                             "backgroundColor": {"red": 0, "green": 0, "blue": 1}
-    #                         }
-    #                     }
-    #                 ]
-    #             }
-    #         ],
-    #         "fields": "userEnteredFormat.backgroundColor",
-    #         "range": {
-    #             "sheetId": sheetId,  # Update with the actual sheet ID
-    #             "startRowIndex": last_row_index,  # Update with the actual row index
-    #             "endRowIndex": last_row_index + 1,
-    #             "startColumnIndex": 0,
-    #             "endColumnIndex": 7,  # Assuming 7 columns (A-G)
-    #         }
-    #     }
-    # }
-
-    # # Execute the update request
-    # batch_update_request = {"requests": [update_request]}
-    # service.spreadsheets().batchUpdate(spreadsheetId=sheetId, body=batch_update_request).execute()
-
 
 def classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings):
     desc_new_data = df_unclassified_data["description"]
@@ -445,5 +415,5 @@ def get_service_account_credentials(json_content):
 
 
 if __name__ == "__main__":
-    # app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-    app.run(port=3001)
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    # app.run(port=3001)
