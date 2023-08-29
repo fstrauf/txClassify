@@ -6,7 +6,7 @@ import RangeInput from "./rangeInput";
 import { createClient } from "@supabase/supabase-js";
 import { useUser } from "@auth0/nextjs-auth0/client";
 import ProtectedPage from "../../components/ProtectedPage";
-import {SaveConfigButton} from '../../components/buttons/save-config-button'
+import { SaveConfigButton } from "../../components/buttons/save-config-button";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -18,9 +18,9 @@ const Demo = () => {
 
   const [statusText, setStatusText] = useState("");
   const [config, setConfig] = useState({
-    expenseSheetId: "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
-    trainingRange: "Expense-Detail!A2:F200",
-    categorisationRange: "new_dump!A1:C200",
+    // expenseSheetId: "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
+    // trainingRange: "Expense-Detail!A2:F200",
+    // categorisationRange: "new_dump!A1:C200",
   });
 
   const [data, setData] = useState({});
@@ -32,6 +32,17 @@ const Demo = () => {
         const fetchedData = await getData(user);
         console.log("Fetched data:", fetchedData);
         setData(fetchedData);
+        setConfig({
+          expenseSheetId:
+            fetchedData?.props.userConfig.expenseSheetId ||
+            "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
+          trainingRange:
+            fetchedData?.props.userConfig.trainingRange ||
+            "Expense-Detail!A2:F200",
+          categorisationRange:
+            fetchedData?.props.userConfig.categorisationRange ||
+            "new_dump!A1:C200",
+        });
       }
     };
 
@@ -52,7 +63,7 @@ const Demo = () => {
   ) => {
     setConfig((prevConfig) => ({
       ...prevConfig,
-      dataTabTraining: event.target.value,
+      trainingRange: event.target.value,
     }));
   };
 
@@ -61,7 +72,7 @@ const Demo = () => {
   ) => {
     setConfig((prevConfig) => ({
       ...prevConfig,
-      dataTabClassify: event.target.value,
+      categorisationRange: event.target.value,
     }));
   };
 
@@ -174,12 +185,15 @@ const Demo = () => {
               handleRangeChange={handleCategorisationRangeChange}
             />
 
-            <button
-              onClick={handleClassifyClick}
-              className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-            >
-              Classify
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={handleClassifyClick}
+                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+              >
+                Classify
+              </button>
+              <SaveConfigButton config={config} />
+            </div>
           </div>
         </div>
       </main>
