@@ -6,6 +6,7 @@ import RangeInput from "./rangeInput";
 import { createClient } from "@supabase/supabase-js";
 import { useUser } from "@auth0/nextjs-auth0/client";
 import ProtectedPage from "../../components/ProtectedPage";
+import {SaveConfigButton} from '../../components/buttons/save-config-button'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -17,9 +18,9 @@ const Demo = () => {
 
   const [statusText, setStatusText] = useState("");
   const [config, setConfig] = useState({
-    spreadsheetId: "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
-    dataTabTraining: "Expense-Detail!A2:F200",
-    dataTabClassify: "new_dump!A1:C200",
+    expenseSheetId: "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
+    trainingRange: "Expense-Detail!A2:F200",
+    categorisationRange: "new_dump!A1:C200",
   });
 
   const [data, setData] = useState({});
@@ -42,7 +43,7 @@ const Demo = () => {
   ) => {
     setConfig((prevConfig) => ({
       ...prevConfig,
-      spreadsheetId: event.target.value,
+      expenseSheetId: event.target.value,
     }));
   };
 
@@ -65,18 +66,18 @@ const Demo = () => {
   };
 
   const handleTrainClick = async () => {
-    const { spreadsheetId, dataTabTraining } = config;
+    const { expenseSheetId, trainingRange } = config;
     const formData = new FormData();
 
-    if (spreadsheetId) {
-      formData.append("spreadsheetId", spreadsheetId);
+    if (expenseSheetId) {
+      formData.append("spreadsheetId", expenseSheetId);
     }
-    if (dataTabTraining) {
-      formData.append("range", dataTabTraining);
+    if (trainingRange) {
+      formData.append("range", trainingRange);
     }
 
     try {
-      setStatusText(`Training started based on sheet ${spreadsheetId}`);
+      setStatusText(`Training started based on sheet ${expenseSheetId}`);
       const response = await fetch("/api/cleanAndPredict", {
         method: "POST",
         body: formData,
@@ -97,15 +98,15 @@ const Demo = () => {
   };
 
   const handleClassifyClick = async () => {
-    const { spreadsheetId, dataTabClassify } = config;
+    const { expenseSheetId, categorisationRange } = config;
 
     const formData = new FormData();
 
-    if (dataTabClassify) {
-      formData.append("range", dataTabClassify);
+    if (categorisationRange) {
+      formData.append("range", categorisationRange);
     }
 
-    formData.append("spreadsheetId", spreadsheetId);
+    formData.append("spreadsheetId", expenseSheetId);
 
     try {
       const response = await fetch("/api/cleanAndClassify", {
@@ -134,14 +135,14 @@ const Demo = () => {
             </h1>
             <Instructions />
             <SpreadSheetInput
-              spreadsheetLink={config.spreadsheetId}
+              spreadsheetLink={config.expenseSheetId}
               handleSpreadsheetLinkChange={handleSpreadsheetIdChange}
             />
             <p className="prose prose-invert">
               Range A2:F200 of sheet 'Expense Detail' is selected
             </p>
             <RangeInput
-              range={config.dataTabTraining}
+              range={config.trainingRange}
               handleRangeChange={handleTrainingRangeChange}
             />
             <div className="flex gap-3">
@@ -151,6 +152,7 @@ const Demo = () => {
               >
                 Train
               </button>
+              <SaveConfigButton config={config} />
             </div>
           </div>
         </div>
@@ -161,14 +163,14 @@ const Demo = () => {
             </h1>
             <Instructions />
             <SpreadSheetInput
-              spreadsheetLink={config.spreadsheetId}
+              spreadsheetLink={config.expenseSheetId}
               handleSpreadsheetLinkChange={handleSpreadsheetIdChange}
             />
             <p className="prose prose-invert">
               Range A1:C200 of sheet 'new_dump' is selected
             </p>
             <RangeInput
-              range={config.dataTabClassify}
+              range={config.categorisationRange}
               handleRangeChange={handleCategorisationRangeChange}
             />
 
