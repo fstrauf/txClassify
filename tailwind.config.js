@@ -20,4 +20,9 @@ module.exports = {
     },
   },
   plugins: [require("@tailwindcss/typography")],
+  // variants: {
+  //   extend: {
+  //     opacity: ["disabled"],
+  //   },
+  // },
 };

@@ -1,5 +1,4 @@
 import { useUser } from "@auth0/nextjs-auth0/client";
-import { NavBarButtons } from './nav-bar-buttons';
 import UnauthorizedMessage from './Unauthorised';
 
 const ProtectedPage = ({ children }) => {
