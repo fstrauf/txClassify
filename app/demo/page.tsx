@@ -1,10 +1,11 @@
 "use client";
 import React, { useEffect, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+import { useUser } from "@auth0/nextjs-auth0/client";
+
 import Instructions from "./instructions";
 import SpreadSheetInput from "./spreadSheetInput";
 import RangeInput from "./rangeInput";
-import { createClient } from "@supabase/supabase-js";
-import { useUser } from "@auth0/nextjs-auth0/client";
 import ProtectedPage from "../../components/ProtectedPage";
 import { SaveConfigButton } from "../../components/buttons/save-config-button";
 import StatusText from "./statusText";
@@ -22,7 +23,6 @@ interface ConfigType {
 
 const Demo = () => {
   const { user } = useUser();
-
   const [trainingStatus, setTrainingStatus] = useState("");
   const [categorisationStatus, setCategorisationStatus] = useState("");
   const [config, setConfig] = useState<ConfigType>({
@@ -30,16 +30,13 @@ const Demo = () => {
     trainingRange: "",
     categorisationRange: "",
   });
-
   const [data, setData] = useState({});
   const [error, setError] = useState(null);
 
   useEffect(() => {
     const fetchData = async () => {
-      console.log("🚀 ~ file: page.tsx:29 ~ fetchData ~ user:", user);
       if (user) {
         const fetchedData = await getData(user);
-        console.log("Fetched data:", fetchedData);
         setData(fetchedData);
         setConfig({
           expenseSheetId:
@@ -56,117 +53,59 @@ const Demo = () => {
     };
 
     fetchData();
-
-    async function fecthStatus() {
-      try {
-        // Fetch tasks with status 'in_progress'
-
-        const realtimeSubscription = supabase
-          .channel("any")
-          .on(
-            "postgres_changes",
-            {
-              event: "UPDATE",
-              schema: "public",
-              table: "account",
-              filter: `userId=eq.${user?.sub}`,
-            },
-            (payload) => {
-              console.log("Change received!", payload);
-              setCategorisationStatus(payload?.new?.categorisationStatus || '');
-              setTrainingStatus(payload?.new?.trainingStatus || '');
-            }
-          )
-          .subscribe();
-        // Unsubscribe when the component unmounts
-        return () => {
-          realtimeSubscription.unsubscribe();
-        };
-      } catch (error) {}
-    }
-
-    fecthStatus();
+    fetchStatus();
   }, [user]);
 
-  const handleSpreadsheetIdChange = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  async function fetchStatus() {
+    try {
+      const realtimeSubscription = supabase
+        .channel("any")
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "account",
+            filter: `userId=eq.${user?.sub}`,
+          },
+          (payload) => {
+            setCategorisationStatus(payload?.new?.categorisationStatus || '');
+            setTrainingStatus(payload?.new?.trainingStatus || '');
+          }
+        )
+        .subscribe();
+
+      return () => realtimeSubscription.unsubscribe();
+    } catch (error) {
+      setError(error as any);
+    }
+  }
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>, field: string) => {
     setConfig((prevConfig) => ({
       ...prevConfig,
-      expenseSheetId: event.target.value,
+      [field]: event.target.value,
     }));
   };
 
-  const handleTrainingRangeChange = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    setConfig((prevConfig) => ({
-      ...prevConfig,
-      trainingRange: event.target.value,
-    }));
-  };
-
-  const handleCategorisationRangeChange = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    setConfig((prevConfig) => ({
-      ...prevConfig,
-      categorisationRange: event.target.value,
-    }));
-  };
-
-  const handleTrainClick = async () => {
-    const { expenseSheetId, trainingRange } = config || {};
-
+  const handleActionClick = async (apiUrl: string, statusSetter: Function, range: string) => {
+    const { expenseSheetId } = config || {};
     const formData = new FormData();
 
     if (expenseSheetId) {
       formData.append("spreadsheetId", expenseSheetId);
     }
-    if (trainingRange) {
-      formData.append("range", trainingRange);
+    if (range) {
+      formData.append("range", range);
     }
-    const userId = user?.sub; // Extract user sub
+    const userId = user?.sub;
     if (userId) {
       formData.append("userId", userId);
     }
 
     try {
-      setTrainingStatus(`Training started based on sheet ${expenseSheetId}`);
-      const response = await fetch("/api/cleanAndTrain", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log("Fetched data:", data);
-      } else {
-        setTrainingStatus('')
-        console.error("API call failed with status:", response.status);
-      }
-    } catch (error) {
-      console.error("An error occurred:", error);
-      setTrainingStatus('')
-    }
-  };
-
-  const handleClassifyClick = async () => {
-    const { expenseSheetId, categorisationRange } = config;
-
-    const formData = new FormData();
-
-    if (categorisationRange) {
-      formData.append("range", categorisationRange);
-    }
-    const userId = user?.sub; // Extract user sub
-    if (userId) {
-      formData.append("userId", userId);
-    }
-    formData.append("spreadsheetId", expenseSheetId);
-
-    try {
-      const response = await fetch("/api/cleanAndClassify", {
+      statusSetter(`Action started based on sheet ${expenseSheetId}`);
+      const response = await fetch(apiUrl, {
         method: "POST",
         body: formData,
       });
@@ -176,11 +115,11 @@ const Demo = () => {
         console.log("Fetched data:", data);
       } else {
         console.error("API call failed with status:", response.status);
-        setCategorisationStatus('')
+        statusSetter('')
       }
     } catch (error) {
-      setCategorisationStatus('')
       console.error("An error occurred:", error);
+      statusSetter('')
     }
   };
 
@@ -195,18 +134,18 @@ const Demo = () => {
             <Instructions />
             <SpreadSheetInput
               spreadsheetLink={config.expenseSheetId}
-              handleSpreadsheetLinkChange={handleSpreadsheetIdChange}
+              handleSpreadsheetLinkChange={(e) => handleInputChange(e, 'expenseSheetId')}
             />
             <p className="prose prose-invert">
               Range A2:F200 of sheet 'Expense Detail' is selected
             </p>
             <RangeInput
               range={config.trainingRange}
-              handleRangeChange={handleTrainingRangeChange}
+              handleRangeChange={(e) => handleInputChange(e, 'trainingRange')}
             />
             <div className="flex gap-3">
               <button
-                onClick={handleTrainClick}
+                onClick={() => handleActionClick("/api/cleanAndTrain", setTrainingStatus, config.trainingRange)}
                 className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
                 type="button"
                 disabled={
@@ -229,19 +168,19 @@ const Demo = () => {
             <Instructions />
             <SpreadSheetInput
               spreadsheetLink={config.expenseSheetId}
-              handleSpreadsheetLinkChange={handleSpreadsheetIdChange}
+              handleSpreadsheetLinkChange={(e) => handleInputChange(e, 'expenseSheetId')}
             />
             <p className="prose prose-invert">
               Range A1:C200 of sheet 'new_dump' is selected
             </p>
             <RangeInput
               range={config.categorisationRange}
-              handleRangeChange={handleCategorisationRangeChange}
+              handleRangeChange={(e) => handleInputChange(e, 'categorisationRange')}
             />
 
             <div className="flex gap-3">
               <button
-                onClick={handleClassifyClick}
+                onClick={() => handleActionClick("/api/cleanAndClassify", setCategorisationStatus, config.categorisationRange)}
                 className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
                 type="button"
                 disabled={
@@ -282,3 +221,4 @@ async function getData(user: any) {
     },
   };
 }
+

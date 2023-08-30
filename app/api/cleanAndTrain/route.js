@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 
 export async function POST(req) {
-  // const data = await req.json();
-  const formData  = await req.formData();
-  console.log("🚀 ~ file: route.js:6 ~ POST ~ formData:", formData)
-
-  const apiUrl = `${process.env.BACKEND_API}/runTraining`;
-  
   try {
+    // const data = await req.json();
+    const formData  = await req.formData();
+    console.log("🚀 ~ file: route.js:6 ~ POST ~ formData:", formData)
+
+    const apiUrl = `${process.env.BACKEND_API}/runTraining`;
+  
     const response = await fetch(apiUrl, {
       method: "POST",
       body: formData,
@@ -15,7 +15,8 @@ export async function POST(req) {
     // console.log("🚀 ~ file: route.js:13 ~ POST ~ response:", response)
 
     if (!response.ok) {
-      throw new Error("Failed to fetch data from the API");
+      console.error(`Error: ${response.status} ${response.statusText}`);
+      return NextResponse.error(`Error: ${response.status} ${response.statusText}`);
     }
 
     const responseData = await response.json();
@@ -23,6 +24,6 @@ export async function POST(req) {
     return NextResponse.json(responseData);
   } catch (error) {
     console.error("Error fetching sheet data:", error);
-    return NextResponse.error("Error fetching sheet data");
+    return NextResponse.error(`Error fetching sheet data: ${error.message}`);
   }
 }
