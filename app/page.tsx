@@ -5,10 +5,23 @@ import FAQ from "../components/FAQ";
 import Features from "../components/Features";
 import Link from "next/link";
 import Head from "next/head";
+import Script from "next/script";
 
 export default function Home() {
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-br from-first via-second to-third">
+      <div className="container">
+        <Script src="https://www.googletagmanager.com/gtag/js?id=G-NB5F14FKZT" />
+        <Script id="google-analytics">
+          {`
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+ 
+          gtag('config', 'G-NB5F14FKZT');
+        `}
+        </Script>
+      </div>
       <Head>
         <link rel="canonical" href="https://www.expensesorted.com/" />
       </Head>
