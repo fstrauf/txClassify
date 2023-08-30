@@ -7,10 +7,11 @@ import { createClient } from "@supabase/supabase-js";
 import { useUser } from "@auth0/nextjs-auth0/client";
 import ProtectedPage from "../../components/ProtectedPage";
 import { SaveConfigButton } from "../../components/buttons/save-config-button";
+import StatusText from "./statusText";
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
 interface ConfigType {
@@ -22,7 +23,8 @@ interface ConfigType {
 const Demo = () => {
   const { user } = useUser();
 
-  const [statusText, setStatusText] = useState("");
+  const [trainingStatus, setTrainingStatus] = useState("");
+  const [categorisationStatus, setCategorisationStatus] = useState("");
   const [config, setConfig] = useState<ConfigType>({
     expenseSheetId: "",
     trainingRange: "",
@@ -30,6 +32,7 @@ const Demo = () => {
   });
 
   const [data, setData] = useState({});
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -53,6 +56,36 @@ const Demo = () => {
     };
 
     fetchData();
+
+    async function fecthStatus() {
+      try {
+        // Fetch tasks with status 'in_progress'
+
+        const realtimeSubscription = supabase
+          .channel("any")
+          .on(
+            "postgres_changes",
+            {
+              event: "UPDATE",
+              schema: "public",
+              table: "account",
+              filter: `userId=eq.${user?.sub}`,
+            },
+            (payload) => {
+              console.log("Change received!", payload);
+              setCategorisationStatus(payload?.new?.categorisationStatus || '');
+              setTrainingStatus(payload?.new?.trainingStatus || '');
+            }
+          )
+          .subscribe();
+        // Unsubscribe when the component unmounts
+        return () => {
+          realtimeSubscription.unsubscribe();
+        };
+      } catch (error) {}
+    }
+
+    fecthStatus();
   }, [user]);
 
   const handleSpreadsheetIdChange = (
@@ -99,7 +132,7 @@ const Demo = () => {
     }
 
     try {
-      setStatusText(`Training started based on sheet ${expenseSheetId}`);
+      setTrainingStatus(`Training started based on sheet ${expenseSheetId}`);
       const response = await fetch("/api/cleanAndTrain", {
         method: "POST",
         body: formData,
@@ -108,14 +141,13 @@ const Demo = () => {
       if (response.ok) {
         const data = await response.json();
         console.log("Fetched data:", data);
-        setStatusText(
-          `Training still running - this can take a couple of minutes`
-        );
       } else {
+        setTrainingStatus('')
         console.error("API call failed with status:", response.status);
       }
     } catch (error) {
       console.error("An error occurred:", error);
+      setTrainingStatus('')
     }
   };
 
@@ -144,8 +176,10 @@ const Demo = () => {
         console.log("Fetched data:", data);
       } else {
         console.error("API call failed with status:", response.status);
+        setCategorisationStatus('')
       }
     } catch (error) {
+      setCategorisationStatus('')
       console.error("An error occurred:", error);
     }
   };
@@ -173,12 +207,17 @@ const Demo = () => {
             <div className="flex gap-3">
               <button
                 onClick={handleTrainClick}
-                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
                 type="button"
+                disabled={
+                  trainingStatus !== "" && trainingStatus !== "completed"
+                }
               >
                 Train
               </button>
+
               <SaveConfigButton config={config} />
+              <StatusText text={trainingStatus} />
             </div>
           </div>
         </div>
@@ -203,12 +242,17 @@ const Demo = () => {
             <div className="flex gap-3">
               <button
                 onClick={handleClassifyClick}
-                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
                 type="button"
+                disabled={
+                  categorisationStatus !== "" &&
+                  categorisationStatus !== "completed"
+                }
               >
                 Classify
               </button>
               <SaveConfigButton config={config} />
+              <StatusText text={categorisationStatus} />
             </div>
           </div>
         </div>
