@@ -28,6 +28,7 @@ CORS(app)  # Allow all origins
 
 googleScriptAPI = "https://script.google.com/macros/s/"
 
+
 @app.route("/runClassify", methods=["POST"])
 def runClassify():
     data = request.form
@@ -36,9 +37,11 @@ def runClassify():
 
     data_range = data.get("range")
 
+    updateProcessStatus("Fetching spreadsheet data", "classify", userId)
     sheetData = getSpreadsheetData(sheetId, data_range)
     df = cleanSpreadSheetData(sheetData, ["date", "debit", "description"])
 
+    updateProcessStatus("Cleaned spreadsheet data", "classify", userId)
     runPrediction(
         "classify",
         sheetId,
@@ -47,7 +50,11 @@ def runClassify():
         df["description"].tolist(),
     )
 
-    print("🚀 ~ file: main.py:30 ~ df:", df)
+    updateProcessStatus(
+        "Fetching machine learning results - this can take a few minutes",
+        "classify",
+        userId,
+    )
     # response_data = {"message": "Success"}
     return {"message": "Success"}, 200
 
@@ -59,8 +66,8 @@ def runTraining():
     userId = data.get("userId")
 
     data_range = data.get("range")
-    print("🚀 ~ file: main.py:59 ~ data_range:", data_range)
 
+    updateProcessStatus("Fetching spreadsheet data", "training", userId)
     sheetData = getSpreadsheetData(sheetId, data_range)
     print("🚀 ~ file: main.py:62 ~ sheetData:", sheetData)
     df = cleanSpreadSheetData(
@@ -69,6 +76,7 @@ def runTraining():
     )
     print("🚀 ~ file: main.py:64 ~ df:", df)
     df = df.drop_duplicates(subset=["description"])
+    updateProcessStatus("Cleaned up spreadsheet data", "training", userId)
     print("🚀 ~ file: main.py:69 ~ df:", df)
     df["item_id"] = range(0, len(df))
 
@@ -82,7 +90,11 @@ def runTraining():
         df["description"].tolist(),
     )
 
-    print("🚀 ~ file: main.py:30 ~ df:", df)
+    updateProcessStatus(
+        "Training machine learning model - this can take a few minutes",
+        "training",
+        userId,
+    )
 
     return {"message": "Success"}, 200
 
@@ -100,6 +112,10 @@ def handle_webhook():
     if check_has_run_yet(runKey, "training", userId, None):
         print("Training has already run")
         return "Training has already run", 200
+    
+    updateProcessStatus(
+        "Training results received, storing results", "training", userId
+    )
 
     bucket_name = "txclassify"
     file_name = sheetId + ".npy"
@@ -108,12 +124,12 @@ def handle_webhook():
 
     save_to_gcs(bucket_name, file_name, embeddings_array)
 
-    new_dict = {"status": "saveTrainedData", "data": None}
-
+    # new_dict = {"status": "saveTrainedData", "data": None}
+    updateProcessStatus("completed", "training", userId)
     updateRunStatus(runKey, "training", userId)
 
-    new_json = json.dumps(new_dict)
-    requests.post(sheetApi, data=new_json)
+    # new_json = json.dumps(new_dict)
+    # requests.post(sheetApi, data=new_json)
 
     return "", 200
 
@@ -129,11 +145,18 @@ def handle_classify_webhook():
 
         webhookUrl = data.get("webhook")
         sheetId, sheetApi, runKey, userId = extract_params_from_url(webhookUrl)
+
         config = getUserConfig(userId)
 
         if check_has_run_yet(runKey, "categorisation", userId, config):
             print("Classify has already run")
             return "Classify has already run", 200
+        
+        updateProcessStatus(
+            "Categorisation results received, comparing to training data",
+            "classify",
+            userId,
+        )
 
         data_string = data.get("input").get("text_batch")
 
@@ -146,13 +169,12 @@ def handle_classify_webhook():
         bucket_name = "txclassify"
         file_name = sheetId + ".npy"
         trained_embeddings = fetch_from_gcs(bucket_name, file_name)
-
+        updateProcessStatus("Fetched training results", "classify", userId)
         output = classify_expenses(
             df_unclassified_data, trained_embeddings, new_embeddings
         )
 
         df_output = pd.DataFrame.from_dict(output)
-        print("🚀 ~ file: main.py:178 ~ df_output:", df_output)
 
         trainedIndexCategories = fetch_from_gcs(bucket_name, sheetId + "_index.npy")
 
@@ -165,16 +187,20 @@ def handle_classify_webhook():
             right_on="item_id",
             how="left",
         )
-
+        updateProcessStatus(
+            "Compared training results, assigned categories", "classify", userId
+        )
         # Drop the unnecessary columns
         combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
 
         newExpenses = getSpreadsheetData(sheetId, config["categorisationRange"])
 
         df_newExpenses = prepSpreadSheetData(newExpenses, combined_df)
-
+        updateProcessStatus(
+            "Preparing spreadsheet data, appending to expense sheet", "classify", userId
+        )
         append_mainSheet(df_newExpenses, sheetId)  # Explicitly pass sheetId here
-
+        updateProcessStatus("completed", "classify", userId)
         updateRunStatus(runKey, "categorisation", userId)
 
         return "", 200
@@ -189,15 +215,16 @@ def generate_timestamp():
     timestamp = current_time.strftime("%Y-%m-%d-%H-%M-%S")
     return timestamp
 
+
 def getUserConfig(userId):
     response = supabase.table("account").select("*").eq("userId", userId).execute()
-    
+
     if response.data:
         config = response.data[0]  # Assuming the fetched data is a list of dictionaries
-        print("🚀 ~ file: main.py:195 ~ config:", config)
         return config
-    
+
     return {}  # Return an empty dictionary if no data was found for the user
+
 
 def prepSpreadSheetData(newExpenses, combined_df):
     df_newExpenses = pd.DataFrame(newExpenses, columns=["date", "debit", "description"])
@@ -215,18 +242,44 @@ def prepSpreadSheetData(newExpenses, combined_df):
     ]
     return df_newExpenses
 
-def updateRunStatus(new_value, mode, userId):
 
+def updateRunStatus(new_value, mode, userId):
     if mode == "training":
-        response = supabase.table("account").upsert({"userId": userId, "runStatusTraining": new_value}).execute()
+        response = (
+            supabase.table("account")
+            .upsert({"userId": userId, "runStatusTraining": new_value})
+            .execute()
+        )
     else:
-        response = supabase.table("account").upsert({"userId": userId, "runStatusCategorisation": new_value}).execute()
-    
-    print("🚀 ~ file: main.py:221 ~ response:", response)
+        response = (
+            supabase.table("account")
+            .upsert({"userId": userId, "runStatusCategorisation": new_value})
+            .execute()
+        )
+
+    return response
+
+
+def updateProcessStatus(status_text, mode, userId):
+    if mode == "training":
+        response = (
+            supabase.table("account")
+            .update({"trainingStatus": status_text})
+            .eq("userId", userId)
+            .execute()
+        )
+    else:
+        response = (
+            supabase.table("account")
+            .update({"categorisationStatus": status_text})
+            .eq("userId", userId)
+            .execute()
+        )
 
     return response
 
 def check_has_run_yet(run_key, mode, user_id, config):
+    
     if not config:
         config = getUserConfig(user_id)
 
@@ -234,12 +287,17 @@ def check_has_run_yet(run_key, mode, user_id, config):
         stored_timestamps = config["runStatusTraining"]
     else:
         stored_timestamps = config["runStatusCategorisation"]
-
+    
     if stored_timestamps:
-        stored_timestamp = stored_timestamps[0][0]  # Extract the timestamp string
+        stored_timestamp = stored_timestamps.strip()  # Trim leading/trailing whitespace
+        run_key = run_key.strip()  # Trim leading/trailing whitespace
 
         if run_key == stored_timestamp:
+            print("🚀 ~ file: main.py:295 ~ stored_timestamp:", stored_timestamp)
             return True
+        else:
+            print('Strings are not the same')
+            return False
     return False
 
 
@@ -287,11 +345,11 @@ def append_mainSheet(df, sheetId):
 
     # Execute the append request
     try:
-        response = append_request.execute()
-        print("🚀 ~ file: main.py:277 ~ response:", response)
+        append_request.execute()
         print("Data appended successfully.")
     except HTTPError as e:
         print(f"An error occurred: {e}")
+
 
 def classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings):
     desc_new_data = df_unclassified_data["description"]
