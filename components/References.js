@@ -12,7 +12,7 @@ export default function References() {
         </Link>
       </div>
       <div className="mt-8 flex flex-wrap justify-around items-center space-y-4">
-        <div>
+        {/* <div>
           <Link
             href="/privacy-policy"
             className="px-4 py-1 text-first hover:bg-third rounded hover:underline"
@@ -31,7 +31,7 @@ export default function References() {
           >
             Contact Us
           </Link>
-        </div>
+        </div> */}
         <div className="flex flex-col items-center space-x-4 mt-4">
           <h3 className="text-xl font-semibold pr-2">Use Cases:</h3>
           <Link
