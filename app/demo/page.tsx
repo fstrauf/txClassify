@@ -9,16 +9,20 @@ import RangeInput from "./rangeInput";
 import ProtectedPage from "../../components/ProtectedPage";
 import { SaveConfigButton } from "../../components/buttons/save-config-button";
 import StatusText from "./statusText";
+import ColumnOrderInput from "./ColumnOrderInput";
+import ColumnMapping from "./ColumnMapping";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 );
 
-interface ConfigType {
+export interface ConfigType {
   expenseSheetId: string;
   trainingRange: string;
   categorisationRange: string;
+  columnOrderTraining: { name: string; type: string }[];
+  columnOrderCategorisation: { name: string; type: string }[];
 }
 
 const Demo = () => {
@@ -29,6 +33,8 @@ const Demo = () => {
     expenseSheetId: "",
     trainingRange: "",
     categorisationRange: "",
+    columnOrderTraining: [], // default columns
+    columnOrderCategorisation: [], // default columns
   });
   const [data, setData] = useState({});
   const [error, setError] = useState(null);
@@ -48,6 +54,21 @@ const Demo = () => {
           categorisationRange:
             fetchedData?.props.userConfig.categorisationRange ||
             "new_dump!A1:C200",
+          columnOrderTraining: fetchedData?.props.userConfig
+            .columnOrderTraining || [
+            { name: "Source", type: "source" },
+            { name: "Date", type: "date" },
+            { name: "Description", type: "description" },
+            { name: "Amount", type: "amount" },
+            // { name: "Credit", type: "credit" },
+            { name: "Categories", type: "categories" },
+          ],
+          columnOrderCategorisation: fetchedData?.props.userConfig
+            .columnOrderCategorisation || [
+            { name: "Date", type: "date" },
+            { name: "Amount", type: "amount" },
+            { name: "Description", type: "description" },
+          ],
         });
       }
     };
@@ -69,8 +90,8 @@ const Demo = () => {
             filter: `userId=eq.${user?.sub}`,
           },
           (payload) => {
-            setCategorisationStatus(payload?.new?.categorisationStatus || '');
-            setTrainingStatus(payload?.new?.trainingStatus || '');
+            setCategorisationStatus(payload?.new?.categorisationStatus || "");
+            setTrainingStatus(payload?.new?.trainingStatus || "");
           }
         )
         .subscribe();
@@ -81,14 +102,21 @@ const Demo = () => {
     }
   }
 
-  const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>, field: string) => {
+  const handleInputChange = (
+    event: React.ChangeEvent<HTMLInputElement>,
+    field: string
+  ) => {
     setConfig((prevConfig) => ({
       ...prevConfig,
       [field]: event.target.value,
     }));
   };
 
-  const handleActionClick = async (apiUrl: string, statusSetter: Function, range: string) => {
+  const handleActionClick = async (
+    apiUrl: string,
+    statusSetter: Function,
+    range: string
+  ) => {
     const { expenseSheetId } = config || {};
     const formData = new FormData();
 
@@ -115,11 +143,11 @@ const Demo = () => {
         console.log("Fetched data:", data);
       } else {
         console.error("API call failed with status:", response.status);
-        statusSetter('')
+        statusSetter("");
       }
     } catch (error) {
       console.error("An error occurred:", error);
-      statusSetter('')
+      statusSetter("");
     }
   };
 
@@ -134,18 +162,46 @@ const Demo = () => {
             <Instructions />
             <SpreadSheetInput
               spreadsheetLink={config.expenseSheetId}
-              handleSpreadsheetLinkChange={(e) => handleInputChange(e, 'expenseSheetId')}
+              handleSpreadsheetLinkChange={(e) =>
+                handleInputChange(e, "expenseSheetId")
+              }
             />
             <p className="prose prose-invert">
               Range A2:F200 of sheet 'Expense Detail' is selected
             </p>
             <RangeInput
               range={config.trainingRange}
-              handleRangeChange={(e) => handleInputChange(e, 'trainingRange')}
+              handleRangeChange={(e) => handleInputChange(e, "trainingRange")}
             />
+            {/* <ColumnOrderInput
+              columns={config.columnOrderTraining}
+              handleColumnsChange={(columns: any) =>
+                setConfig((prevConfig) => ({
+                  ...prevConfig,
+                  columnOrderTraining: columns,
+                }))
+              }
+            /> */}
+            {/* <ColumnMapping
+              googleSheetColumns={config.columnOrderTraining}
+              expectedColumns={[
+                "Source",
+                "Date",
+                "Narrative",
+                "Debit",
+                "Credit",
+                "Categories",
+              ]}
+            /> */}
             <div className="flex gap-3">
               <button
-                onClick={() => handleActionClick("/api/cleanAndTrain", setTrainingStatus, config.trainingRange)}
+                onClick={() =>
+                  handleActionClick(
+                    "/api/cleanAndTrain",
+                    setTrainingStatus,
+                    config.trainingRange
+                  )
+                }
                 className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
                 type="button"
                 disabled={
@@ -154,6 +210,14 @@ const Demo = () => {
               >
                 Train
               </button>
+              {/* user flow:
+1. upload the spreadsheet, 
+2. read the columns, 
+3. let the user assign the type of each column. 
+
+more basic:
+
+1. let the user add the type of his columns*/}
 
               <SaveConfigButton config={config} />
               <StatusText text={trainingStatus} />
@@ -168,19 +232,29 @@ const Demo = () => {
             <Instructions />
             <SpreadSheetInput
               spreadsheetLink={config.expenseSheetId}
-              handleSpreadsheetLinkChange={(e) => handleInputChange(e, 'expenseSheetId')}
+              handleSpreadsheetLinkChange={(e) =>
+                handleInputChange(e, "expenseSheetId")
+              }
             />
             <p className="prose prose-invert">
               Range A1:C200 of sheet 'new_dump' is selected
             </p>
             <RangeInput
               range={config.categorisationRange}
-              handleRangeChange={(e) => handleInputChange(e, 'categorisationRange')}
+              handleRangeChange={(e) =>
+                handleInputChange(e, "categorisationRange")
+              }
             />
 
             <div className="flex gap-3">
               <button
-                onClick={() => handleActionClick("/api/cleanAndClassify", setCategorisationStatus, config.categorisationRange)}
+                onClick={() =>
+                  handleActionClick(
+                    "/api/cleanAndClassify",
+                    setCategorisationStatus,
+                    config.categorisationRange
+                  )
+                }
                 className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
                 type="button"
                 disabled={
@@ -221,4 +295,3 @@ async function getData(user: any) {
     },
   };
 }
-

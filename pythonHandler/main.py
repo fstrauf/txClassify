@@ -39,7 +39,9 @@ def runClassify():
 
     updateProcessStatus("Fetching spreadsheet data", "classify", userId)
     sheetData = getSpreadsheetData(sheetId, data_range)
-    df = cleanSpreadSheetData(sheetData, ["date", "debit", "description"])
+    # all of these are important and could potentially include even more data.
+    # i should again infer this from the type
+    df = cleanSpreadSheetData(sheetData, ["date", "amount", "description"])
 
     updateProcessStatus("Cleaned spreadsheet data", "classify", userId)
     runPrediction(
@@ -70,9 +72,12 @@ def runTraining():
     updateProcessStatus("Fetching spreadsheet data", "training", userId)
     sheetData = getSpreadsheetData(sheetId, data_range)
     print("🚀 ~ file: main.py:62 ~ sheetData:", sheetData)
+    # here I need the order of the 5 different categories
+    # i can infer that from the type given in the config
+    # then i can also only store and use the minimum columns i.e. I only need the description column
     df = cleanSpreadSheetData(
         sheetData,
-        ["source", "date", "description", "debit", "credit", "category"],
+        ["source", "date", "description", "amount", "category"],
     )
     print("🚀 ~ file: main.py:64 ~ df:", df)
     df = df.drop_duplicates(subset=["description"])
@@ -112,7 +117,7 @@ def handle_webhook():
     if check_has_run_yet(runKey, "training", userId, None):
         print("Training has already run")
         return "Training has already run", 200
-    
+
     updateProcessStatus(
         "Training results received, storing results", "training", userId
     )
@@ -123,13 +128,9 @@ def handle_webhook():
     embeddings_array = json_to_embeddings(data)
 
     save_to_gcs(bucket_name, file_name, embeddings_array)
-
-    # new_dict = {"status": "saveTrainedData", "data": None}
+    
     updateProcessStatus("completed", "training", userId)
     updateRunStatus(runKey, "training", userId)
-
-    # new_json = json.dumps(new_dict)
-    # requests.post(sheetApi, data=new_json)
 
     return "", 200
 
@@ -151,7 +152,7 @@ def handle_classify_webhook():
         if check_has_run_yet(runKey, "categorisation", userId, config):
             print("Classify has already run")
             return "Classify has already run", 200
-        
+
         updateProcessStatus(
             "Categorisation results received, comparing to training data",
             "classify",
@@ -227,18 +228,18 @@ def getUserConfig(userId):
 
 
 def prepSpreadSheetData(newExpenses, combined_df):
-    df_newExpenses = pd.DataFrame(newExpenses, columns=["date", "debit", "description"])
-    df_newExpenses["debit"] = pd.to_numeric(df_newExpenses["debit"], errors="coerce")
-    df_newExpenses["credit"] = df_newExpenses["debit"].apply(
-        lambda x: x if x > 0 else 0
-    )
-    df_newExpenses["debit"] = df_newExpenses["debit"].apply(lambda x: x if x < 0 else 0)
+    df_newExpenses = pd.DataFrame(newExpenses, columns=["date", "amount", "description"])
+    df_newExpenses["amount"] = pd.to_numeric(df_newExpenses["amount"], errors="coerce")
+    # df_newExpenses["credit"] = df_newExpenses["debit"].apply(
+    #     lambda x: x if x > 0 else 0
+    # )
+    # df_newExpenses["debit"] = df_newExpenses["debit"].apply(lambda x: x if x < 0 else 0)
     df_newExpenses["category"] = combined_df["category"]
     df_newExpenses["source"] = "CBA"
 
     # Reorder the columns in the DataFrame
     df_newExpenses = df_newExpenses[
-        ["source", "date", "description", "debit", "credit", "category"]
+        ["source", "date", "description", "amount", "category"]
     ]
     return df_newExpenses
 
@@ -278,8 +279,8 @@ def updateProcessStatus(status_text, mode, userId):
 
     return response
 
+
 def check_has_run_yet(run_key, mode, user_id, config):
-    
     if not config:
         config = getUserConfig(user_id)
 
@@ -287,7 +288,7 @@ def check_has_run_yet(run_key, mode, user_id, config):
         stored_timestamps = config["runStatusTraining"]
     else:
         stored_timestamps = config["runStatusCategorisation"]
-    
+
     if stored_timestamps:
         stored_timestamp = stored_timestamps.strip()  # Trim leading/trailing whitespace
         run_key = run_key.strip()  # Trim leading/trailing whitespace
@@ -296,7 +297,7 @@ def check_has_run_yet(run_key, mode, user_id, config):
             print("🚀 ~ file: main.py:295 ~ stored_timestamp:", stored_timestamp)
             return True
         else:
-            print('Strings are not the same')
+            print("Strings are not the same")
             return False
     return False
 
@@ -313,13 +314,15 @@ def runPrediction(apiMode, sheetId, userId, sheetApi, training_data):
     # url = "https://pythonhandler-yxxxtrqkpa-ts.a.run.app"
     # url = 'https://3efe-65-181-3-157.ngrok-free.app'
 
+    print("🚀 ~ file: main.py:320 ~ BACKEND_API:", BACKEND_API)
     # &runKey={runKey}
     prediction = replicate.predictions.create(
         version=version,
         input={"text_batch": json.dumps(training_data)},
-        webhook=f"{BACKEND_API}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}",
+        webhook=f"{BACKEND_API}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}",        
         webhook_events_filter=["completed"],
     )
+    print("🚀 ~ file: main.py:322 ~ prediction:", prediction)
     return prediction
 
 
