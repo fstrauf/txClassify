@@ -13,7 +13,7 @@ export const SaveConfigButton = ({ config }) => {
   const [saveActive, setSaveActive] = useState(false);
 
   const handleSaveClick = async () => {
-    const { expenseSheetId, trainingRange, categorisationRange } = config;
+    const { expenseSheetId, trainingRange, categorisationRange, trainingTab, categorisationTab } = config;
     setSaveActive(true);
     const { data, error } = await supabase
       .from("account")
@@ -22,6 +22,8 @@ export const SaveConfigButton = ({ config }) => {
         expenseSheetId,
         trainingRange,
         categorisationRange,
+        categorisationTab,
+        trainingTab,
       })
       .select();
 
@@ -37,7 +39,7 @@ export const SaveConfigButton = ({ config }) => {
   };
 
   return (
-    <>
+    <div className="py-2">
       <Toaster />
       <button
         onClick={handleSaveClick}
@@ -47,6 +49,6 @@ export const SaveConfigButton = ({ config }) => {
       >
         Save Config
       </button>
-    </>
+    </div>
   );
 };

@@ -3,7 +3,8 @@ import React, { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useUser } from "@auth0/nextjs-auth0/client";
 
-import Instructions from "./instructions";
+import InstructionsCategorise from "./instructionsCategorise";
+import InstructionsTraining from "./instructionsTraining";
 import SpreadSheetInput from "./spreadSheetInput";
 import RangeInput from "./rangeInput";
 import ProtectedPage from "../../components/ProtectedPage";
@@ -11,6 +12,7 @@ import { SaveConfigButton } from "../../components/buttons/save-config-button";
 import StatusText from "./statusText";
 import ColumnOrderInput from "./ColumnOrderInput";
 import ColumnMapping from "./ColumnMapping";
+import { ConfigSection } from "./ConfigSection";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -19,7 +21,9 @@ const supabase = createClient(
 
 export interface ConfigType {
   expenseSheetId: string;
+  trainingTab: string;
   trainingRange: string;
+  categorisationTab: string;
   categorisationRange: string;
   columnOrderTraining: { name: string; type: string }[];
   columnOrderCategorisation: { name: string; type: string }[];
@@ -31,7 +35,9 @@ const Demo = () => {
   const [categorisationStatus, setCategorisationStatus] = useState("");
   const [config, setConfig] = useState<ConfigType>({
     expenseSheetId: "",
+    trainingTab: "",
     trainingRange: "",
+    categorisationTab: "",
     categorisationRange: "",
     columnOrderTraining: [], // default columns
     columnOrderCategorisation: [], // default columns
@@ -43,14 +49,19 @@ const Demo = () => {
     const fetchData = async () => {
       if (user) {
         const fetchedData = await getData(user);
+        console.log(
+          "🚀 ~ file: page.tsx:51 ~ fetchData ~ fetchedData:",
+          fetchedData
+        );
         setData(fetchedData);
         setConfig({
           expenseSheetId:
             fetchedData?.props.userConfig.expenseSheetId ||
             "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
-          trainingRange:
-            fetchedData?.props.userConfig.trainingRange ||
-            "Expense-Detail!A2:F200",
+          trainingRange: fetchedData?.props.userConfig.trainingRange || "",
+          trainingTab: fetchedData?.props.userConfig.trainingTab || "",
+          categorisationTab:
+            fetchedData?.props.userConfig.categorisationTab || "",
           categorisationRange:
             fetchedData?.props.userConfig.categorisationRange ||
             "new_dump!A1:C200",
@@ -106,9 +117,18 @@ const Demo = () => {
     event: React.ChangeEvent<HTMLInputElement>,
     field: string
   ) => {
+    let value = event.target.value;
+    if (field === "expenseSheetId") {
+      try {
+        const url = new URL(value);
+        value = url.pathname.split("/")[3];
+      } catch (error) {
+        console.error("Invalid URL:", error);
+      }
+    }
     setConfig((prevConfig) => ({
       ...prevConfig,
-      [field]: event.target.value,
+      [field]: value,
     }));
   };
 
@@ -159,20 +179,23 @@ const Demo = () => {
             <h1 className="text-3xl font-bold leading-tight text-center">
               Step 1: Train Your Model
             </h1>
-            <Instructions />
-            <SpreadSheetInput
-              spreadsheetLink={config.expenseSheetId}
-              handleSpreadsheetLinkChange={(e) =>
-                handleInputChange(e, "expenseSheetId")
-              }
-            />
-            <p className="prose prose-invert">
-              Range A2:F200 of sheet 'Expense Detail' is selected
-            </p>
-            <RangeInput
-              range={config.trainingRange}
-              handleRangeChange={(e) => handleInputChange(e, "trainingRange")}
-            />
+            <InstructionsTraining />
+            <ConfigSection>
+              <SpreadSheetInput
+                spreadsheetLink={config.expenseSheetId}
+                handleSpreadsheetLinkChange={(e) =>
+                  handleInputChange(e, "expenseSheetId")
+                }
+              />
+              <RangeInput
+                tab={config.trainingTab}
+                range={config.trainingRange}
+                handleTabChange={(e) => handleInputChange(e, "trainingTab")}
+                handleRangeChange={(e) => handleInputChange(e, "trainingRange")}
+                helpText="add the name of the sheet and the range that covers the columns Source, Date, Description, Amount, Category of your already categorised expenses"
+              />
+              <SaveConfigButton config={config} />
+            </ConfigSection>
             {/* <ColumnOrderInput
               columns={config.columnOrderTraining}
               handleColumnsChange={(columns: any) =>
@@ -199,7 +222,7 @@ const Demo = () => {
                   handleActionClick(
                     "/api/cleanAndTrain",
                     setTrainingStatus,
-                    config.trainingRange
+                    `${config.trainingTab}!${config.trainingRange}`
                   )
                 }
                 className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
@@ -219,7 +242,6 @@ more basic:
 
 1. let the user add the type of his columns*/}
 
-              <SaveConfigButton config={config} />
               <StatusText text={trainingStatus} />
             </div>
           </div>
@@ -229,22 +251,27 @@ more basic:
             <h1 className="text-3xl font-bold leading-tight text-center">
               Step 2: Classify your Expenses
             </h1>
-            <Instructions />
-            <SpreadSheetInput
-              spreadsheetLink={config.expenseSheetId}
-              handleSpreadsheetLinkChange={(e) =>
-                handleInputChange(e, "expenseSheetId")
-              }
-            />
-            <p className="prose prose-invert">
-              Range A1:C200 of sheet 'new_dump' is selected
-            </p>
-            <RangeInput
-              range={config.categorisationRange}
-              handleRangeChange={(e) =>
-                handleInputChange(e, "categorisationRange")
-              }
-            />
+            <InstructionsCategorise trainingTab={config.trainingTab} />
+            <ConfigSection>
+              <SpreadSheetInput
+                spreadsheetLink={config.expenseSheetId}
+                handleSpreadsheetLinkChange={(e) =>
+                  handleInputChange(e, "expenseSheetId")
+                }
+              />
+              <RangeInput
+                tab={config.categorisationTab}
+                range={config.categorisationRange}
+                handleTabChange={(e) =>
+                  handleInputChange(e, "categorisationTab")
+                }
+                handleRangeChange={(e) =>
+                  handleInputChange(e, "categorisationRange")
+                }
+                helpText="add the name of the sheet and the range that covers the columns Date, Description, Amount of the expenses you want to categorise"
+              />
+              <SaveConfigButton config={config} />
+            </ConfigSection>
 
             <div className="flex gap-3">
               <button
@@ -252,7 +279,7 @@ more basic:
                   handleActionClick(
                     "/api/cleanAndClassify",
                     setCategorisationStatus,
-                    config.categorisationRange
+                    `${config.categorisationTab}!${config.categorisationRange}`
                   )
                 }
                 className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
@@ -264,7 +291,6 @@ more basic:
               >
                 Classify
               </button>
-              <SaveConfigButton config={config} />
               <StatusText text={categorisationStatus} />
             </div>
           </div>
