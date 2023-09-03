@@ -22,7 +22,7 @@ const ColumnOrderInput: React.FC<ColumnOrderInputProps> = ({
   const handleInputChange = (
     event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
     index: number,
-    field: keyof (typeof columns)[index]
+    field: keyof { name: string; type: string }
   ) => {
     const newColumns = [...columns];
     newColumns[index][field] = event.target.value;
