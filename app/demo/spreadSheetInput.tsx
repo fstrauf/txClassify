@@ -7,9 +7,9 @@ export default function SpreadSheetInput(props: {
   console.log("🚀 ~ spreadsheetLink:", props.spreadsheetLink);
 
   return (
-    <label className="block">
-      Spreadsheet ID:
-      <div className="m-6">
+    <label className=" flex flex-col prose prose-invert">
+      Share the full url of your sheet (we'll fetch the relevant part automatically).
+      {/* <div className="m-6">
         <Image
           width={1620 / 2.5}
           height={82 / 2.5}
@@ -17,7 +17,7 @@ export default function SpreadSheetInput(props: {
           className="rounded-md"
           alt="Add your income to the sheet"
         />
-      </div>
+      </div> */}
       <input
         type="text"
         defaultValue="185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw"

@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from google.cloud import storage
 from httpx import HTTPError
 import numpy as np
@@ -27,6 +27,12 @@ app = Flask(__name__)
 CORS(app)  # Allow all origins
 
 googleScriptAPI = "https://script.google.com/macros/s/"
+
+
+@app.errorhandler(500)
+def handle_500(e):
+    response = {"message": str(e), "type": type(e).__name__, "status_code": 500}
+    return jsonify(response), 500
 
 
 @app.route("/runClassify", methods=["POST"])
@@ -65,9 +71,11 @@ def runClassify():
 def runTraining():
     data = request.form
     sheetId = data.get("spreadsheetId")
+    print("🚀 ~ file: main.py:68 ~ sheetId:", sheetId)
     userId = data.get("userId")
 
     data_range = data.get("range")
+    print("🚀 ~ file: main.py:72 ~ data_range:", data_range)
 
     updateProcessStatus("Fetching spreadsheet data", "training", userId)
     sheetData = getSpreadsheetData(sheetId, data_range)
@@ -128,7 +136,7 @@ def handle_webhook():
     embeddings_array = json_to_embeddings(data)
 
     save_to_gcs(bucket_name, file_name, embeddings_array)
-    
+
     updateProcessStatus("completed", "training", userId)
     updateRunStatus(runKey, "training", userId)
 
@@ -152,6 +160,8 @@ def handle_classify_webhook():
         if check_has_run_yet(runKey, "categorisation", userId, config):
             print("Classify has already run")
             return "Classify has already run", 200
+        
+        updateRunStatus(runKey, "categorisation", userId)
 
         updateProcessStatus(
             "Categorisation results received, comparing to training data",
@@ -193,22 +203,26 @@ def handle_classify_webhook():
         )
         # Drop the unnecessary columns
         combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
+        
+        sheetRange = config["categorisationTab"] + "!" + config["categorisationRange"]
 
-        newExpenses = getSpreadsheetData(sheetId, config["categorisationRange"])
+        newExpenses = getSpreadsheetData(sheetId, sheetRange)
 
         df_newExpenses = prepSpreadSheetData(newExpenses, combined_df)
         updateProcessStatus(
             "Preparing spreadsheet data, appending to expense sheet", "classify", userId
         )
-        append_mainSheet(df_newExpenses, sheetId)  # Explicitly pass sheetId here
+        append_mainSheet(df_newExpenses, sheetId, config)  # Explicitly pass sheetId here
         updateProcessStatus("completed", "classify", userId)
-        updateRunStatus(runKey, "categorisation", userId)
+        
 
         return "", 200
 
     except Exception as e:
-        error_message = f"An error occurred: {str(e)}"
-        return error_message, 500
+        print(f"An error occurred: {str(e)}", exc_info=True)
+        # reset runkey if error occurs
+        updateRunStatus("", "categorisation", userId)
+        raise
 
 
 def generate_timestamp():
@@ -228,13 +242,18 @@ def getUserConfig(userId):
 
 
 def prepSpreadSheetData(newExpenses, combined_df):
-    df_newExpenses = pd.DataFrame(newExpenses, columns=["date", "amount", "description"])
+    df_newExpenses = pd.DataFrame(
+        newExpenses, columns=["date", "amount", "description"]
+    )
     df_newExpenses["amount"] = pd.to_numeric(df_newExpenses["amount"], errors="coerce")
-    # df_newExpenses["credit"] = df_newExpenses["debit"].apply(
-    #     lambda x: x if x > 0 else 0
-    # )
-    # df_newExpenses["debit"] = df_newExpenses["debit"].apply(lambda x: x if x < 0 else 0)
-    df_newExpenses["category"] = combined_df["category"]
+
+    # Create a new column 'category' in df_newExpenses
+    df_newExpenses = df_newExpenses.assign(
+        category=np.where(
+            df_newExpenses["amount"] > 0, "Credit", combined_df["category"].values
+        )
+    )
+
     df_newExpenses["source"] = "CBA"
 
     # Reorder the columns in the DataFrame
@@ -291,7 +310,9 @@ def check_has_run_yet(run_key, mode, user_id, config):
 
     if stored_timestamps:
         stored_timestamp = stored_timestamps.strip()  # Trim leading/trailing whitespace
+        print("🚀 ~ file: main.py:312 ~ stored_timestamp:", stored_timestamp)
         run_key = run_key.strip()  # Trim leading/trailing whitespace
+        print("🚀 ~ file: main.py:313 ~ run_key:", run_key)
 
         if run_key == stored_timestamp:
             print("🚀 ~ file: main.py:295 ~ stored_timestamp:", stored_timestamp)
@@ -311,27 +332,24 @@ def runPrediction(apiMode, sheetId, userId, sheetApi, training_data):
         "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
     )
 
-    # url = "https://pythonhandler-yxxxtrqkpa-ts.a.run.app"
-    # url = 'https://3efe-65-181-3-157.ngrok-free.app'
-
-    print("🚀 ~ file: main.py:320 ~ BACKEND_API:", BACKEND_API)
-    # &runKey={runKey}
     prediction = replicate.predictions.create(
         version=version,
         input={"text_batch": json.dumps(training_data)},
-        webhook=f"{BACKEND_API}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}",        
+        webhook=f"{BACKEND_API}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}",
         webhook_events_filter=["completed"],
     )
-    print("🚀 ~ file: main.py:322 ~ prediction:", prediction)
     return prediction
 
 
-def append_mainSheet(df, sheetId):
+def append_mainSheet(df, sheetId, config):
     google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
     creds = get_service_account_credentials(json.loads(google_service_account))
     service = build("sheets", "v4", credentials=creds)
     # Append the new data to the end of the sheet
     append_values = df.values.tolist()
+    
+    sheetRange = config["trainingTab"] + "!" + config["trainingRange"]
+    print("🚀 ~ file: main.py:352 ~ sheetRange:", sheetRange)
 
     # Prepare the append request
     append_request = (
@@ -339,7 +357,7 @@ def append_mainSheet(df, sheetId):
         .values()
         .append(
             spreadsheetId=sheetId,
-            range="Expense-Detail!$A1:G",
+            range=sheetRange,
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": append_values},
