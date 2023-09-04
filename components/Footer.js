@@ -15,6 +15,9 @@ export default function Footer() {
         <Link href="/terms-of-service" className="hover:underline text-xs">
           Terms of Service
         </Link>
+        <Link href="/about" className="hover:underline text-xs">
+          About
+        </Link>
       </div>
     </footer>
   );
