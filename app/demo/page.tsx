@@ -315,6 +315,7 @@ more basic:
                 handleSpreadsheetLinkChange={(e) =>
                   handleInputChange(e, "expenseSheetId")
                 }
+                sheetName={sheetName}
               />
               <RangeInput
                 tab={config.categorisationTab}
