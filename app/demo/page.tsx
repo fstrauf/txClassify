@@ -34,11 +34,11 @@ const Demo = () => {
   const [trainingStatus, setTrainingStatus] = useState("");
   const [categorisationStatus, setCategorisationStatus] = useState("");
   const [config, setConfig] = useState<ConfigType>({
-    expenseSheetId: "",
-    trainingTab: "",
-    trainingRange: "",
-    categorisationTab: "",
-    categorisationRange: "",
+    expenseSheetId: "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
+    trainingTab: "Expense-Detail",
+    trainingRange: "A2:E",
+    categorisationTab: "new_dump",
+    categorisationRange: "A1:C",
     columnOrderTraining: [], // default columns
     columnOrderCategorisation: [], // default columns
   });
@@ -64,7 +64,7 @@ const Demo = () => {
             fetchedData?.props.userConfig.categorisationTab || "",
           categorisationRange:
             fetchedData?.props.userConfig.categorisationRange ||
-            "new_dump!A1:C200",
+            "A1:C200",
           columnOrderTraining: fetchedData?.props.userConfig
             .columnOrderTraining || [
             { name: "Source", type: "source" },
@@ -216,7 +216,7 @@ const Demo = () => {
                 "Categories",
               ]}
             /> */}
-            <div className="flex gap-3">
+            <div className="flex gap-3 items-center">
               <button
                 onClick={() =>
                   handleActionClick(
@@ -233,7 +233,13 @@ const Demo = () => {
               >
                 Train
               </button>
-              {/* user flow:
+
+
+              <StatusText text={trainingStatus} />
+            </div>
+          </div>
+        </div>
+                      {/* user flow:
 1. upload the spreadsheet, 
 2. read the columns, 
 3. let the user assign the type of each column. 
@@ -241,11 +247,6 @@ const Demo = () => {
 more basic:
 
 1. let the user add the type of his columns*/}
-
-              <StatusText text={trainingStatus} />
-            </div>
-          </div>
-        </div>
         <div className="flex-grow flex items-center justify-center p-10">
           <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
             <h1 className="text-3xl font-bold leading-tight text-center">
@@ -273,7 +274,7 @@ more basic:
               <SaveConfigButton config={config} />
             </ConfigSection>
 
-            <div className="flex gap-3">
+            <div className="flex gap-3 items-center">
               <button
                 onClick={() =>
                   handleActionClick(

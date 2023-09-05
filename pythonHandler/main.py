@@ -1,7 +1,7 @@
 import os
 import json
 from flask import Flask, request, jsonify
-from google.cloud import storage
+# from google.cloud import storage
 from httpx import HTTPError
 import numpy as np
 import tempfile
@@ -71,15 +71,12 @@ def runClassify():
 def runTraining():
     data = request.form
     sheetId = data.get("spreadsheetId")
-    print("🚀 ~ file: main.py:68 ~ sheetId:", sheetId)
     userId = data.get("userId")
 
     data_range = data.get("range")
-    print("🚀 ~ file: main.py:72 ~ data_range:", data_range)
 
     updateProcessStatus("Fetching spreadsheet data", "training", userId)
     sheetData = getSpreadsheetData(sheetId, data_range)
-    print("🚀 ~ file: main.py:62 ~ sheetData:", sheetData)
     # here I need the order of the 5 different categories
     # i can infer that from the type given in the config
     # then i can also only store and use the minimum columns i.e. I only need the description column
@@ -87,10 +84,8 @@ def runTraining():
         sheetData,
         ["source", "date", "description", "amount", "category"],
     )
-    print("🚀 ~ file: main.py:64 ~ df:", df)
     df = df.drop_duplicates(subset=["description"])
     updateProcessStatus("Cleaned up spreadsheet data", "training", userId)
-    print("🚀 ~ file: main.py:69 ~ df:", df)
     df["item_id"] = range(0, len(df))
 
     storeCleanedSheetOrder(df, sheetId)
@@ -135,7 +130,7 @@ def handle_webhook():
 
     embeddings_array = json_to_embeddings(data)
 
-    save_to_gcs(bucket_name, file_name, embeddings_array)
+    save_embeddings(bucket_name, file_name, embeddings_array)
 
     updateProcessStatus("completed", "training", userId)
     updateRunStatus(runKey, "training", userId)
@@ -160,7 +155,7 @@ def handle_classify_webhook():
         if check_has_run_yet(runKey, "categorisation", userId, config):
             print("Classify has already run")
             return "Classify has already run", 200
-        
+
         updateRunStatus(runKey, "categorisation", userId)
 
         updateProcessStatus(
@@ -179,7 +174,7 @@ def handle_classify_webhook():
 
         bucket_name = "txclassify"
         file_name = sheetId + ".npy"
-        trained_embeddings = fetch_from_gcs(bucket_name, file_name)
+        trained_embeddings = fetch_embedding(bucket_name, file_name)
         updateProcessStatus("Fetched training results", "classify", userId)
         output = classify_expenses(
             df_unclassified_data, trained_embeddings, new_embeddings
@@ -187,7 +182,7 @@ def handle_classify_webhook():
 
         df_output = pd.DataFrame.from_dict(output)
 
-        trainedIndexCategories = fetch_from_gcs(bucket_name, sheetId + "_index.npy")
+        trainedIndexCategories = fetch_embedding(bucket_name, sheetId + "_index.npy")
 
         trained_categories_df = pd.DataFrame(trainedIndexCategories)
 
@@ -203,7 +198,7 @@ def handle_classify_webhook():
         )
         # Drop the unnecessary columns
         combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
-        
+
         sheetRange = config["categorisationTab"] + "!" + config["categorisationRange"]
 
         newExpenses = getSpreadsheetData(sheetId, sheetRange)
@@ -212,9 +207,10 @@ def handle_classify_webhook():
         updateProcessStatus(
             "Preparing spreadsheet data, appending to expense sheet", "classify", userId
         )
-        append_mainSheet(df_newExpenses, sheetId, config)  # Explicitly pass sheetId here
+        append_mainSheet(
+            df_newExpenses, sheetId, config
+        )  # Explicitly pass sheetId here
         updateProcessStatus("completed", "classify", userId)
-        
 
         return "", 200
 
@@ -347,7 +343,7 @@ def append_mainSheet(df, sheetId, config):
     service = build("sheets", "v4", credentials=creds)
     # Append the new data to the end of the sheet
     append_values = df.values.tolist()
-    
+
     sheetRange = config["trainingTab"] + "!" + config["trainingRange"]
     print("🚀 ~ file: main.py:352 ~ sheetRange:", sheetRange)
 
@@ -395,30 +391,89 @@ def json_to_embeddings(json_data):
     return embeddings_array
 
 
-def save_to_gcs(bucket_name, file_name, embeddings_array):
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(file_name)
+def save_embeddings(bucket_name, file_name, embeddings_array):
+    # save_to_gcs(bucket_name, file_name, embeddings_array)
+    save_to_supabase(bucket_name, file_name, embeddings_array)
 
-    # Save the numpy array as a .npy file
-    with blob.open("wb") as f:
-        np.save(f, embeddings_array)
-        print("embedding saved")
+def fetch_embedding(bucket_name, file_name): 
+    # fetch_from_gcs(bucket_name, file_name)
+    fetch_from_supabase(bucket_name, file_name):
 
-
-def fetch_from_gcs(bucket_name, file_name):
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(file_name)
-
+def fetch_from_supabase(bucket_name, file_name):
     # Download the .npy file to a temporary file
     with tempfile.NamedTemporaryFile() as temp_file:
-        blob.download_to_filename(temp_file.name)
+        response = supabase.storage.from_(bucket_name).download(file_name)
 
-        # Load the numpy array from the temporary file
-        embeddings_array = np.load(temp_file.name, allow_pickle=True)
+        # Check if the download was successful
+        if response.status_code == 200:
+            # Write the content to the temporary file
+            temp_file.write(response.content)
+            temp_file.flush()
+
+            # Load the numpy array from the temporary file
+            embeddings_array = np.load(temp_file.name, allow_pickle=True)
+        else:
+            print(f"Download failed with status code {response.status_code}")
+            embeddings_array = None
 
     return embeddings_array
+
+# def save_to_gcs(bucket_name, file_name, embeddings_array):
+#     client = storage.Client()
+#     bucket = client.bucket(bucket_name)
+#     blob = bucket.blob(file_name)
+
+#     # Save the numpy array as a .npy file
+#     with blob.open("wb") as f:
+#         np.save(f, embeddings_array)
+#         print("embedding saved")
+
+
+def save_to_supabase(bucket_name, file_name, embeddings_array):
+    print("🚀 ~ file: main.py:407 ~ file_name:", file_name)
+    # Create a temporary file to store the NumPy array
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        # Save the NumPy array to the temporary file
+        np.save(temp_file, embeddings_array)
+
+    # Get the file path of the temporary file
+    file_path = temp_file.name
+    print("🚀 ~ file: main.py:414 ~ file_path:", file_path)
+
+    # Upload the temporary file to Supabase Storage
+    with open(file_path, "rb") as f:
+        response = supabase.storage.from_(bucket_name).upload(
+            file_name, f, file_options={"x-upsert": "true"}
+        )
+
+    print("🚀 ~ file: main.py:420 ~ response:", response)
+    # Remove the temporary file
+    os.unlink(file_path)
+
+
+    if response.status_code == 200:
+        # Successful upload
+        print("Upload successful")
+    else:
+        # Handle the error
+        print(f"Upload failed with status code {response.status_code}")
+        # Optionally, you can print the response content for more details:
+    print(response.content)
+
+
+# def fetch_from_gcs(bucket_name, file_name):
+#     client = storage.Client()
+#     bucket = client.bucket(bucket_name)
+#     blob = bucket.blob(file_name)
+
+#     # Download the .npy file to a temporary file
+#     with tempfile.NamedTemporaryFile() as temp_file:
+#         blob.download_to_filename(temp_file.name)
+
+#         # Load the numpy array from the temporary file
+#         embeddings_array = np.load(temp_file.name, allow_pickle=True)
+
+#     return embeddings_array
 
 
 def extract_params_from_url(webhookUrl):
@@ -462,7 +517,7 @@ def storeCleanedSheetOrder(df, customerName):
         dtype=[("item_id", int), ("category", object), ("description", object)],
     )
 
-    save_to_gcs(bucket_name, file_name, structured_array)
+    save_embeddings(bucket_name, file_name, structured_array)
 
 
 def cleanSpreadSheetData(sheetData, columns):
