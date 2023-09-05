@@ -1,10 +1,12 @@
-export default function SpreadSheetInput(props: {
+export interface SpreadSheetInputProps {
   spreadsheetLink: string;
   handleSpreadsheetLinkChange: (
     event: React.ChangeEvent<HTMLInputElement>
   ) => void;
   sheetName: string;
-}) {
+}
+
+export default function SpreadSheetInput(props: SpreadSheetInputProps) {
   return (
     <label className=" flex flex-col prose prose-invert">
       Share the full url of your sheet (we'll fetch the relevant part
