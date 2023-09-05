@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { useUser } from "@auth0/nextjs-auth0/client";
-
+import toast, { Toaster } from "react-hot-toast";
 import InstructionsCategorise from "./instructionsCategorise";
 import InstructionsTraining from "./instructionsTraining";
 import SpreadSheetInput from "./spreadSheetInput";
@@ -63,8 +63,7 @@ const Demo = () => {
           categorisationTab:
             fetchedData?.props.userConfig.categorisationTab || "",
           categorisationRange:
-            fetchedData?.props.userConfig.categorisationRange ||
-            "A1:C200",
+            fetchedData?.props.userConfig.categorisationRange || "A1:C200",
           columnOrderTraining: fetchedData?.props.userConfig
             .columnOrderTraining || [
             { name: "Source", type: "source" },
@@ -139,6 +138,29 @@ const Demo = () => {
   ) => {
     const { expenseSheetId } = config || {};
     const formData = new FormData();
+    // Check if file exists in Supabase bucket
+    statusSetter(`Action started based on sheet ${expenseSheetId}`);
+
+    if (apiUrl === "/api/cleanAndClassify") {
+      const response = await supabase.storage.from("txclassify").list("", {
+        limit: 2,
+        offset: 0,
+        sortBy: { column: "name", order: "asc" },
+        search: expenseSheetId,
+      });
+      if (error) {
+        console.error("Failed to retrieve file list:", error);
+        toast.error("Can't find training data, please run training first", { position: 'bottom-right' });
+        statusSetter("")
+        return;
+        
+      }
+      if ((response?.data?.length === 0)) {
+        toast.error("Can't find training data, please run training first", { position: 'bottom-right' });
+        statusSetter("")
+        return;
+      }
+    }
 
     if (expenseSheetId) {
       formData.append("spreadsheetId", expenseSheetId);
@@ -173,6 +195,7 @@ const Demo = () => {
 
   return (
     <ProtectedPage>
+      <Toaster />
       <main className="flex flex-col min-h-screen bg-gradient-to-br from-first via-second to-third">
         <div className="flex-grow flex items-center justify-center p-10">
           <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
@@ -234,12 +257,11 @@ const Demo = () => {
                 Train
               </button>
 
-
               <StatusText text={trainingStatus} />
             </div>
           </div>
         </div>
-                      {/* user flow:
+        {/* user flow:
 1. upload the spreadsheet, 
 2. read the columns, 
 3. let the user assign the type of each column. 
