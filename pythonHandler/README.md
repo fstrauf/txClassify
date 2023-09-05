@@ -14,12 +14,12 @@ if __name__ == "__main__":
 run flask dev server
 ```
 export FLASK_APP=main.py
-flask run --port=3000
+flask run --port=3001
 ```
 
 run ngrok to route webhooks to your local machine
 
-```npx ngrok http 3000```
+```npx ngrok http 3001```
 
 Run this script locally
 ```gcloud auth application-default login
