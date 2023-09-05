@@ -6,17 +6,20 @@ export async function POST(req) {
   console.log("🚀 ~ file: route.js:5 ~ POST ~ data:", data.value)
 
   try {
-    const google_service_account = process.env.GOOGLE_SERVICE_ACCOUNT_NEXT;    
-    const creds = JSON.parse(google_service_account);
+    // const google_service_account = process.env.GOOGLE_SERVICE_ACCOUNT_NEXT;    
+    // const creds = JSON.parse(google_service_account);
+
+    const client_email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
+    const private_key = process.env.GOOGLE_SERVICE_PRIVATE_KEY
 
     // Create a JWT
     const token = jwt.sign({
-      iss: creds.client_email,
+      iss: client_email,
       scope: 'https://www.googleapis.com/auth/spreadsheets',
       aud: 'https://oauth2.googleapis.com/token',
       exp: Math.floor(Date.now() / 1000) + (60 * 60),  // 1 hour
       iat: Math.floor(Date.now() / 1000)
-    }, creds.private_key, { algorithm: 'RS256' });
+    }, private_key, { algorithm: 'RS256' });
 
     // Exchange the JWT for an access token
     const res = await fetch('https://oauth2.googleapis.com/token', {
