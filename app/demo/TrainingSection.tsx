@@ -19,6 +19,8 @@ interface TrainingSectionProps {
     range: string
   ) => void;
   sheetName: string;
+  trainingStatus: string;
+  setTrainingStatus: React.Dispatch<React.SetStateAction<string>>;
 }
 
 const TrainingSection: React.FC<TrainingSectionProps> = ({
@@ -26,8 +28,9 @@ const TrainingSection: React.FC<TrainingSectionProps> = ({
   handleInputChange,
   handleActionClick,
   sheetName,
+  trainingStatus,
+  setTrainingStatus
 }) => {
-  const [trainingStatus, setTrainingStatus] = useState("");
 
   return (
     <div className="flex-grow flex items-center justify-center p-10">
