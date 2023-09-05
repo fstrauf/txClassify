@@ -6,11 +6,7 @@ export async function POST(req) {
   console.log("🚀 ~ file: route.js:5 ~ POST ~ data:", data.value)
 
   try {
-    // const google_service_account = process.env.GOOGLE_SERVICE_ACCOUNT_NEXT;    
-    // const creds = JSON.parse(google_service_account);
-
     const client_email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
-    console.log("🚀 ~ file: route.js:13 ~ POST ~ client_email:", client_email)
     const private_key = process.env.GOOGLE_SERVICE_PRIVATE_KEY
 
     // Create a JWT
