@@ -12,9 +12,6 @@ export const metadata = {
   description: "Automatically categorise your monthly expenses using AI. Hook this App up to your Google Sheet and get your monthly budgeting done in no time.",
   alternates: {
     canonical: '/',
-    languages: {
-      'en-US': '/en-US'
-    },
   },
 };
 
