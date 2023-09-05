@@ -3,7 +3,6 @@ import UnauthorizedMessage from './Unauthorised';
 
 const ProtectedPage = ({ children }) => {
   const { user, error, isLoading } = useUser();
-  console.log("🚀 ~ file: ProtectedPage.js:7 ~ ProtectedPage ~ user:", user)
 
   if (isLoading) {
     // Render a loading state here if needed

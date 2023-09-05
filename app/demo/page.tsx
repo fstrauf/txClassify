@@ -44,6 +44,7 @@ const Demo = () => {
   });
   const [data, setData] = useState({});
   const [error, setError] = useState(null);
+  const [sheetName, setSheetName] = useState("");
 
   useEffect(() => {
     const fetchData = async () => {
@@ -80,12 +81,38 @@ const Demo = () => {
             { name: "Description", type: "description" },
           ],
         });
+        getSpreadSheetData(fetchedData?.props.userConfig.expenseSheetId);
       }
     };
 
     fetchData();
-    fetchStatus();
+    fetchStatus();    
   }, [user]);
+
+  function getSpreadSheetData(expenseSheetId: string) {
+    const body = { expenseSheetId };
+
+    fetch("/api/getSpreadSheetData", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then((response) => {
+        if (response.ok) {
+          return response.json();
+        } else {
+          throw new Error(`API call failed with status: ${response.status}`);
+        }
+      })
+      .then((data) => {
+        console.log("🚀 ~ file: page.tsx:137 ~ Demo ~ data:", data);
+        setSheetName(data?.spreadsheetName);
+        console.log("Fetched data:", data);
+      })
+      .catch((error) => {
+        console.error("An error occurred:", error);
+      });
+  }
 
   async function fetchStatus() {
     try {
@@ -112,7 +139,7 @@ const Demo = () => {
     }
   }
 
-  const handleInputChange = (
+  const handleInputChange = async (
     event: React.ChangeEvent<HTMLInputElement>,
     field: string
   ) => {
@@ -121,6 +148,9 @@ const Demo = () => {
       try {
         const url = new URL(value);
         value = url.pathname.split("/")[3];
+        if (value !== config.expenseSheetId) {
+          getSpreadSheetData(value)
+        }
       } catch (error) {
         console.error("Invalid URL:", error);
       }
@@ -150,14 +180,17 @@ const Demo = () => {
       });
       if (error) {
         console.error("Failed to retrieve file list:", error);
-        toast.error("Can't find training data, please run training first", { position: 'bottom-right' });
-        statusSetter("")
+        toast.error("Can't find training data, please run training first", {
+          position: "bottom-right",
+        });
+        statusSetter("");
         return;
-        
       }
-      if ((response?.data?.length === 0)) {
-        toast.error("Can't find training data, please run training first", { position: 'bottom-right' });
-        statusSetter("")
+      if (response?.data?.length === 0) {
+        toast.error("Can't find training data, please run training first", {
+          position: "bottom-right",
+        });
+        statusSetter("");
         return;
       }
     }
@@ -209,6 +242,7 @@ const Demo = () => {
                 handleSpreadsheetLinkChange={(e) =>
                   handleInputChange(e, "expenseSheetId")
                 }
+                sheetName={sheetName}
               />
               <RangeInput
                 tab={config.trainingTab}
