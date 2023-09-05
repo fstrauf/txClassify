@@ -19,6 +19,8 @@ interface ClassificationSectionProps {
     range: string
   ) => void;
   sheetName: string;
+  categorisationStatus: string;
+  setCategorisationStatus: React.Dispatch<React.SetStateAction<string>>;
 }
 
 const ClassificationSection: React.FC<ClassificationSectionProps> = ({
@@ -26,8 +28,10 @@ const ClassificationSection: React.FC<ClassificationSectionProps> = ({
   handleInputChange,
   handleActionClick,
   sheetName,
+  categorisationStatus,
+  setCategorisationStatus,
 }) => {
-  const [categorisationStatus, setCategorisationStatus] = useState("");
+  // const [categorisationStatus, setCategorisationStatus] = useState("");
 
   return (
     <div className="flex-grow flex items-center justify-center p-10">

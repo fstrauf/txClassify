@@ -228,12 +228,16 @@ const Demo = () => {
           handleInputChange={handleInputChange}
           handleActionClick={handleActionClick}
           sheetName={sheetName}
+          trainingStatus={trainingStatus}
+          setTrainingStatus={setTrainingStatus}
         />
         <ClassificationSection
           config={config}
           handleInputChange={handleInputChange}
           handleActionClick={handleActionClick}
-          sheetName={sheetName}
+          sheetName={sheetName}    
+          categorisationStatus={categorisationStatus}
+          setCategorisationStatus={setCategorisationStatus}      
         />
       </main>
     </ProtectedPage>
