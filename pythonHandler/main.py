@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 from httpx import HTTPError
 import numpy as np
 import tempfile
-import requests
+# import requests
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
 from urllib.parse import urlparse, parse_qs
