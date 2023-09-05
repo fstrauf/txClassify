@@ -1,6 +1,7 @@
 import os
 import json
 from flask import Flask, request, jsonify
+
 # from google.cloud import storage
 from httpx import HTTPError
 import numpy as np
@@ -215,7 +216,7 @@ def handle_classify_webhook():
         return "", 200
 
     except Exception as e:
-        print(f"An error occurred: {str(e)}", exc_info=True)
+        print(f"An error occurred: {str(e)}")
         # reset runkey if error occurs
         updateRunStatus("", "categorisation", userId)
         raise
@@ -395,28 +396,30 @@ def save_embeddings(bucket_name, file_name, embeddings_array):
     # save_to_gcs(bucket_name, file_name, embeddings_array)
     save_to_supabase(bucket_name, file_name, embeddings_array)
 
-def fetch_embedding(bucket_name, file_name): 
+
+def fetch_embedding(bucket_name, file_name):
     # fetch_from_gcs(bucket_name, file_name)
-    fetch_from_supabase(bucket_name, file_name):
+    return fetch_from_supabase(bucket_name, file_name)
+
 
 def fetch_from_supabase(bucket_name, file_name):
     # Download the .npy file to a temporary file
-    with tempfile.NamedTemporaryFile() as temp_file:
+    with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
         response = supabase.storage.from_(bucket_name).download(file_name)
 
-        # Check if the download was successful
-        if response.status_code == 200:
-            # Write the content to the temporary file
-            temp_file.write(response.content)
-            temp_file.flush()
+        # Write the content to the temporary file
+        temp_file.write(response)
+        temp_file.flush()
 
-            # Load the numpy array from the temporary file
-            embeddings_array = np.load(temp_file.name, allow_pickle=True)
-        else:
-            print(f"Download failed with status code {response.status_code}")
-            embeddings_array = None
+    # Load the numpy array from the temporary file
+    embeddings_array = np.load(temp_file.name, allow_pickle=True)['arr_0']
+    # print("🚀 ~ file: main.py:416 ~ embeddings_array:", embeddings_array)
+
+    # Delete the temporary file
+    os.unlink(temp_file.name)
 
     return embeddings_array
+
 
 # def save_to_gcs(bucket_name, file_name, embeddings_array):
 #     client = storage.Client()
@@ -430,15 +433,13 @@ def fetch_from_supabase(bucket_name, file_name):
 
 
 def save_to_supabase(bucket_name, file_name, embeddings_array):
-    print("🚀 ~ file: main.py:407 ~ file_name:", file_name)
     # Create a temporary file to store the NumPy array
-    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+    with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
         # Save the NumPy array to the temporary file
-        np.save(temp_file, embeddings_array)
+        np.savez_compressed(temp_file, embeddings_array)
 
     # Get the file path of the temporary file
     file_path = temp_file.name
-    print("🚀 ~ file: main.py:414 ~ file_path:", file_path)
 
     # Upload the temporary file to Supabase Storage
     with open(file_path, "rb") as f:
@@ -446,10 +447,8 @@ def save_to_supabase(bucket_name, file_name, embeddings_array):
             file_name, f, file_options={"x-upsert": "true"}
         )
 
-    print("🚀 ~ file: main.py:420 ~ response:", response)
     # Remove the temporary file
     os.unlink(file_path)
-
 
     if response.status_code == 200:
         # Successful upload
