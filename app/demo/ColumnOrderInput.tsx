@@ -5,11 +5,13 @@ interface ColumnOrderInputProps {
     index: number; name: string; type: string 
 }[];
   handleColumnsChange: (columns: { name: string; type: string }[]) => void;
+  options: string[];
 }
 
 const ColumnOrderInput: React.FC<ColumnOrderInputProps> = ({
   columns,
   handleColumnsChange,
+  options, 
 }) => {
   const addColumn = () => {
     const newIndex = columns.length > 0 ? columns[columns.length - 1].index + 1 : 0;
@@ -59,18 +61,16 @@ const ColumnOrderInput: React.FC<ColumnOrderInputProps> = ({
                   />
                 </td>
                 <td className="px-4 py-2">
-                  <select
-                    value={column.type}
-                    onChange={(event) => handleInputChange(event, index, "type")}
-                    className="mt-1 text-gray-900 p-1 rounded-md"
-                  >
-                    <option value="">Select type</option>
-                    <option value="source">Source</option>
-                    <option value="date">Date</option>
-                    <option value="description">Description</option>
-                    <option value="amount">Amount</option>
-                    <option value="category">Category</option>
-                  </select>
+                <select
+                value={column.type}
+                onChange={(event) => handleInputChange(event, index, "type")}
+                className="mt-1 text-gray-900 p-1 rounded-md"
+              >
+                <option value="">Select type</option>
+                {options.map((option, i) => ( // Replace static options with dynamic ones
+                  <option key={i} value={option}>{option}</option>
+                ))}
+              </select>
                 </td>
                 <td className="px-4 py-2">
                   <button

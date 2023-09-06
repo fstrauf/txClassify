@@ -6,9 +6,11 @@ import { SaveConfigButton } from "../../components/buttons/save-config-button";
 import { ConfigSection } from "./ConfigSection";
 import StatusText from "./statusText";
 import { ConfigType } from "./page";
+import ColumnOrderInput from "./ColumnOrderInput";
 
 interface ClassificationSectionProps {
   config: ConfigType;
+  setConfig: React.Dispatch<React.SetStateAction<ConfigType>>;
   handleInputChange: (
     event: React.ChangeEvent<HTMLInputElement>,
     field: string
@@ -25,6 +27,7 @@ interface ClassificationSectionProps {
 
 const ClassificationSection: React.FC<ClassificationSectionProps> = ({
   config,
+  setConfig,
   handleInputChange,
   handleActionClick,
   sheetName,
@@ -56,6 +59,16 @@ const ClassificationSection: React.FC<ClassificationSectionProps> = ({
               handleInputChange(e, "categorisationRange")
             }
             helpText="add the name of the sheet and the range that covers the columns Date, Description, Amount of the expenses you want to categorise"
+          />
+          <ColumnOrderInput
+            columns={config.columnOrderCategorisation}
+            handleColumnsChange={(columns: any) =>
+              setConfig((prevConfig: any) => ({
+                ...prevConfig,
+                columnOrderCategorisation: columns,
+              }))
+            }
+            options={["date", "description", "amount"]}
           />
           <SaveConfigButton config={config} />
         </ConfigSection>

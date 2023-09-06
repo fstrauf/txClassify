@@ -19,7 +19,7 @@ export interface ConfigType {
   categorisationTab: string;
   categorisationRange: string;
   columnOrderTraining: { name: string; type: string; index: number}[];
-  columnOrderCategorisation: { name: string; type: string }[];
+  columnOrderCategorisation: { name: string; type: string; index: number }[];
 }
 
 const Demo = () => {
@@ -68,9 +68,9 @@ const Demo = () => {
           ],
           columnOrderCategorisation: fetchedData?.props.userConfig
             .columnOrderCategorisation || [
-            { name: "Date", type: "date" },
-            { name: "Amount", type: "amount" },
-            { name: "Description", type: "description" },
+            { name: "A", type: "date", index: 1 },
+            { name: "B", type: "amount", index: 2 },
+            { name: "C", type: "description", index: 3 },
           ],
         });
         getSpreadSheetData(fetchedData?.props.userConfig.expenseSheetId);
@@ -156,11 +156,9 @@ const Demo = () => {
   const handleActionClick = async (
     apiUrl: string,
     statusSetter: Function,
-    range: string
   ) => {
     const { expenseSheetId, columnOrderTraining, trainingTab } = config || {};
-    // const formData = new FormData();
-    // Check if file exists in Supabase bucket
+    
     statusSetter(`Action started based on sheet ${expenseSheetId}`);
 
     if (apiUrl === "/api/cleanAndClassify") {
@@ -187,17 +185,7 @@ const Demo = () => {
       }
     }
 
-    // if (expenseSheetId) {
-    //   formData.append("spreadsheetId", expenseSheetId);
-    // }
-    // if (range) {
-    //   formData.append("range", columnOrderTraining);
-    // }
     const userId = user?.sub;
-    // if (userId) {
-    //   formData.append("userId", userId);
-    // }
-
     const body = { expenseSheetId, columnOrderTraining, userId, trainingTab};
 
     try {
@@ -206,7 +194,6 @@ const Demo = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        // body: formData,
       });
 
       if (response.ok) {
@@ -237,6 +224,7 @@ const Demo = () => {
         />
         <ClassificationSection
           config={config}
+          setConfig={setConfig}
           handleInputChange={handleInputChange}
           handleActionClick={handleActionClick}
           sheetName={sheetName}    

@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 from httpx import HTTPError
 import numpy as np
 import tempfile
+
 # import requests
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
@@ -38,17 +39,24 @@ def handle_500(e):
 
 @app.route("/runClassify", methods=["POST"])
 def runClassify():
-    data = request.form
-    sheetId = data.get("spreadsheetId")
+    data = request.get_json()
+    sheetId = data.get("expenseSheetId")
     userId = data.get("userId")
+    columnOrderCategorisation = data.get("columnOrderCategorisation")
+    categorisationTab = data.get("categorisationTab")
 
-    data_range = data.get("range")
+    # data_range = data.get("range")
+    firstColumn, secondColumn, columnHeader = get_column_names_categorisation(
+        columnOrderCategorisation
+    )
 
     updateProcessStatus("Fetching spreadsheet data", "classify", userId)
-    sheetData = getSpreadsheetData(sheetId, data_range)
+    sheetData = getSpreadsheetData(
+        sheetId, categorisationTab + "!" + firstColumn + ":" + secondColumn
+    )
     # all of these are important and could potentially include even more data.
     # i should again infer this from the type
-    df = cleanSpreadSheetData(sheetData, ["date", "amount", "description"])
+    df = cleanSpreadSheetData(sheetData, columnHeader)
 
     updateProcessStatus("Cleaned spreadsheet data", "classify", userId)
     runPrediction(
@@ -71,26 +79,25 @@ def runClassify():
 @app.route("/runTraining", methods=["POST"])
 def runTraining():
     data = request.get_json()
-    print("🚀 ~ file: main.py:74 ~ data:", data)
     sheetId = data.get("expenseSheetId")
     userId = data.get("userId")
     columnOrderTraining = data.get("columnOrderTraining")
     trainingTab = data.get("trainingTab")
-    data_range = data.get("range")
-    
-    descriptionColumn, categoryColumn, columnOrder=get_column_names_and_types(columnOrderTraining)
+
+    descriptionColumn, categoryColumn, columnOrder = get_column_names_and_types(
+        columnOrderTraining
+    )
 
     updateProcessStatus("Fetching spreadsheet data", "training", userId)
-    sheetData = getSpreadsheetData(sheetId, trainingTab + "!" + categoryColumn + ":" + descriptionColumn)
-    # here I need the order of the 5 different categories
-    # i can infer that from the type given in the config
-    # then i can also only store and use the minimum columns i.e. I only need the description column
-    df = cleanSpreadSheetData(        
+    sheetData = getSpreadsheetData(
+        sheetId, trainingTab + "!" + categoryColumn + ":" + descriptionColumn
+    )
+
+    df = cleanSpreadSheetData(
         sheetData,
         # ["source", "date", "description", "amount", "category"],
-        columnOrder
+        columnOrder,
     )
-    print("🚀 ~ file: main.py:90 ~ df:", df)
     df = df.drop_duplicates(subset=["description"])
     updateProcessStatus("Cleaned up spreadsheet data", "training", userId)
     df["item_id"] = range(0, len(df))
@@ -230,9 +237,10 @@ def handle_classify_webhook():
         updateRunStatus("", "categorisation", userId)
         raise
 
+
 def get_column_names_and_types(columnOrderTraining):
     # Sort the list by 'index'
-    sorted_list = sorted(columnOrderTraining, key=lambda x: x['index'])
+    sorted_list = sorted(columnOrderTraining, key=lambda x: x["index"])
 
     # Initialize variables
     description_name = None
@@ -242,18 +250,33 @@ def get_column_names_and_types(columnOrderTraining):
 
     # Iterate over the sorted list
     for item in sorted_list:
-        if item['type'] == 'description':
-            description_name = item['name']
+        if item["type"] == "description":
+            description_name = item["name"]
             start_collecting = True
 
         if start_collecting:
-            types_in_between.append(item['type'])
+            types_in_between.append(item["type"])
 
-        if item['type'] == 'category':
-            category_name = item['name']
+        if item["type"] == "category":
+            category_name = item["name"]
             break
 
     return description_name, category_name, types_in_between
+
+
+def get_column_names_categorisation(columnOrder):
+    # Sort the list by 'index'
+    sorted_list = sorted(columnOrder, key=lambda x: x["index"])
+
+    # Get the names of the first and last items
+    first_name = sorted_list[0]["name"]
+    last_name = sorted_list[-1]["name"]
+
+    # Get all types in an array
+    types = [item["type"] for item in sorted_list]
+
+    return first_name, last_name, types
+
 
 def generate_timestamp():
     current_time = datetime.now()
@@ -437,7 +460,7 @@ def fetch_embedding(bucket_name, file_name):
 
 def fetch_from_supabase(bucket_name, file_name):
     # Download the .npy file to a temporary file
-    with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+    with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
         response = supabase.storage.from_(bucket_name).download(file_name)
 
         # Write the content to the temporary file
@@ -445,7 +468,7 @@ def fetch_from_supabase(bucket_name, file_name):
         temp_file.flush()
 
     # Load the numpy array from the temporary file
-    embeddings_array = np.load(temp_file.name, allow_pickle=True)['arr_0']
+    embeddings_array = np.load(temp_file.name, allow_pickle=True)["arr_0"]
     # print("🚀 ~ file: main.py:416 ~ embeddings_array:", embeddings_array)
 
     # Delete the temporary file
@@ -467,7 +490,7 @@ def fetch_from_supabase(bucket_name, file_name):
 
 def save_to_supabase(bucket_name, file_name, embeddings_array):
     # Create a temporary file to store the NumPy array
-    with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+    with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
         # Save the NumPy array to the temporary file
         np.savez_compressed(temp_file, embeddings_array)
 

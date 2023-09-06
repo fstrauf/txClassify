@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 export async function POST(req) {
   try {
     const data = await req.json();
-    console.log("🚀 ~ file: route.js:6 ~ POST ~ data:", data)
 
     const apiUrl = `${process.env.BACKEND_API}/runTraining`;
   

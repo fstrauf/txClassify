@@ -84,6 +84,7 @@ more basic:
                 columnOrderTraining: columns,
               }))
             }
+            options={["source", "date", "description", "amount", "category"]}
           />
           <SaveConfigButton config={config} />
         </ConfigSection>
