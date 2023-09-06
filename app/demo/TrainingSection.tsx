@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import InstructionsTraining from "./InstructionsTraining";
 import SpreadSheetInput from "./SpreadSheetInput";
 import RangeInput from "./RangeInput";
@@ -6,9 +6,11 @@ import { SaveConfigButton } from "../../components/buttons/save-config-button";
 import { ConfigSection } from "./ConfigSection";
 import StatusText from "./statusText";
 import { ConfigType } from "./page";
+import ColumnOrderInput from "./ColumnOrderInput";
 
 interface TrainingSectionProps {
   config: ConfigType;
+  setConfig: React.Dispatch<React.SetStateAction<ConfigType>>;
   handleInputChange: (
     event: React.ChangeEvent<HTMLInputElement>,
     field: string
@@ -25,13 +27,13 @@ interface TrainingSectionProps {
 
 const TrainingSection: React.FC<TrainingSectionProps> = ({
   config,
+  setConfig,
   handleInputChange,
   handleActionClick,
   sheetName,
   trainingStatus,
-  setTrainingStatus
+  setTrainingStatus,
 }) => {
-
   return (
     <div className="flex-grow flex items-center justify-center p-10">
       <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
@@ -43,15 +45,7 @@ const TrainingSection: React.FC<TrainingSectionProps> = ({
 more basic:
 
 1. let the user add the type of his columns*/}
-        {/* <ColumnOrderInput
-              columns={config.columnOrderTraining}
-              handleColumnsChange={(columns: any) =>
-                setConfig((prevConfig) => ({
-                  ...prevConfig,
-                  columnOrderTraining: columns,
-                }))
-              }
-            /> */}
+
         {/* <ColumnMapping
               googleSheetColumns={config.columnOrderTraining}
               expectedColumns={[
@@ -80,7 +74,16 @@ more basic:
             range={config.trainingRange}
             handleTabChange={(e) => handleInputChange(e, "trainingTab")}
             handleRangeChange={(e) => handleInputChange(e, "trainingRange")}
-            helpText="add the name of the sheet and the range that covers the columns Source, Date, Description, Amount, Category of your already categorised expenses"
+            helpText="add the name of the sheet tab that contain your already categorised expenses"
+          />
+          <ColumnOrderInput
+            columns={config.columnOrderTraining}
+            handleColumnsChange={(columns: any) =>
+              setConfig((prevConfig: any) => ({
+                ...prevConfig,
+                columnOrderTraining: columns,
+              }))
+            }
           />
           <SaveConfigButton config={config} />
         </ConfigSection>

@@ -70,21 +70,27 @@ def runClassify():
 
 @app.route("/runTraining", methods=["POST"])
 def runTraining():
-    data = request.form
-    sheetId = data.get("spreadsheetId")
+    data = request.get_json()
+    print("🚀 ~ file: main.py:74 ~ data:", data)
+    sheetId = data.get("expenseSheetId")
     userId = data.get("userId")
-
+    columnOrderTraining = data.get("columnOrderTraining")
+    trainingTab = data.get("trainingTab")
     data_range = data.get("range")
+    
+    descriptionColumn, categoryColumn, columnOrder=get_column_names_and_types(columnOrderTraining)
 
     updateProcessStatus("Fetching spreadsheet data", "training", userId)
-    sheetData = getSpreadsheetData(sheetId, data_range)
+    sheetData = getSpreadsheetData(sheetId, trainingTab + "!" + categoryColumn + ":" + descriptionColumn)
     # here I need the order of the 5 different categories
     # i can infer that from the type given in the config
     # then i can also only store and use the minimum columns i.e. I only need the description column
-    df = cleanSpreadSheetData(
+    df = cleanSpreadSheetData(        
         sheetData,
-        ["source", "date", "description", "amount", "category"],
+        # ["source", "date", "description", "amount", "category"],
+        columnOrder
     )
+    print("🚀 ~ file: main.py:90 ~ df:", df)
     df = df.drop_duplicates(subset=["description"])
     updateProcessStatus("Cleaned up spreadsheet data", "training", userId)
     df["item_id"] = range(0, len(df))
@@ -184,6 +190,7 @@ def handle_classify_webhook():
         df_output = pd.DataFrame.from_dict(output)
 
         trainedIndexCategories = fetch_embedding(bucket_name, sheetId + "_index.npy")
+        print("🚀 ~ file: main.py:190 ~ trainedIndexCategories:", trainedIndexCategories)
 
         trained_categories_df = pd.DataFrame(trainedIndexCategories)
 
@@ -199,12 +206,14 @@ def handle_classify_webhook():
         )
         # Drop the unnecessary columns
         combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
+        print("🚀 ~ file: main.py:203 ~ combined_df:", combined_df)
 
         sheetRange = config["categorisationTab"] + "!" + config["categorisationRange"]
 
         newExpenses = getSpreadsheetData(sheetId, sheetRange)
 
         df_newExpenses = prepSpreadSheetData(newExpenses, combined_df)
+        print("🚀 ~ file: main.py:211 ~ df_newExpenses:", df_newExpenses)
         updateProcessStatus(
             "Preparing spreadsheet data, appending to expense sheet", "classify", userId
         )
@@ -221,6 +230,30 @@ def handle_classify_webhook():
         updateRunStatus("", "categorisation", userId)
         raise
 
+def get_column_names_and_types(columnOrderTraining):
+    # Sort the list by 'index'
+    sorted_list = sorted(columnOrderTraining, key=lambda x: x['index'])
+
+    # Initialize variables
+    description_name = None
+    category_name = None
+    types_in_between = []
+    start_collecting = False
+
+    # Iterate over the sorted list
+    for item in sorted_list:
+        if item['type'] == 'description':
+            description_name = item['name']
+            start_collecting = True
+
+        if start_collecting:
+            types_in_between.append(item['type'])
+
+        if item['type'] == 'category':
+            category_name = item['name']
+            break
+
+    return description_name, category_name, types_in_between
 
 def generate_timestamp():
     current_time = datetime.now()
@@ -520,7 +553,8 @@ def storeCleanedSheetOrder(df, customerName):
 
 
 def cleanSpreadSheetData(sheetData, columns):
-    df = pd.DataFrame(sheetData, columns=columns)
+    df = pd.DataFrame(sheetData[1:], columns=columns)
+    print("🚀 ~ file: main.py:539 ~ df:", df)
     df["description"] = df["description"].apply(clean_Text)
     return df
 

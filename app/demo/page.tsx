@@ -18,7 +18,7 @@ export interface ConfigType {
   trainingRange: string;
   categorisationTab: string;
   categorisationRange: string;
-  columnOrderTraining: { name: string; type: string }[];
+  columnOrderTraining: { name: string; type: string; index: number}[];
   columnOrderCategorisation: { name: string; type: string }[];
 }
 
@@ -60,12 +60,11 @@ const Demo = () => {
             fetchedData?.props.userConfig.categorisationRange || "A1:C200",
           columnOrderTraining: fetchedData?.props.userConfig
             .columnOrderTraining || [
-            { name: "Source", type: "source" },
-            { name: "Date", type: "date" },
-            { name: "Description", type: "description" },
-            { name: "Amount", type: "amount" },
-            // { name: "Credit", type: "credit" },
-            { name: "Categories", type: "categories" },
+            { name: "A", type: "source", index: 1 },
+            { name: "B", type: "date", index: 2 },
+            { name: "C", type: "description", index: 3 },
+            { name: "D", type: "amount", index: 4 },
+            { name: "E", type: "categories", index: 5 },
           ],
           columnOrderCategorisation: fetchedData?.props.userConfig
             .columnOrderCategorisation || [
@@ -159,8 +158,8 @@ const Demo = () => {
     statusSetter: Function,
     range: string
   ) => {
-    const { expenseSheetId } = config || {};
-    const formData = new FormData();
+    const { expenseSheetId, columnOrderTraining, trainingTab } = config || {};
+    // const formData = new FormData();
     // Check if file exists in Supabase bucket
     statusSetter(`Action started based on sheet ${expenseSheetId}`);
 
@@ -188,22 +187,26 @@ const Demo = () => {
       }
     }
 
-    if (expenseSheetId) {
-      formData.append("spreadsheetId", expenseSheetId);
-    }
-    if (range) {
-      formData.append("range", range);
-    }
+    // if (expenseSheetId) {
+    //   formData.append("spreadsheetId", expenseSheetId);
+    // }
+    // if (range) {
+    //   formData.append("range", columnOrderTraining);
+    // }
     const userId = user?.sub;
-    if (userId) {
-      formData.append("userId", userId);
-    }
+    // if (userId) {
+    //   formData.append("userId", userId);
+    // }
+
+    const body = { expenseSheetId, columnOrderTraining, userId, trainingTab};
 
     try {
       statusSetter(`Action started based on sheet ${expenseSheetId}`);
       const response = await fetch(apiUrl, {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        // body: formData,
       });
 
       if (response.ok) {
@@ -225,6 +228,7 @@ const Demo = () => {
       <main className="flex flex-col min-h-screen bg-gradient-to-br from-first via-second to-third">
         <TrainingSection
           config={config}
+          setConfig={setConfig}
           handleInputChange={handleInputChange}
           handleActionClick={handleActionClick}
           sheetName={sheetName}
