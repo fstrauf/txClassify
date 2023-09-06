@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
 
 export async function POST(req) {
-  const formData  = await req.formData();
-  console.log("🚀 ~ file: route.js:6 ~ POST ~ formData:", formData)
+  const data = await req.json();
 
   const apiUrl = `${process.env.BACKEND_API}/runClassify`;
  
   try {
     const response = await fetch(apiUrl, {
       method: "POST",
-      body: formData,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
     });
 
     if (!response.ok) {
