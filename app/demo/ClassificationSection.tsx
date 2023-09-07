@@ -49,7 +49,7 @@ const ClassificationSection = ({}) => {
               handleActionClick(
                 "/api/cleanAndClassify",
                 setCategorisationStatus,
-                `${config.categorisationTab}!${config.categorisationRange}`
+                // `${config.categorisationTab}!${config.categorisationRange}`
               )
             }
             className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:opacity-40"
