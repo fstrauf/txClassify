@@ -1,17 +1,14 @@
-import React, { useState } from "react";
+import React from "react";
 import InstructionsCategorise from "./InstructionsCategorise";
 import SpreadSheetInput from "./SpreadSheetInput";
 import RangeInput from "./RangeInput";
 import { SaveConfigButton } from "../../components/buttons/save-config-button";
 import { ConfigSection } from "./ConfigSection";
 import StatusText from "./statusText";
-// import { ConfigType } from "./page";
 import ColumnOrderInput from "./ColumnOrderInput";
 import { useAppContext } from "./DemoAppProvider";
 
-
 const ClassificationSection = ({}) => {
-  // const [categorisationStatus, setCategorisationStatus] = useState("");
   const {
     categorisationStatus,
     setCategorisationStatus,
@@ -28,20 +25,9 @@ const ClassificationSection = ({}) => {
         </h1>
         <InstructionsCategorise />
         <ConfigSection>
-          <SpreadSheetInput
-            // spreadsheetLink={config.expenseSheetId}
-            handleSpreadsheetLinkChange={(e) =>
-              handleInputChange(e, "expenseSheetId")
-            }
-            // sheetName={sheetName}
-          />
+          <SpreadSheetInput />
           <RangeInput
-            // tab={config.categorisationTab}
-            // range={config.categorisationRange}
             handleTabChange={(e) => handleInputChange(e, "categorisationTab")}
-            handleRangeChange={(e) =>
-              handleInputChange(e, "categorisationRange")
-            }
             helpText="add the name of the sheet and the range that covers the columns Date, Description, Amount of the expenses you want to categorise"
           />
           <ColumnOrderInput
@@ -54,7 +40,7 @@ const ClassificationSection = ({}) => {
             }
             options={["date", "description", "amount"]}
           />
-          <SaveConfigButton config={config} />
+          <SaveConfigButton />
         </ConfigSection>
 
         <div className="flex gap-3 items-center">

@@ -1,44 +1,8 @@
-import { createClient } from "@supabase/supabase-js";
-import { useUser } from "@auth0/nextjs-auth0/client";
-import { useState } from "react";
-import toast, { Toaster } from "react-hot-toast";
+import { Toaster } from "react-hot-toast";
+import { useAppContext } from "../../app/demo/DemoAppProvider";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
-
-export const SaveConfigButton = ({ config }) => {
-  const { user } = useUser();
-  const [saveActive, setSaveActive] = useState(false);
-
-  const handleSaveClick = async () => {
-    const { expenseSheetId, trainingRange, categorisationRange, trainingTab, categorisationTab, columnOrderTraining, columnOrderCategorisation } = config;
-    setSaveActive(true);
-    const { data, error } = await supabase
-      .from("account")
-      .upsert({
-        userId: user.sub,
-        expenseSheetId,
-        trainingRange,
-        categorisationRange,
-        categorisationTab,
-        trainingTab,
-        columnOrderTraining,
-        columnOrderCategorisation
-      })
-      .select();
-
-    if (error) {
-      console.error("Error upserting data:", error);
-      setSaveActive(false);
-      toast.error('Please sign in to save calculations', { position: 'bottom-right' })
-    } else {
-      console.log("Upserted data:", data);
-      setSaveActive(false);
-      toast.success('Done', { position: 'bottom-right' })
-    }
-  };
+export const SaveConfigButton = () => {  
+  const { saveActive, handleSaveClick } = useAppContext();
 
   return (
     <div className="py-2">
