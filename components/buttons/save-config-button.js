@@ -9,12 +9,11 @@ const supabase = createClient(
 );
 
 export const SaveConfigButton = ({ config }) => {
-  console.log("🚀 ~ file: save-config-button.js:12 ~ SaveConfigButton ~ config:", config)
   const { user } = useUser();
   const [saveActive, setSaveActive] = useState(false);
 
   const handleSaveClick = async () => {
-    const { expenseSheetId, trainingRange, categorisationRange, trainingTab, categorisationTab, columnOrderTraining } = config;
+    const { expenseSheetId, trainingRange, categorisationRange, trainingTab, categorisationTab, columnOrderTraining, columnOrderCategorisation } = config;
     setSaveActive(true);
     const { data, error } = await supabase
       .from("account")
@@ -25,7 +24,8 @@ export const SaveConfigButton = ({ config }) => {
         categorisationRange,
         categorisationTab,
         trainingTab,
-        columnOrderTraining
+        columnOrderTraining,
+        columnOrderCategorisation
       })
       .select();
 

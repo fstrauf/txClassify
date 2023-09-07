@@ -5,55 +5,39 @@ import RangeInput from "./RangeInput";
 import { SaveConfigButton } from "../../components/buttons/save-config-button";
 import { ConfigSection } from "./ConfigSection";
 import StatusText from "./statusText";
-import { ConfigType } from "./page";
+// import { ConfigType } from "./page";
 import ColumnOrderInput from "./ColumnOrderInput";
+import { useAppContext } from "./DemoAppProvider";
 
-interface ClassificationSectionProps {
-  config: ConfigType;
-  setConfig: React.Dispatch<React.SetStateAction<ConfigType>>;
-  handleInputChange: (
-    event: React.ChangeEvent<HTMLInputElement>,
-    field: string
-  ) => void;
-  handleActionClick: (
-    apiUrl: string,
-    statusSetter: Function,
-    range: string
-  ) => void;
-  sheetName: string;
-  categorisationStatus: string;
-  setCategorisationStatus: React.Dispatch<React.SetStateAction<string>>;
-}
 
-const ClassificationSection: React.FC<ClassificationSectionProps> = ({
-  config,
-  setConfig,
-  handleInputChange,
-  handleActionClick,
-  sheetName,
-  categorisationStatus,
-  setCategorisationStatus,
-}) => {
+const ClassificationSection = ({}) => {
   // const [categorisationStatus, setCategorisationStatus] = useState("");
-
+  const {
+    categorisationStatus,
+    setCategorisationStatus,
+    handleInputChange,
+    handleActionClick,
+    config,
+    setConfig,
+  } = useAppContext();
   return (
     <div className="flex-grow flex items-center justify-center p-10">
       <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
         <h1 className="text-3xl font-bold leading-tight text-center">
           Step 2: Classify your Expenses
         </h1>
-        <InstructionsCategorise trainingTab={config.trainingTab} />
+        <InstructionsCategorise />
         <ConfigSection>
           <SpreadSheetInput
-            spreadsheetLink={config.expenseSheetId}
+            // spreadsheetLink={config.expenseSheetId}
             handleSpreadsheetLinkChange={(e) =>
               handleInputChange(e, "expenseSheetId")
             }
-            sheetName={sheetName}
+            // sheetName={sheetName}
           />
           <RangeInput
-            tab={config.categorisationTab}
-            range={config.categorisationRange}
+            // tab={config.categorisationTab}
+            // range={config.categorisationRange}
             handleTabChange={(e) => handleInputChange(e, "categorisationTab")}
             handleRangeChange={(e) =>
               handleInputChange(e, "categorisationRange")

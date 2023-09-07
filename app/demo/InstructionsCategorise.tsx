@@ -1,11 +1,9 @@
 import Link from "next/link";
 import CopyableText from "./copyableText";
+import { useAppContext } from "./DemoAppProvider";
 
-interface InstructionsCategoriseProps {
-  trainingTab: string;
-}
-
-export default function InstructionsCategorise({ trainingTab }: InstructionsCategoriseProps) {
+export default function InstructionsCategorise() {
+  const { config } = useAppContext();
   return (
     <ol className="list-decimal ml-8 prose prose-invert mx-auto">
       <li>
@@ -30,7 +28,10 @@ export default function InstructionsCategorise({ trainingTab }: InstructionsCate
         The result will be added to your main tab (the one configured in the
         training section)
       </li>
-      <li>Once completed, head over to the {trainingTab} tab to review and adjust the categories.</li>
+      <li>
+        Once completed, head over to the {config.trainingTab} tab to review and
+        adjust the categories.
+      </li>
     </ol>
   );
 }
