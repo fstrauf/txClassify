@@ -29,6 +29,9 @@ interface AppContextType {
   handleActionClick: (apiUrl: string, statusSetter: Function) => Promise<void>;
   sheetName: string;
   setSheetName: React.Dispatch<React.SetStateAction<string>>;
+  saveActive: boolean;
+  setSaveActive: React.Dispatch<React.SetStateAction<boolean>>;
+  handleSaveClick: () => Promise<void>;
 }
 
 // Create a context
@@ -65,6 +68,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
   const [data, setData] = useState({});
   const [error, setError] = useState(null);
   const [sheetName, setSheetName] = useState("");
+  const [saveActive, setSaveActive] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -178,11 +182,20 @@ export const AppProvider = ({ children }: AppProviderProps) => {
   };
 
   const handleActionClick = async (apiUrl: string, statusSetter: Function) => {
-    const { expenseSheetId, columnOrderTraining, trainingTab, categorisationTab, columnOrderCategorisation } = config || {};
+    const {
+      expenseSheetId,
+      columnOrderTraining,
+      trainingTab,
+      categorisationTab,
+      columnOrderCategorisation,
+    } = config || {};
 
     statusSetter(`Action started based on sheet ${expenseSheetId}`);
     const userId = user?.sub;
     let body = {};
+
+    handleSaveClick()
+
     if (apiUrl === "/api/cleanAndClassify") {
       const response = await supabase.storage.from("txclassify").list("", {
         limit: 2,
@@ -205,7 +218,12 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         statusSetter("");
         return;
       }
-      body = { expenseSheetId, columnOrderCategorisation, userId, categorisationTab };
+      body = {
+        expenseSheetId,
+        columnOrderCategorisation,
+        userId,
+        categorisationTab,
+      };
     } else {
       body = { expenseSheetId, columnOrderTraining, userId, trainingTab };
     }
@@ -231,6 +249,45 @@ export const AppProvider = ({ children }: AppProviderProps) => {
     }
   };
 
+  const handleSaveClick = async () => {
+    const {
+      expenseSheetId,
+      trainingRange,
+      categorisationRange,
+      trainingTab,
+      categorisationTab,
+      columnOrderTraining,
+      columnOrderCategorisation,
+    } = config;
+    setSaveActive(true);
+    const { data, error } = await supabase
+      .from("account")
+      .upsert({
+        userId: user?.sub,
+        expenseSheetId,
+        trainingRange,
+        categorisationRange,
+        categorisationTab,
+        trainingTab,
+        columnOrderTraining,
+        columnOrderCategorisation,
+      })
+      .select();
+
+    if (error) {
+      console.error("Error upserting data:", error);
+      setSaveActive(false);
+      toast.error("Please sign in to save calculations", {
+        position: "bottom-right",
+      });
+    } else {
+      console.log("Upserted data:", data);
+      setSaveActive(false);
+      toast.success("Configuration Saved!", { position: "bottom-right" });
+    }
+  };
+
+
   return (
     <AppContext.Provider
       value={{
@@ -245,6 +302,9 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         handleActionClick,
         sheetName,
         setSheetName,
+        saveActive,
+        setSaveActive,
+        handleSaveClick,
       }}
     >
       {children}
