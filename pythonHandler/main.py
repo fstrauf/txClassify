@@ -40,23 +40,26 @@ def handle_500(e):
 @app.route("/runClassify", methods=["POST"])
 def runClassify():
     data = request.get_json()
+    print("🚀 ~ file: main.py:43 ~ data:", data)
     sheetId = data.get("expenseSheetId")
     userId = data.get("userId")
     columnOrderCategorisation = data.get("columnOrderCategorisation")
     categorisationTab = data.get("categorisationTab")
 
+    print("🚀 ~ file: main.py:51 ~ columnOrderCategorisation:", columnOrderCategorisation)
     # data_range = data.get("range")
-    firstColumn, secondColumn, columnHeader = get_column_names_categorisation(
-        columnOrderCategorisation
+    firstColumn, secondColumn, columnHeader = get_column_names(
+        columnOrderCategorisation        
     )
 
     updateProcessStatus("Fetching spreadsheet data", "classify", userId)
-    sheetData = getSpreadsheetData(
+    sheetData = getSpreadsheetData(        
         sheetId, categorisationTab + "!" + firstColumn + ":" + secondColumn
     )
-    # all of these are important and could potentially include even more data.
-    # i should again infer this from the type
+    print("🚀 ~ file: main.py:57 ~ sheetData:", sheetData)
+
     df = cleanSpreadSheetData(sheetData, columnHeader)
+    print("🚀 ~ file: main.py:62 ~ df:", df)
 
     updateProcessStatus("Cleaned spreadsheet data", "classify", userId)
     runPrediction(
@@ -94,7 +97,7 @@ def runTraining():
     )
 
     df = cleanSpreadSheetData(
-        sheetData,
+        sheetData[1:],
         # ["source", "date", "description", "amount", "category"],
         columnOrder,
     )
@@ -183,18 +186,22 @@ def handle_classify_webhook():
         data_list = json.loads(data_string)
 
         df_unclassified_data = pd.DataFrame(data_list, columns=["description"])
+        print("🚀 ~ file: main.py:187 ~ df_unclassified_data:", df_unclassified_data)
 
         new_embeddings = json_to_embeddings(data)
 
         bucket_name = "txclassify"
         file_name = sheetId + ".npy"
         trained_embeddings = fetch_embedding(bucket_name, file_name)
+    
         updateProcessStatus("Fetched training results", "classify", userId)
-        output = classify_expenses(
+        output = classify_expenses(            
             df_unclassified_data, trained_embeddings, new_embeddings
         )
 
+        # for some reason the df_output here is shorter?!
         df_output = pd.DataFrame.from_dict(output)
+        print("🚀 ~ file: main.py:203 ~ df_output:", df_output)
 
         trainedIndexCategories = fetch_embedding(bucket_name, sheetId + "_index.npy")
         print("🚀 ~ file: main.py:190 ~ trainedIndexCategories:", trainedIndexCategories)
@@ -215,18 +222,24 @@ def handle_classify_webhook():
         combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
         print("🚀 ~ file: main.py:203 ~ combined_df:", combined_df)
 
-        sheetRange = config["categorisationTab"] + "!" + config["categorisationRange"]
+        print("🚀 ~ file: main.py:220 ~ :", config)
+        firstColumn, secondColumn, columnHeader = get_column_names(
+            config["columnOrderCategorisation"]            
+        )
+
+        sheetRange = (            
+            config["categorisationTab"] + "!" + firstColumn + ":" + secondColumn
+        )
+        print("🚀 ~ file: main.py:227 ~ sheetRange:", sheetRange)
 
         newExpenses = getSpreadsheetData(sheetId, sheetRange)
 
-        df_newExpenses = prepSpreadSheetData(newExpenses, combined_df)
+        df_newExpenses = prepSpreadSheetData(newExpenses, combined_df, columnHeader)
         print("🚀 ~ file: main.py:211 ~ df_newExpenses:", df_newExpenses)
         updateProcessStatus(
             "Preparing spreadsheet data, appending to expense sheet", "classify", userId
         )
-        append_mainSheet(
-            df_newExpenses, sheetId, config
-        )  # Explicitly pass sheetId here
+        append_mainSheet(df_newExpenses, sheetId, config)
         updateProcessStatus("completed", "classify", userId)
 
         return "", 200
@@ -264,8 +277,12 @@ def get_column_names_and_types(columnOrderTraining):
     return description_name, category_name, types_in_between
 
 
-def get_column_names_categorisation(columnOrder):
+def get_column_names(columnOrder):
     # Sort the list by 'index'
+    if columnOrder is None:
+        # Handle the case when columnOrder is None
+        # You might want to return some default value or raise an error
+        return None, None, None
     sorted_list = sorted(columnOrder, key=lambda x: x["index"])
 
     # Get the names of the first and last items
@@ -294,11 +311,11 @@ def getUserConfig(userId):
     return {}  # Return an empty dictionary if no data was found for the user
 
 
-def prepSpreadSheetData(newExpenses, combined_df):
-    df_newExpenses = pd.DataFrame(
-        newExpenses, columns=["date", "amount", "description"]
-    )
+def prepSpreadSheetData(newExpenses, combined_df, columns):
+    print("🚀 ~ file: main.py:308 ~ combined_df:", combined_df)
+    df_newExpenses = pd.DataFrame(newExpenses, columns=columns)
     df_newExpenses["amount"] = pd.to_numeric(df_newExpenses["amount"], errors="coerce")
+    print("🚀 ~ file: main.py:311 ~ df_newExpenses:", df_newExpenses)
 
     # Create a new column 'category' in df_newExpenses
     df_newExpenses = df_newExpenses.assign(
@@ -401,8 +418,12 @@ def append_mainSheet(df, sheetId, config):
     # Append the new data to the end of the sheet
     append_values = df.values.tolist()
 
-    sheetRange = config["trainingTab"] + "!" + config["trainingRange"]
-    print("🚀 ~ file: main.py:352 ~ sheetRange:", sheetRange)
+    print("🚀 ~ file: main.py:413 ~ config[:", config["columnOrderTraining"])
+    firstColumn, lastColumn, columnNames = get_column_names(
+        config["columnOrderTraining"]        
+    )
+
+    sheetRange = config["trainingTab"] + "!" + firstColumn + ":" + lastColumn
 
     # Prepare the append request
     append_request = (
@@ -427,6 +448,7 @@ def append_mainSheet(df, sheetId, config):
 
 def classify_expenses(df_unclassified_data, trained_embeddings, new_embeddings):
     desc_new_data = df_unclassified_data["description"]
+    print("🚀 ~ file: main.py:451 ~ desc_new_data:", desc_new_data)
 
     similarity_new_data = cosine_similarity(new_embeddings, trained_embeddings)
     similarity_df = pd.DataFrame(similarity_new_data)
@@ -477,17 +499,6 @@ def fetch_from_supabase(bucket_name, file_name):
     return embeddings_array
 
 
-# def save_to_gcs(bucket_name, file_name, embeddings_array):
-#     client = storage.Client()
-#     bucket = client.bucket(bucket_name)
-#     blob = bucket.blob(file_name)
-
-#     # Save the numpy array as a .npy file
-#     with blob.open("wb") as f:
-#         np.save(f, embeddings_array)
-#         print("embedding saved")
-
-
 def save_to_supabase(bucket_name, file_name, embeddings_array):
     # Create a temporary file to store the NumPy array
     with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
@@ -514,21 +525,6 @@ def save_to_supabase(bucket_name, file_name, embeddings_array):
         print(f"Upload failed with status code {response.status_code}")
         # Optionally, you can print the response content for more details:
     print(response.content)
-
-
-# def fetch_from_gcs(bucket_name, file_name):
-#     client = storage.Client()
-#     bucket = client.bucket(bucket_name)
-#     blob = bucket.blob(file_name)
-
-#     # Download the .npy file to a temporary file
-#     with tempfile.NamedTemporaryFile() as temp_file:
-#         blob.download_to_filename(temp_file.name)
-
-#         # Load the numpy array from the temporary file
-#         embeddings_array = np.load(temp_file.name, allow_pickle=True)
-
-#     return embeddings_array
 
 
 def extract_params_from_url(webhookUrl):
@@ -576,8 +572,7 @@ def storeCleanedSheetOrder(df, customerName):
 
 
 def cleanSpreadSheetData(sheetData, columns):
-    df = pd.DataFrame(sheetData[1:], columns=columns)
-    print("🚀 ~ file: main.py:539 ~ df:", df)
+    df = pd.DataFrame(sheetData, columns=columns)
     df["description"] = df["description"].apply(clean_Text)
     return df
 
