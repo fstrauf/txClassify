@@ -6,12 +6,14 @@ interface ColumnOrderInputProps {
 }[];
   handleColumnsChange: (columns: { name: string; type: string }[]) => void;
   options: string[];
+  helpText: string;
 }
 
 const ColumnOrderInput: React.FC<ColumnOrderInputProps> = ({
   columns,
   handleColumnsChange,
   options, 
+  helpText
 }) => {
   const addColumn = () => {
     const newIndex = columns.length > 0 ? columns[columns.length - 1].index + 1 : 0;
@@ -37,7 +39,7 @@ const ColumnOrderInput: React.FC<ColumnOrderInputProps> = ({
   return (
     <section className="items-start">
       <h3 className="prose prose-invert">Tell us about how your columns are ordered</h3>
-      <p className="prose prose-invert text-xs">(Description and category are mandatory to have. Order the columns in the way they appear left to right in your sheet)</p>
+      <p className="prose prose-invert text-xs">{helpText}</p>
       <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg prose-invert">
         <table className="table-auto">
           <thead>

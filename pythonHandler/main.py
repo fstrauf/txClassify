@@ -46,20 +46,17 @@ def runClassify():
     columnOrderCategorisation = data.get("columnOrderCategorisation")
     categorisationTab = data.get("categorisationTab")
 
-    print("🚀 ~ file: main.py:51 ~ columnOrderCategorisation:", columnOrderCategorisation)
     # data_range = data.get("range")
     firstColumn, secondColumn, columnHeader = get_column_names(
-        columnOrderCategorisation        
+        columnOrderCategorisation
     )
 
     updateProcessStatus("Fetching spreadsheet data", "classify", userId)
-    sheetData = getSpreadsheetData(        
+    sheetData = getSpreadsheetData(
         sheetId, categorisationTab + "!" + firstColumn + ":" + secondColumn
     )
-    print("🚀 ~ file: main.py:57 ~ sheetData:", sheetData)
 
     df = cleanSpreadSheetData(sheetData, columnHeader)
-    print("🚀 ~ file: main.py:62 ~ df:", df)
 
     updateProcessStatus("Cleaned spreadsheet data", "classify", userId)
     runPrediction(
@@ -193,9 +190,9 @@ def handle_classify_webhook():
         bucket_name = "txclassify"
         file_name = sheetId + ".npy"
         trained_embeddings = fetch_embedding(bucket_name, file_name)
-    
+
         updateProcessStatus("Fetched training results", "classify", userId)
-        output = classify_expenses(            
+        output = classify_expenses(
             df_unclassified_data, trained_embeddings, new_embeddings
         )
 
@@ -223,19 +220,22 @@ def handle_classify_webhook():
         print("🚀 ~ file: main.py:203 ~ combined_df:", combined_df)
 
         print("🚀 ~ file: main.py:220 ~ :", config)
-        firstColumn, secondColumn, columnHeader = get_column_names(
-            config["columnOrderCategorisation"]            
+        firstColumn, secondColumn, sourceColumns = get_column_names(
+            config["columnOrderCategorisation"]
+        )
+        
+        _, _, targetColumns = get_column_names(
+            config["columnOrderTraining"]
         )
 
-        sheetRange = (            
+        sheetRange = (
             config["categorisationTab"] + "!" + firstColumn + ":" + secondColumn
         )
         print("🚀 ~ file: main.py:227 ~ sheetRange:", sheetRange)
 
         newExpenses = getSpreadsheetData(sheetId, sheetRange)
 
-        df_newExpenses = prepSpreadSheetData(newExpenses, combined_df, columnHeader)
-        print("🚀 ~ file: main.py:211 ~ df_newExpenses:", df_newExpenses)
+        df_newExpenses = prepSpreadSheetData(newExpenses, combined_df, sourceColumns, targetColumns)
         updateProcessStatus(
             "Preparing spreadsheet data, appending to expense sheet", "classify", userId
         )
@@ -311,25 +311,32 @@ def getUserConfig(userId):
     return {}  # Return an empty dictionary if no data was found for the user
 
 
-def prepSpreadSheetData(newExpenses, combined_df, columns):
-    print("🚀 ~ file: main.py:308 ~ combined_df:", combined_df)
-    df_newExpenses = pd.DataFrame(newExpenses, columns=columns)
-    df_newExpenses["amount"] = pd.to_numeric(df_newExpenses["amount"], errors="coerce")
-    print("🚀 ~ file: main.py:311 ~ df_newExpenses:", df_newExpenses)
-
-    # Create a new column 'category' in df_newExpenses
-    df_newExpenses = df_newExpenses.assign(
-        category=np.where(
-            df_newExpenses["amount"] > 0, "Credit", combined_df["category"].values
+def prepSpreadSheetData(newExpenses, df_newCategories, sourceColumns, targetColumns):
+    df_newExpenses = pd.DataFrame(newExpenses, columns=sourceColumns)
+    
+    if "amount" in df_newExpenses.columns:
+        df_newExpenses["amount"] = pd.to_numeric(
+            df_newExpenses["amount"], errors="coerce"
         )
-    )
 
-    df_newExpenses["source"] = "CBA"
+        # Create a new column 'category' in df_newExpenses
+        df_newExpenses = df_newExpenses.assign(
+            category=np.where(
+                df_newExpenses["amount"] > 0, "Credit", df_newCategories["category"].values
+            )
+        )
+    else:
+        df_newExpenses = df_newExpenses.assign(category=df_newCategories["category"].values)
 
-    # Reorder the columns in the DataFrame
-    df_newExpenses = df_newExpenses[
-        ["source", "date", "description", "amount", "category"]
-    ]
+    # Check if 'source' exists in both sourceColumns and targetColumns
+    if "source" in sourceColumns and "source" in targetColumns:
+        pass  # 'source' will be transferred automatically when reordering columns
+    elif "source" in targetColumns:  # 'source' only exists in targetColumns
+        df_newExpenses["source"] = "Bank 1"  # fill with default value
+
+    # Reorder the columns in the DataFrame based on the target categorised expenses sheet
+    df_newExpenses = df_newExpenses[targetColumns]
+    
     return df_newExpenses
 
 
@@ -417,10 +424,9 @@ def append_mainSheet(df, sheetId, config):
     service = build("sheets", "v4", credentials=creds)
     # Append the new data to the end of the sheet
     append_values = df.values.tolist()
-
-    print("🚀 ~ file: main.py:413 ~ config[:", config["columnOrderTraining"])
-    firstColumn, lastColumn, columnNames = get_column_names(
-        config["columnOrderTraining"]        
+    
+    firstColumn, lastColumn, _ = get_column_names(
+        config["columnOrderTraining"]
     )
 
     sheetRange = config["trainingTab"] + "!" + firstColumn + ":" + lastColumn
