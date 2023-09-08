@@ -39,6 +39,7 @@ const ClassificationSection = ({}) => {
               }))
             }
             options={["date", "description", "amount"]}
+            helpText="(Description is mandatory, values will be copied over to categorised expense sheet based on column content)"
           />
           <SaveConfigButton />
         </ConfigSection>
