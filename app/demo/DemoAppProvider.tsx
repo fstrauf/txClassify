@@ -198,15 +198,12 @@ export const AppProvider = ({ children }: AppProviderProps) => {
     }
     let body = {};
 
-    statusSetter(`Action started based on sheet ${expenseSheetId}`);
-    updateProcessStatus(
-      `Action started based on sheet ${expenseSheetId}`,
-      userId
-    );
-
-    handleSaveClick();
-
     if (apiUrl === "/api/cleanAndClassify") {
+      updateProcessStatus(
+        `Action started based on sheet ${expenseSheetId}`,
+        "categorisationStatus",
+        userId
+      );  
       const response = await supabase.storage.from("txclassify").list("", {
         limit: 2,
         offset: 0,
@@ -236,7 +233,14 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       };
     } else {
       body = { expenseSheetId, columnOrderTraining, userId, trainingTab };
+      updateProcessStatus(
+        `Action started based on sheet ${expenseSheetId}`,
+        "trainingStatus",
+        userId
+      );  
     }
+
+    handleSaveClick();
 
     try {
       statusSetter(`Action started based on sheet ${expenseSheetId}`);
@@ -259,13 +263,12 @@ export const AppProvider = ({ children }: AppProviderProps) => {
     }
   };
 
-  const updateProcessStatus = async (status_text: string, userId: string) => {
+  const updateProcessStatus = async (status_text: string, mode: string, userId: string) => {
+    const updateObject: { [key: string]: string } = {};
+    updateObject[mode] = status_text;
     const { data, error } = await supabase
       .from("account")
-      .update({
-        trainingStatus: status_text,
-        categorisationStatus: status_text,
-      })
+      .update(updateObject)
       .eq("userId", userId)
       .select();
 
