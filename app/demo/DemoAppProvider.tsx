@@ -190,11 +190,21 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       columnOrderCategorisation,
     } = config || {};
 
-    statusSetter(`Action started based on sheet ${expenseSheetId}`);
     const userId = user?.sub;
+    if(!userId){
+      console.log("Needs to be logged on to run training or categorisation")
+      toast.error("You need to be logged in to run this",{position: "bottom-right"})
+      return
+    }
     let body = {};
 
-    handleSaveClick()
+    statusSetter(`Action started based on sheet ${expenseSheetId}`);
+    updateProcessStatus(
+      `Action started based on sheet ${expenseSheetId}`,
+      userId
+    );
+
+    handleSaveClick();
 
     if (apiUrl === "/api/cleanAndClassify") {
       const response = await supabase.storage.from("txclassify").list("", {
@@ -249,6 +259,23 @@ export const AppProvider = ({ children }: AppProviderProps) => {
     }
   };
 
+  const updateProcessStatus = async (status_text: string, userId: string) => {
+    const { data, error } = await supabase
+      .from("account")
+      .update({
+        trainingStatus: status_text,
+        categorisationStatus: status_text,
+      })
+      .eq("userId", userId)
+      .select();
+
+    if (error) {
+      console.error("Error upserting data:", error);
+    } else {
+      console.log("Upserted data:", data);
+    }
+  };
+
   const handleSaveClick = async () => {
     const {
       expenseSheetId,
@@ -286,7 +313,6 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       toast.success("Configuration Saved!", { position: "bottom-right" });
     }
   };
-
 
   return (
     <AppContext.Provider
