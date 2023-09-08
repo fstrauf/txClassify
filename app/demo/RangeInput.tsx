@@ -2,7 +2,6 @@ import { useAppContext } from "./DemoAppProvider";
 
 export default function RangeInput(props: {
   handleTabChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  // handleRangeChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   helpText: string;
 }) {
   const { config } = useAppContext();
