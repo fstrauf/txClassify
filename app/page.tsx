@@ -43,6 +43,14 @@ export default function Home() {
               Get the Google Sheet Template
             </Link>
           </div>
+          <div className="text-center">
+            <Link
+              href="/demo"
+              className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out"
+            >
+              Try a Demo
+            </Link>
+          </div>
           <div className="mt-6">
             <Image
               width={852}
