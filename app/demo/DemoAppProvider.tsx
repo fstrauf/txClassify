@@ -53,18 +53,29 @@ export interface ConfigType {
 }
 
 export const AppProvider = ({ children }: AppProviderProps) => {
-  const { user } = useUser();
-  const [trainingStatus, setTrainingStatus] = useState("");
-  const [categorisationStatus, setCategorisationStatus] = useState("");
-  const [config, setConfig] = useState<ConfigType>({
-    expenseSheetId: "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
+  const configDefault = {
+    expenseSheetId: "1Buon6FEg7JGJMjuZgNgIrm5XyfP38JeaOJTNv6YQSHA",
     trainingTab: "Expense-Detail",
     trainingRange: "A2:E",
     categorisationTab: "new_dump",
     categorisationRange: "A1:C",
-    columnOrderTraining: [], // default columns
-    columnOrderCategorisation: [], // default columns
-  });
+    columnOrderTraining: [
+      { name: "A", type: "source", index: 1 },
+      { name: "B", type: "date", index: 2 },
+      { name: "C", type: "description", index: 3 },
+      { name: "D", type: "amount", index: 4 },
+      { name: "E", type: "categories", index: 5 },
+    ], // default columns
+    columnOrderCategorisation: [
+      { name: "A", type: "date", index: 1 },
+      { name: "B", type: "amount", index: 2 },
+      { name: "C", type: "description", index: 3 },
+    ], // default columns
+  }
+  const { user } = useUser();
+  const [trainingStatus, setTrainingStatus] = useState("");
+  const [categorisationStatus, setCategorisationStatus] = useState("");
+  const [config, setConfig] = useState<ConfigType>(configDefault);
   const [data, setData] = useState({});
   const [error, setError] = useState(null);
   const [sheetName, setSheetName] = useState("");
@@ -76,32 +87,22 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         const fetchedData = await getData(user);
 
         setData(fetchedData);
+        console.log("🚀 ~ file: DemoAppProvider.tsx:89 ~ fetchData ~ fetchedData:", fetchedData)
+  
         setConfig({
           expenseSheetId:
-            fetchedData?.props.userConfig.expenseSheetId ||
-            "185s3wCfiHILwWIiWieKhpJYxs4l_VO8IX1IYX_QrFtw",
-          trainingRange: fetchedData?.props.userConfig.trainingRange || "",
-          trainingTab: fetchedData?.props.userConfig.trainingTab || "",
+            fetchedData?.props?.userConfig?.expenseSheetId ||
+           configDefault.expenseSheetId,
+          trainingRange: fetchedData?.props?.userConfig?.trainingRange || "",
+          trainingTab: fetchedData?.props?.userConfig?.trainingTab || configDefault.trainingTab,
           categorisationTab:
-            fetchedData?.props.userConfig.categorisationTab || "",
+            fetchedData?.props?.userConfig?.categorisationTab || configDefault.categorisationTab,
           categorisationRange:
-            fetchedData?.props.userConfig.categorisationRange || "A1:C200",
-          columnOrderTraining: fetchedData?.props.userConfig
-            .columnOrderTraining || [
-            { name: "A", type: "source", index: 1 },
-            { name: "B", type: "date", index: 2 },
-            { name: "C", type: "description", index: 3 },
-            { name: "D", type: "amount", index: 4 },
-            { name: "E", type: "categories", index: 5 },
-          ],
-          columnOrderCategorisation: fetchedData?.props.userConfig
-            .columnOrderCategorisation || [
-            { name: "A", type: "date", index: 1 },
-            { name: "B", type: "amount", index: 2 },
-            { name: "C", type: "description", index: 3 },
-          ],
+            fetchedData?.props?.userConfig?.categorisationRange || "A1:C200",
+          columnOrderTraining: fetchedData?.props?.userConfig?.columnOrderTraining || configDefault.columnOrderTraining,
+          columnOrderCategorisation: fetchedData?.props?.userConfig?.columnOrderCategorisation || configDefault.columnOrderCategorisation,
         });
-        getSpreadSheetData(fetchedData?.props.userConfig.expenseSheetId);
+        getSpreadSheetData(fetchedData?.props?.userConfig?.expenseSheetId || configDefault.expenseSheetId);
       }
     };
 

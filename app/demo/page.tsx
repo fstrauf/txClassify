@@ -6,11 +6,6 @@ import TrainingSection from "./TrainingSection";
 import ClassificationSection from "./ClassificationSection";
 import { AppProvider } from "./DemoAppProvider";
 
-// const supabase = createClient(
-//   process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-//   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-// );
-
 export interface ConfigType {
   expenseSheetId: string;
   trainingTab: string;
@@ -36,23 +31,3 @@ const Demo = () => {
 };
 
 export default Demo;
-
-// async function getData(user: any) {
-//   if (!user) {
-//     return {
-//       props: {},
-//     };
-//   }
-
-//   const { data, error } = await supabase
-//     .from("account")
-//     .select("*")
-//     .eq("userId", user.sub)
-//     .single();
-
-//   return {
-//     props: {
-//       userConfig: data || null,
-//     },
-//   };
-// }

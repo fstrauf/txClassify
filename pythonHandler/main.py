@@ -14,6 +14,7 @@ from urllib.parse import urlparse, parse_qs
 import re
 from flask_cors import CORS
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import replicate
@@ -52,9 +53,14 @@ def runClassify():
     )
 
     updateProcessStatus("Fetching spreadsheet data", "classify", userId)
-    sheetData = getSpreadsheetData(
-        sheetId, categorisationTab + "!" + firstColumn + ":" + secondColumn
-    )
+    
+    try:
+        sheetData = getSpreadsheetData(
+            sheetId, categorisationTab + "!" + firstColumn + ":" + secondColumn
+        )
+    except Exception as e:
+        updateProcessStatus(f"Error fetching spreadsheet data: please check access via technical user", "training", userId)
+        raise
 
     df = cleanSpreadSheetData(sheetData, columnHeader)
 
@@ -89,9 +95,13 @@ def runTraining():
     )
 
     updateProcessStatus("Fetching spreadsheet data", "training", userId)
-    sheetData = getSpreadsheetData(
-        sheetId, trainingTab + "!" + categoryColumn + ":" + descriptionColumn
-    )
+    try:
+        sheetData = getSpreadsheetData(
+            sheetId, trainingTab + "!" + categoryColumn + ":" + descriptionColumn
+        )
+    except Exception as e:
+        updateProcessStatus(f"Error fetching spreadsheet data: please check access via technical user", "training", userId)
+        raise
 
     df = cleanSpreadSheetData(
         sheetData[1:],
@@ -232,8 +242,12 @@ def handle_classify_webhook():
             config["categorisationTab"] + "!" + firstColumn + ":" + secondColumn
         )
         print("🚀 ~ file: main.py:227 ~ sheetRange:", sheetRange)
-
-        newExpenses = getSpreadsheetData(sheetId, sheetRange)
+        
+        try:
+            newExpenses = getSpreadsheetData(sheetId, sheetRange)        
+        except Exception as e:
+            updateProcessStatus(f"Error fetching spreadsheet data: please check access via technical user", "training", userId)
+            raise   
 
         df_newExpenses = prepSpreadSheetData(newExpenses, combined_df, sourceColumns, targetColumns)
         updateProcessStatus(
@@ -584,18 +598,35 @@ def cleanSpreadSheetData(sheetData, columns):
 
 
 def getSpreadsheetData(sheetId, range):
-    google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
-    creds = get_service_account_credentials(json.loads(google_service_account))
-    service = build("sheets", "v4", credentials=creds)
+    try:
+        google_service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT")
+        if not google_service_account:
+            raise ValueError("Environment variable 'GOOGLE_SERVICE_ACCOUNT' is not set")
 
-    result = (
-        service.spreadsheets()
-        .values()
-        .get(spreadsheetId=sheetId, range=range)
-        .execute()
-    )
-    values = result.get("values", [])
-    return values
+        creds = get_service_account_credentials(json.loads(google_service_account))
+        service = build("sheets", "v4", credentials=creds)
+
+        result = (
+            service.spreadsheets()
+            .values()
+            .get(spreadsheetId=sheetId, range=range)
+            .execute()
+        )
+        values = result.get("values", [])
+        return values
+
+    except HttpError as he:
+        if he.resp.status == 403:
+            print("Access to the Google Sheet was denied.")
+        else:
+            print(f"HTTP Error while accessing the Google Sheets API: {he}")
+        raise
+    except ValueError as ve:
+        print(f"Value Error: {ve}")
+        raise
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        raise
 
 
 def get_service_account_credentials(json_content):
