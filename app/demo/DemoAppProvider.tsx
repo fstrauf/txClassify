@@ -71,7 +71,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       { name: "B", type: "amount", index: 2 },
       { name: "C", type: "description", index: 3 },
     ], // default columns
-  }
+  };
   const { user } = useUser();
   const [trainingStatus, setTrainingStatus] = useState("");
   const [categorisationStatus, setCategorisationStatus] = useState("");
@@ -87,22 +87,30 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         const fetchedData = await getData(user);
 
         setData(fetchedData);
-        console.log("🚀 ~ file: DemoAppProvider.tsx:89 ~ fetchData ~ fetchedData:", fetchedData)
-  
+
         setConfig({
           expenseSheetId:
             fetchedData?.props?.userConfig?.expenseSheetId ||
-           configDefault.expenseSheetId,
-          trainingRange: fetchedData?.props?.userConfig?.trainingRange || "",
-          trainingTab: fetchedData?.props?.userConfig?.trainingTab || configDefault.trainingTab,
+            configDefault.expenseSheetId,
+          trainingRange: "",
+          trainingTab:
+            fetchedData?.props?.userConfig?.trainingTab ||
+            configDefault.trainingTab,
           categorisationTab:
-            fetchedData?.props?.userConfig?.categorisationTab || configDefault.categorisationTab,
-          categorisationRange:
-            fetchedData?.props?.userConfig?.categorisationRange || "A1:C200",
-          columnOrderTraining: fetchedData?.props?.userConfig?.columnOrderTraining || configDefault.columnOrderTraining,
-          columnOrderCategorisation: fetchedData?.props?.userConfig?.columnOrderCategorisation || configDefault.columnOrderCategorisation,
+            fetchedData?.props?.userConfig?.categorisationTab ||
+            configDefault.categorisationTab,
+          categorisationRange: "",
+          columnOrderTraining:
+            fetchedData?.props?.userConfig?.columnOrderTraining ||
+            configDefault.columnOrderTraining,
+          columnOrderCategorisation:
+            fetchedData?.props?.userConfig?.columnOrderCategorisation ||
+            configDefault.columnOrderCategorisation,
         });
-        getSpreadSheetData(fetchedData?.props?.userConfig?.expenseSheetId || configDefault.expenseSheetId);
+        getSpreadSheetData(
+          fetchedData?.props?.userConfig?.expenseSheetId ||
+            configDefault.expenseSheetId
+        );
       }
     };
 
@@ -121,6 +129,9 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       .then((response) => {
         if (response.ok) {
           return response.json();
+        } else if (response.status === 401) {
+          setSheetName("Not authorised to open sheet, please add technical user");
+          throw new Error('Unauthorized: You do not have access to this sheet.');
         } else {
           throw new Error(`API call failed with status: ${response.status}`);
         }
@@ -192,10 +203,12 @@ export const AppProvider = ({ children }: AppProviderProps) => {
     } = config || {};
 
     const userId = user?.sub;
-    if(!userId){
-      console.log("Needs to be logged on to run training or categorisation")
-      toast.error("You need to be logged in to run this",{position: "bottom-right"})
-      return
+    if (!userId) {
+      console.log("Needs to be logged on to run training or categorisation");
+      toast.error("You need to be logged in to run this", {
+        position: "bottom-right",
+      });
+      return;
     }
     let body = {};
 
@@ -204,7 +217,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         `Action started based on sheet ${expenseSheetId}`,
         "categorisationStatus",
         userId
-      );  
+      );
       const response = await supabase.storage.from("txclassify").list("", {
         limit: 2,
         offset: 0,
@@ -238,7 +251,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         `Action started based on sheet ${expenseSheetId}`,
         "trainingStatus",
         userId
-      );  
+      );
     }
 
     handleSaveClick();
@@ -264,7 +277,11 @@ export const AppProvider = ({ children }: AppProviderProps) => {
     }
   };
 
-  const updateProcessStatus = async (status_text: string, mode: string, userId: string) => {
+  const updateProcessStatus = async (
+    status_text: string,
+    mode: string,
+    userId: string
+  ) => {
     const updateObject: { [key: string]: string } = {};
     updateObject[mode] = status_text;
     const { data, error } = await supabase

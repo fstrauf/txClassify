@@ -15,7 +15,7 @@ export default function SpreadSheetInput() {
           onChange={(e) => handleInputChange(e, "expenseSheetId")}
           className="mt-1 text-black w-[600px] p-1 rounded-md"
         />
-        <p className="prose prose-invert text-xs">= {sheetName}</p>
+        <a href={`https://docs.google.com/spreadsheets/d/${config.expenseSheetId}`} target="_blank" rel="noopener noreferrer" className="prose prose-invert text-xs">{sheetName}</a>
       </div>
     </label>
   );
