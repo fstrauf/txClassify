@@ -88,11 +88,15 @@ def runTraining():
     sheetId = data.get("expenseSheetId")
     userId = data.get("userId")
     columnOrderTraining = data.get("columnOrderTraining")
-    trainingTab = data.get("trainingTab")
+    trainingTab = data.get("trainingTab")    
 
-    descriptionColumn, categoryColumn, columnOrder = get_column_names_and_types(
+    descriptionColumn, categoryColumn, columnOrder = get_column_names_and_types(        
         columnOrderTraining
     )
+    
+    if not all([trainingTab, categoryColumn, descriptionColumn]):
+        
+        return {"message": "Missing required data"}, 400
 
     updateProcessStatus("Fetching spreadsheet data", "training", userId)
     try:
@@ -272,7 +276,7 @@ def get_column_names_and_types(columnOrderTraining):
     # Initialize variables
     description_name = None
     category_name = None
-    types_in_between = []
+    column_order = []
     start_collecting = False
 
     # Iterate over the sorted list
@@ -282,13 +286,13 @@ def get_column_names_and_types(columnOrderTraining):
             start_collecting = True
 
         if start_collecting:
-            types_in_between.append(item["type"])
+            column_order.append(item["type"])
 
         if item["type"] == "category":
             category_name = item["name"]
             break
 
-    return description_name, category_name, types_in_between
+    return description_name, category_name, column_order
 
 
 def get_column_names(columnOrder):

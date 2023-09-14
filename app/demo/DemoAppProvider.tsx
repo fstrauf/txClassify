@@ -64,7 +64,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       { name: "B", type: "date", index: 2 },
       { name: "C", type: "description", index: 3 },
       { name: "D", type: "amount", index: 4 },
-      { name: "E", type: "categories", index: 5 },
+      { name: "E", type: "category", index: 5 },
     ], // default columns
     columnOrderCategorisation: [
       { name: "A", type: "date", index: 1 },
