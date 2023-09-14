@@ -1,3 +1,4 @@
+import React from "react";
 import Image from "next/image";
 import Testimonials from "../components/Testimonials";
 import References from "../components/References";
