@@ -40,7 +40,7 @@ const ColumnOrderInput: React.FC<ColumnOrderInputProps> = ({
     <section className="items-start">
       <h3 className="prose prose-invert">Tell us about how your columns are ordered</h3>
       <p className="prose prose-invert text-xs">{helpText}</p>
-      <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg prose-invert">
+      <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg prose-invert overflow-auto">
         <table className="table-auto">
           <thead>
             <tr>

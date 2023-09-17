@@ -2,7 +2,6 @@ import React, { useState } from "react";
 
 
 export default function CopyableText(props: {textToCopy: string}) {
-//   const textToCopy = "expense-sorted@txclassify.iam.gserviceaccount.com";
   const [isCopied, setIsCopied] = useState(false);
 
   const handleCopyClick = () => {
@@ -16,7 +15,7 @@ export default function CopyableText(props: {textToCopy: string}) {
   };
 
   return (
-    <span className="bg-first text-white cursor-pointer mr-1" onClick={handleCopyClick}>
+    <span className="bg-first text-white cursor-pointer mr-1 break-words whitespace-pre-wrap" onClick={handleCopyClick}>
       {isCopied ? "Copied!" : props.textToCopy}
     </span>
   );
