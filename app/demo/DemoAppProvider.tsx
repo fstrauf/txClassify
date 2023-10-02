@@ -175,7 +175,9 @@ export const AppProvider = ({ children }: AppProviderProps) => {
     event: React.ChangeEvent<HTMLInputElement>,
     field: string
   ) => {
+    console.log("🚀 ~ file: DemoAppProvider.tsx:178 ~ AppProvider ~ field:", field)
     let value = event.target.value;
+    console.log("🚀 ~ file: DemoAppProvider.tsx:179 ~ AppProvider ~ value:", value)
     if (field === "expenseSheetId") {
       try {
         const url = new URL(value);
