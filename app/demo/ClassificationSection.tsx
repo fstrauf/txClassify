@@ -29,6 +29,7 @@ const ClassificationSection = ({}) => {
           <RangeInput
             handleTabChange={(e) => handleInputChange(e, "categorisationTab")}
             helpText="add the name of the sheet and the range that covers the columns Date, Description, Amount of the expenses you want to categorise"
+            configValue={config.categorisationTab}
           />
           <ColumnOrderInput
             columns={config.columnOrderCategorisation}

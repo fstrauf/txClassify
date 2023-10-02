@@ -3,6 +3,7 @@ import { useAppContext } from "./DemoAppProvider";
 export default function RangeInput(props: {
   handleTabChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   helpText: string;
+  configValue: string
 }) {
   const { config } = useAppContext();
   return (
@@ -13,7 +14,7 @@ export default function RangeInput(props: {
         <div className="flex gap-1 items-center">
           <input
             type="text"
-            value={config.trainingTab || "Sheet Name"}
+            value={props.configValue|| "Sheet Name"}
             onChange={props.handleTabChange}
             className="mt-1 text-black p-1 rounded-md h-8"
           />

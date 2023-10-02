@@ -30,6 +30,7 @@ const TrainingSection = ({}) => {
           <RangeInput
             handleTabChange={(e) => handleInputChange(e, "trainingTab")}
             helpText="add the name of the sheet tab that contain your already categorised expenses"
+            configValue={config.trainingTab}
           />
           <ColumnOrderInput
             columns={config.columnOrderTraining}
