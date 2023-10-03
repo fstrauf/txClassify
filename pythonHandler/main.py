@@ -456,7 +456,7 @@ def append_mainSheet(df, sheetId, config):
         .append(
             spreadsheetId=sheetId,
             range=sheetRange,
-            valueInputOption="RAW",
+            valueInputOption="USER_ENTERED",
             insertDataOption="INSERT_ROWS",
             body={"values": append_values},
         )
