@@ -4,6 +4,7 @@ import Link from "next/link";
 import GetItHereButton from "./getItHereButton";
 import Instructions from "./instructions";
 import Intro from "./intro";
+import StayUpToDate from "./stayUpToDate";
 
 export default function FuckYouMoneySheet() {
   return (
@@ -14,6 +15,7 @@ export default function FuckYouMoneySheet() {
             Fuck you Money - Cost of Living Tracking Google Sheet
           </h1>
           <GetItHereButton />
+          <StayUpToDate />
           <ImageComponent />
           <Navigation />
           <Intro />
