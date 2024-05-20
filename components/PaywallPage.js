@@ -1,9 +1,11 @@
 import { useUser } from "@auth0/nextjs-auth0/client";
 import UnauthorizedMessage from './Unauthorised';
 
-const ProtectedPage = ({ children }) => {
+const PaywallPage = ({ children }) => {
   const { user, error, isLoading } = useUser();
-  console.log("🚀 ~ file: ProtectedPage.js:6 ~ ProtectedPage ~ user:", user)
+  console.log("🚀 ~ file: PaywallPage.js:6 ~ PaywallPage ~ user:", user)
+  // find out what role the user hase: none, free, paid from supabase
+
 
   if (isLoading) {
     // Render a loading state here if needed
@@ -23,4 +25,4 @@ const ProtectedPage = ({ children }) => {
   );
 };
 
-export default ProtectedPage;
+export default PaywallPage;
