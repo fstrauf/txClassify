@@ -65,6 +65,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       { name: "C", type: "description", index: 3 },
       { name: "D", type: "amount", index: 4 },
       { name: "E", type: "category", index: 5 },
+      { name: "F", type: "currency", index: 6 },
     ], // default columns
     columnOrderCategorisation: [
       { name: "A", type: "date", index: 1 },
@@ -371,6 +372,7 @@ export const useAppContext = () => {
 };
 
 async function getData(user: any) {
+  console.log("🚀 ~ getData ~ user:", user)
   if (!user) {
     return {
       props: {},

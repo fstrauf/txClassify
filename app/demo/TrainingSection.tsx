@@ -40,7 +40,7 @@ const TrainingSection = ({}) => {
                 columnOrderTraining: columns,
               }))
             }
-            options={["source", "date", "description", "amount", "category"]}
+            options={["source", "date", "description", "amount", "category", "currency"]}
             helpText='(Description and category are mandatory to have. Order the columns in the way they appear left to right in your sheet)'      
           />
           <SaveConfigButton />
