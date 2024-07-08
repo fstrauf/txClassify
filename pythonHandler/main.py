@@ -139,31 +139,42 @@ def runTraining():
 @app.route("/training", methods=["POST"])
 def handle_webhook():
     """Handle incoming webhook from Replicate."""
-    data = request.get_json()
-    print("Status:", data.get("status"))
+    try:
+        data = request.get_json()
+        print("Received data:", data)  # Log the received data
 
-    webhookUrl = data.get("webhook")
-    sheetId, sheetApi, runKey, userId = extract_params_from_url(webhookUrl)
+        print("Status:", data.get("status"))
 
-    if check_has_run_yet(runKey, "training", userId, None):
-        print("Training has already run")
-        return "Training has already run", 200
+        webhookUrl = data.get("webhook")
+        sheetId, sheetApi, runKey, userId = extract_params_from_url(webhookUrl)
 
-    updateProcessStatus(
-        "Training results received, storing results", "training", userId
-    )
+        if check_has_run_yet(runKey, "training", userId, None):
+            print("Training has already run")
+            return "Training has already run", 200
 
-    bucket_name = "txclassify"
-    file_name = sheetId + ".npy"
+        updateProcessStatus(
+            "Training results received, storing results", "training", userId
+        )
 
-    embeddings_array = json_to_embeddings(data)
+        bucket_name = "txclassify"
+        file_name = sheetId + ".npy"
 
-    save_embeddings(bucket_name, file_name, embeddings_array)
+        try:
+            embeddings_array = json_to_embeddings(data)
+        except KeyError as e:
+            print(f"KeyError in json_to_embeddings: {e}")
+            print("Data structure:", data)
+            return "Invalid data structure", 400
 
-    updateProcessStatus("completed", "training", userId)
-    updateRunStatus(runKey, "training", userId)
+        save_embeddings(bucket_name, file_name, embeddings_array)
 
-    return "", 200
+        updateProcessStatus("completed", "training", userId)
+        updateRunStatus(runKey, "training", userId)
+
+        return "", 200
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        return str(e), 500
 
 
 # Webhook
