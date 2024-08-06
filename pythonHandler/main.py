@@ -153,7 +153,7 @@ def handle_webhook():
     """Handle incoming webhook from Replicate."""
     try:
         data = request.get_json()
-        print("Received data:", data)  # Log the received data
+        # print("Received data:", data)  # Log the received data
 
         print("Status:", data.get("status"))
 
