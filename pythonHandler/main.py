@@ -20,6 +20,7 @@ from datetime import datetime
 from pythonHandler.util import is_valid_https_url
 import replicate
 from supabase import create_client, Client
+from urllib.parse import urlparse
 
 url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
@@ -140,6 +141,12 @@ def runTraining():
 
     return {"message": "Success"}, 200
 
+def is_valid_https_url(url):
+    try:
+        result = urlparse(url)
+        return all([result.scheme == 'https', result.netloc, result.path])
+    except:
+        return False
 
 # Webhook
 @app.route("/training", methods=["POST"])
