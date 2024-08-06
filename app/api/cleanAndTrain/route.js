@@ -6,6 +6,7 @@ export async function POST(req) {
 
     const apiUrl = `${process.env.BACKEND_API}/runTraining`;
   
+    console.log("🚀 ~ POST ~ apiUrl:", apiUrl);
     const response = await fetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -14,13 +15,13 @@ export async function POST(req) {
 
     if (!response.ok) {
       console.error(`Error: ${response.status} ${response.statusText}`);
-      return NextResponse.error(`Error: ${response.status} ${response.statusText}`);
+      return NextResponse.json({ error: `${response.status} ${response.statusText}` }, { status: response.status });
     }
 
     const responseData = await response.json();
     return NextResponse.json(responseData);
   } catch (error) {
     console.error("Error fetching sheet data:", error);
-    return NextResponse.error(`Error fetching sheet data: ${error.message}`);
+    return NextResponse.json({ error: `Error fetching sheet data: ${error.message}` }, { status: 500 });
   }
 }

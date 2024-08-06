@@ -17,6 +17,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
 from datetime import datetime
+from pythonHandler.util import is_valid_https_url
 import replicate
 from supabase import create_client, Client
 
@@ -30,6 +31,7 @@ app = Flask(__name__)
 CORS(app)  # Allow all origins
 
 googleScriptAPI = "https://script.google.com/macros/s/"
+
 
 
 @app.errorhandler(500)
@@ -118,13 +120,17 @@ def runTraining():
 
     storeCleanedSheetOrder(df, sheetId)
 
+    sheetApi = "https://www.expensesorted.com/api/finishedTrainingHook"
+    
+    print(f"About to call runPrediction with sheetApi URL: {sheetApi}")
     res = runPrediction(
         "training",
         sheetId,
         userId,
-        "https://www.expensesorted.com/api/finishedTrainingHook",
+        sheetApi,
         df["description"].tolist(),
     )
+    print(f"runPrediction result: {res}")
 
     updateProcessStatus(
         "Training machine learning model - this can take a few minutes",
@@ -433,18 +439,28 @@ def runPrediction(apiMode, sheetId, userId, sheetApi, training_data):
     runKey = generate_timestamp()
     print("🚀 ~ file: main.py:238 ~ runKey:", runKey)
 
-    model = replicate.models.get("replicate/all-mpnet-base-v2")
-    version = model.versions.get(
-        "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
-    )
+    try:
+        # Validate sheetApi URL
+        if not is_valid_https_url(sheetApi):
+            raise ValueError(f"Invalid sheetApi URL: {sheetApi}")
 
-    prediction = replicate.predictions.create(
-        version=version,
-        input={"text_batch": json.dumps(training_data)},
-        webhook=f"{BACKEND_API}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}",
-        webhook_events_filter=["completed"],
-    )
-    return prediction
+        model = replicate.models.get("replicate/all-mpnet-base-v2")
+        version = model.versions.get(
+            "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
+        )
+
+        webhook = f"{BACKEND_API}/{apiMode}?sheetId={sheetId}&runKey={runKey}&userId={userId}&sheetApi={sheetApi}"
+        
+        prediction = replicate.predictions.create(
+            version=version,
+            input={"text_batch": json.dumps(training_data)},
+            webhook=webhook,
+            webhook_events_filter=["completed"],
+        )
+        return prediction
+    except Exception as e:
+        print(f"Error in runPrediction: {str(e)}")
+        raise
 
 
 def append_mainSheet(df, sheetId, config):
@@ -652,5 +668,5 @@ def get_service_account_credentials(json_content):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-    # app.run(port=3001)
+    # app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(port=3001)
