@@ -17,7 +17,6 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-from pythonHandler.util import is_valid_https_url
 import replicate
 from supabase import create_client, Client
 from urllib.parse import urlparse
