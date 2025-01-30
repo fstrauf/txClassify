@@ -30,12 +30,29 @@ def read_csv(file_path, bank_config, default_currency):
             try:
                 date = parse_date(row[bank_config['column_mapping']['date']], bank_config['date_format'])
                 amount = normalize_amount(row[bank_config['column_mapping']['amount']])
-                description = row[bank_config['column_mapping']['description']]
+                
+                # Handle description field(s)
+                if isinstance(bank_config['column_mapping']['description'], list):
+                    # Get all non-empty values from the specified fields
+                    desc_parts = [str(row.get(field, '')).strip() for field in bank_config['column_mapping']['description']]
+                    desc_parts = [part for part in desc_parts if part]  # Remove empty strings
+                    description = ' | '.join(desc_parts) if desc_parts else None
+                else:
+                    description = row[bank_config['column_mapping']['description']]
+                
                 currency = row.get(bank_config['column_mapping'].get('currency'), default_currency)
                 
-                if all([date, amount, description, currency]):
-                    # Apply the values_negative flag
-                    if bank_config.get('convert_values_to_negative', False):
+                # Handle direction for Wise CSV
+                if 'direction' in bank_config['column_mapping']:
+                    direction = row[bank_config['column_mapping']['direction']]
+                    if direction == 'OUT':
+                        amount = -abs(amount)
+                    elif direction == 'IN':
+                        amount = abs(amount)
+                
+                if all([date, amount is not None, description, currency]):
+                    # Apply the values_negative flag only if direction is not handled
+                    if 'direction' not in bank_config['column_mapping'] and bank_config.get('convert_values_to_negative', False):
                         amount *= -1
                     transactions.append([date, amount, description, currency])
                 else:
@@ -44,7 +61,7 @@ def read_csv(file_path, bank_config, default_currency):
                 logging.error(f"Missing key {e} in row {row_num}: {row}")
             except Exception as e:
                 logging.error(f"Error processing row {row_num}: {e}")
-
+                
     return transactions
 
 def write_csv(file_path, transactions):

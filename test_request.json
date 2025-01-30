@@ -1,0 +1,2 @@
+{"userId": "test", "files": [{"config": {"skip_rows": 0, "separator": ",", "column_mapping": {"date": "Date", "amount": "Amount", "description": "Description"}, "date_format": "%Y-%m-%d", "defaultCurrency": "AUD"}, "content": "Date,Amount,Description
+2024-01-01,100.00,Test Transaction"}], "sheetId": "test"}

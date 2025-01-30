@@ -1,33 +1,17 @@
 {
     "banks": [
-        {
-            "name": "Wise",
-            "file_path": "txConverter/data/wise.csv",
-            "column_mapping": {
-                "date": "Created on",
-                "amount": "Target amount (after fees)",
-                "description": "Target name",
-                "currency": "Target currency"
-            },
-            "date_format": "%Y-%m-%d %H:%M:%S",
-            "defaultCurrency": "AUD",
-            "separator": ",",
-            "skip_rows": 0,
-            "convert_values_to_negative": true
-        },       
-        {
-            "name": "NetBank",
-            "file_path": "txConverter/data/combank.csv",
-            "column_mapping": {
-                "date": "Date",
-                "amount": "Amount",
-                "description": "Description"
-            },
-            "date_format": "%d/%m/%Y",
-            "defaultCurrency": "AUD",
-            "separator": ",",
-            "skip_rows": 0,
-            "convert_values_to_negative": false
-        }
+      {
+        "name": "ANZ",
+        "file_path": "txConverter/data/anz.csv",
+        "separator": ",",
+        "date_format": "%d/%m/%Y",
+        "column_mapping": {
+          "date": "Date",
+          "amount": "Amount",
+          "description": ["Code", "Reference"],
+          "currency": null
+        },
+        "defaultCurrency": "NZD"
+      }
     ]
-}
+  }
