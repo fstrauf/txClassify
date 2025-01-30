@@ -78,40 +78,56 @@ export const AppProvider = ({ children }: AppProviderProps) => {
   const [categorisationStatus, setCategorisationStatus] = useState("");
   const [config, setConfig] = useState<ConfigType>(configDefault);
   const [data, setData] = useState({});
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
   const [sheetName, setSheetName] = useState("");
   const [saveActive, setSaveActive] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
       if (user) {
-        const fetchedData = await getData(user);
+        console.log("Starting fetchData with user:", user);
+        try {
+          const fetchedData = await getData(user);
+          console.log("Fetched data result:", fetchedData);
+          
+          if (fetchedData.props.error) {
+            console.error("Error loading user configuration:", fetchedData.props.error);
+            setError(fetchedData.props.error);
+            return;
+          }
 
-        setData(fetchedData);
+          setData(fetchedData);
 
-        setConfig({
-          expenseSheetId:
-            fetchedData?.props?.userConfig?.expenseSheetId ||
-            configDefault.expenseSheetId,
-          trainingRange: "",
-          trainingTab:
-            fetchedData?.props?.userConfig?.trainingTab ||
-            configDefault.trainingTab,
-          categorisationTab:
-            fetchedData?.props?.userConfig?.categorisationTab ||
-            configDefault.categorisationTab,
-          categorisationRange: "",
-          columnOrderTraining:
-            fetchedData?.props?.userConfig?.columnOrderTraining ||
-            configDefault.columnOrderTraining,
-          columnOrderCategorisation:
-            fetchedData?.props?.userConfig?.columnOrderCategorisation ||
-            configDefault.columnOrderCategorisation,
-        });
-        getSpreadSheetData(
-          fetchedData?.props?.userConfig?.expenseSheetId ||
-            configDefault.expenseSheetId
-        );
+          // Only use default config if no user config exists
+          if (fetchedData?.props?.userConfig) {
+            console.log("Found user config:", fetchedData.props.userConfig);
+            const userConfig = fetchedData.props.userConfig;
+            const newConfig = {
+              expenseSheetId: userConfig.expenseSheetId,
+              trainingRange: userConfig.trainingRange || configDefault.trainingRange,
+              trainingTab: userConfig.trainingTab || configDefault.trainingTab,
+              categorisationTab: userConfig.categorisationTab || configDefault.categorisationTab,
+              categorisationRange: userConfig.categorisationRange || configDefault.categorisationRange,
+              columnOrderTraining: userConfig.columnOrderTraining || configDefault.columnOrderTraining,
+              columnOrderCategorisation: userConfig.columnOrderCategorisation || configDefault.columnOrderCategorisation,
+            };
+            console.log("Setting new config:", newConfig);
+            setConfig(newConfig);
+            
+            // Fetch spreadsheet data with user's sheet ID
+            console.log("Fetching spreadsheet data with ID:", userConfig.expenseSheetId);
+            getSpreadSheetData(userConfig.expenseSheetId);
+          } else {
+            console.log("No user configuration found, using defaults:", configDefault);
+            setConfig(configDefault);
+            getSpreadSheetData(configDefault.expenseSheetId);
+          }
+        } catch (err) {
+          console.error("Error in fetchData:", err);
+          setError(err as any);
+        }
+      } else {
+        console.log("No user available in fetchData");
       }
     };
 
@@ -243,40 +259,50 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         return;
       }
       body = {
-        expenseSheetId,
-        columnOrderCategorisation,
         userId,
-        categorisationTab,
+        sheetId: expenseSheetId,
+        files: [{
+          config: {
+            column_mapping: {
+              date: "0",
+              amount: "1",
+              description: "2"
+            },
+            tab: categorisationTab,
+            range: config.categorisationRange || "A1:C",
+            defaultCurrency: "AUD",
+            date_format: "%d/%m/%Y"
+          },
+          type: "google_sheets",
+          path: expenseSheetId
+        }]
       };
     } else {
-      body = { expenseSheetId, columnOrderTraining, userId, trainingTab };
-      updateProcessStatus(
-        `Action started based on sheet ${expenseSheetId}`,
-        "trainingStatus",
-        userId
-      );
+      body = {
+        expenseSheetId,
+        columnOrderTraining,
+        userId,
+        trainingTab,
+      };
     }
 
-    handleSaveClick();
-
     try {
-      statusSetter(`Action started based on sheet ${expenseSheetId}`);
       const response = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        console.log("Fetched data:", data);
-      } else {
-        console.error("API call failed with status:", response.status);
-        statusSetter("");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "An error occurred");
       }
+
+      const data = await response.json();
+      console.log("Action completed successfully:", data);
     } catch (error) {
-      console.error("An error occurred:", error);
-      statusSetter("");
+      console.error("Error during action:", error);
+      throw error;
     }
   };
 
@@ -374,10 +400,28 @@ export const useAppContext = () => {
 async function getData(user: any) {
   console.log("🚀 ~ getData ~ user:", user)
   if (!user) {
+    console.log("No user provided to getData");
     return {
       props: {},
     };
   }
+
+  console.log("Fetching data for user ID:", user.sub);
+  
+  // First, let's see all accounts with full details
+  const { data: allAccounts, error: listError } = await supabase
+    .from("account")
+    .select("*");
+    
+  console.log("All accounts in database (full details):", allAccounts);
+
+  // Also try to find any accounts that might match the email
+  const { data: emailAccounts, error: emailError } = await supabase
+    .from("account")
+    .select("*")
+    .eq("email", user.email);
+    
+  console.log("Accounts matching email:", emailAccounts);
 
   const { data, error } = await supabase
     .from("account")
@@ -385,6 +429,34 @@ async function getData(user: any) {
     .eq("userId", user.sub)
     .single();
 
+  if (error) {
+    console.error("Error fetching user config:", error);
+    return {
+      props: {
+        error: error.message,
+      },
+    };
+  }
+
+  console.log("Raw data from database:", data);
+
+  // Parse JSON strings for column orders if they exist
+  if (data) {
+    try {
+      if (typeof data.columnOrderTraining === 'string') {
+        console.log("Parsing columnOrderTraining:", data.columnOrderTraining);
+        data.columnOrderTraining = JSON.parse(data.columnOrderTraining.replace(/\\"/g, '"'));
+      }
+      if (typeof data.columnOrderCategorisation === 'string') {
+        console.log("Parsing columnOrderCategorisation:", data.columnOrderCategorisation);
+        data.columnOrderCategorisation = JSON.parse(data.columnOrderCategorisation.replace(/\\"/g, '"'));
+      }
+    } catch (e) {
+      console.error("Error parsing column order JSON:", e);
+    }
+  }
+
+  console.log("Processed data:", data);
   return {
     props: {
       userConfig: data || null,

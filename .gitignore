@@ -44,4 +44,9 @@ __pycache__
 *.csv
 *.npy
 
+# Add to existing .gitignore
+.pnpm-store/
+pnpm-lock.yaml
+.pnpm-debug.log
+
 .env
