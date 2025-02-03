@@ -9,6 +9,7 @@ import tempfile
 from typing import List, Dict, Any, Tuple
 import logging
 from supabase import create_client, Client
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,8 @@ class ClassificationService:
         run_key = self._generate_timestamp()
         
         try:
+            logger.info(f"Running prediction with data: {training_data}")
+            
             model = replicate.models.get("replicate/all-mpnet-base-v2")
             version = model.versions.get(
                 "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
@@ -58,15 +61,20 @@ class ClassificationService:
         try:
             desc_new_data = df_unclassified["description"]
             logger.info(f"Processing descriptions: {desc_new_data}")
+            logger.info(f"Trained embeddings shape: {trained_embeddings.shape}")
+            logger.info(f"New embeddings shape: {new_embeddings.shape}")
 
+            # Calculate similarity between new embeddings and trained embeddings
             similarity_new_data = cosine_similarity(new_embeddings, trained_embeddings)
             similarity_df = pd.DataFrame(similarity_new_data)
 
+            # Get indices of most similar items
             index_similarity = similarity_df.idxmax(axis=1)
-            # Which trained embedding is the new embedding most similar to?
+            
+            # Return the mapping information
             d_output = {
                 "description": desc_new_data,
-                "categoryIndex": index_similarity,
+                "categoryIndex": index_similarity
             }
             return d_output
 
@@ -95,7 +103,6 @@ class ClassificationService:
 
         try:
             with open(file_path, "rb") as f:
-                # Upload file without checking response status
                 self.supabase.storage.from_(self.bucket_name).upload(
                     file_name,
                     f,
@@ -124,16 +131,34 @@ class ClassificationService:
 
     def store_training_data(self, df: pd.DataFrame, sheet_id: str) -> None:
         """Store training data index."""
-        structured_array = np.array(
-            list(zip(
-                df["item_id"].to_numpy(),
-                df["category"].to_numpy(),
-                df["description"].to_numpy()
-            )),
-            dtype=[("item_id", int), ("category", object), ("description", object)]
-        )
-        
-        self.save_embeddings(f"{sheet_id}_index.npy", structured_array)
+        try:
+            # Ensure we have the required columns
+            required_columns = ["item_id", "category", "description"]
+            if not all(col in df.columns for col in required_columns):
+                raise ValueError(f"Missing required columns. Found: {df.columns.tolist()}, Required: {required_columns}")
+            
+            logger.info(f"Storing training data with columns: {df.columns.tolist()}")
+            logger.info(f"Sample categories: {df['category'].head().tolist()}")
+            
+            # Create structured array with proper dtype
+            structured_array = np.array(
+                list(zip(
+                    df["item_id"].astype(int).to_numpy(),
+                    df["category"].astype(str).to_numpy(),
+                    df["description"].astype(str).to_numpy()
+                )),
+                dtype=[("item_id", int), ("category", "U50"), ("description", "U500")]
+            )
+            
+            logger.info(f"Created structured array with {len(structured_array)} entries")
+            logger.info(f"First few categories in array: {structured_array['category'][:5]}")
+            
+            self.save_embeddings(f"{sheet_id}_index.npy", structured_array)
+            
+        except Exception as e:
+            logger.error(f"Error in store_training_data: {str(e)}")
+            logger.error(f"DataFrame info: {df.info()}")
+            raise
 
     @staticmethod
     def _generate_timestamp() -> str:

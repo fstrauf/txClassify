@@ -42,8 +42,12 @@ class TransactionService:
             elif isinstance(file_data, pd.DataFrame):
                 df = file_data.copy()
                 logger.info(f"Processing DataFrame with columns: {df.columns.tolist()}")
-                # Convert column names to indices if they're not already
-                df.columns = range(len(df.columns))
+                # If columns are already named, keep them
+                if not all(isinstance(col, int) for col in df.columns):
+                    logger.info("Using existing column names")
+                else:
+                    # Convert column names to indices if they're not already
+                    df.columns = range(len(df.columns))
             else:
                 raise ValueError(f"Unsupported data type: {type(file_data)}")
 
@@ -57,33 +61,41 @@ class TransactionService:
             # Handle date column
             date_col = mappings.get('date')
             if date_col is not None:
-                col_idx = int(date_col)
-                if col_idx < len(df.columns):
+                col_idx = int(date_col) if str(date_col).isdigit() else date_col
+                if isinstance(col_idx, int) and col_idx < len(df.columns):
+                    result_df['date'] = df[col_idx].apply(
+                        lambda x: self.parse_date(str(x), bank_config.get('date_format', '%Y-%m-%d'))
+                    )
+                elif isinstance(col_idx, str) and col_idx in df.columns:
                     result_df['date'] = df[col_idx].apply(
                         lambda x: self.parse_date(str(x), bank_config.get('date_format', '%Y-%m-%d'))
                     )
                 else:
-                    logger.warning(f"Date column index {col_idx} out of range")
+                    logger.warning(f"Date column {col_idx} not found")
                     result_df['date'] = None
 
             # Handle amount column
             amount_col = mappings.get('amount')
             if amount_col is not None:
-                col_idx = int(amount_col)
-                if col_idx < len(df.columns):
+                col_idx = int(amount_col) if str(amount_col).isdigit() else amount_col
+                if isinstance(col_idx, int) and col_idx < len(df.columns):
+                    result_df['amount'] = df[col_idx].apply(self.normalize_amount)
+                elif isinstance(col_idx, str) and col_idx in df.columns:
                     result_df['amount'] = df[col_idx].apply(self.normalize_amount)
                 else:
-                    logger.warning(f"Amount column index {col_idx} out of range")
+                    logger.warning(f"Amount column {col_idx} not found")
                     result_df['amount'] = None
 
             # Handle description
             desc_col = mappings.get('description')
             if desc_col is not None:
-                col_idx = int(desc_col)
-                if col_idx < len(df.columns):
+                col_idx = int(desc_col) if str(desc_col).isdigit() else desc_col
+                if isinstance(col_idx, int) and col_idx < len(df.columns):
+                    result_df['description'] = df[col_idx].astype(str)
+                elif isinstance(col_idx, str) and col_idx in df.columns:
                     result_df['description'] = df[col_idx].astype(str)
                 else:
-                    logger.warning(f"Description column index {col_idx} out of range")
+                    logger.warning(f"Description column {col_idx} not found")
                     result_df['description'] = None
 
             # Handle currency (always AUD for now)
@@ -96,11 +108,14 @@ class TransactionService:
                 logger.warning("No valid transactions found after processing")
             else:
                 logger.info(f"Successfully processed {len(result_df)} transactions")
+                logger.info(f"Sample data:\n{result_df.head().to_string()}")
 
             return result_df
 
         except Exception as e:
             logger.error(f"Error processing bank file: {str(e)}")
+            logger.error(f"Input data shape: {df.shape if 'df' in locals() else 'unknown'}")
+            logger.error(f"Column mappings: {mappings}")
             raise
 
     def process_multiple_files(self, files_data: List[Dict[str, Any]]) -> pd.DataFrame:

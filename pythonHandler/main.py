@@ -156,27 +156,47 @@ def handle_classify_webhook():
         sheet_range = f"{config['categorisationTab']}!{first_col}:{last_col}"
         transactions = services["spreadsheet"].get_sheet_data(sheet_id, sheet_range)
         
+        # Convert trained_index to DataFrame for easier handling
+        trained_df = pd.DataFrame(trained_index)
+        logger.info(f"Trained index fields: {trained_df.columns.tolist()}")
+        logger.info(f"Sample of trained categories: {trained_df[['category', 'description']].to_dict()}")
+        
+        # Create DataFrame from transactions
+        df_transactions = pd.DataFrame(transactions, columns=source_cols)
+        
         # Classify and prepare data
         classified_data = services["classification"].classify_expenses(
-            pd.DataFrame(transactions, columns=source_cols),
+            df_transactions,
             trained_embeddings,
             new_embeddings
         )
         
         # Map indices to categories using trained_index
         df_output = pd.DataFrame.from_dict(classified_data)
-        trained_categories_df = pd.DataFrame(trained_index)
+        logger.info(f"Classification output before merge: {df_output.to_dict()}")
         
-        # Merge to get categories
+        # Merge with trained index to get categories
         combined_df = df_output.merge(
-            trained_categories_df,
+            trained_df,
             left_on="categoryIndex",
             right_on="item_id",
             how="left"
         )
         
+        # Log some info about the merge
+        logger.info(f"Original data shape: {df_output.shape}")
+        logger.info(f"Combined data shape: {combined_df.shape}")
+        logger.info(f"Final categories:")
+        for desc, cat in zip(combined_df["description_x"], combined_df["category"]):
+            logger.info(f"  {desc} -> {cat if pd.notnull(cat) else 'Unknown'}")
+        
         # Drop unnecessary columns and keep only what we need
-        combined_df.drop(columns=["item_id", "categoryIndex"], inplace=True)
+        combined_df.drop(columns=["item_id", "categoryIndex", "description_y"], inplace=True, errors='ignore')
+        if "description_x" in combined_df.columns:
+            combined_df.rename(columns={"description_x": "description"}, inplace=True)
+        
+        # Fill NaN categories with "Unknown"
+        combined_df["category"] = combined_df["category"].fillna("Unknown")
         
         # Prepare and append to sheet
         final_df = services["spreadsheet"].prepare_sheet_data(
@@ -231,7 +251,8 @@ def run_training():
             'Date': 'date',
             'Narrative': 'description',
             'Amount': 'amount',
-            'Categories': 'category'
+            'Categories': 'category',
+            'Currency': 'currency'
         }
         
         # Map the columns and create DataFrame
