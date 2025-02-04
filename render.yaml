@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: tx-classify-api
+    name: tx-classify
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 0
+    buildCommand: cd pythonHandler && pip install -r requirements.txt
+    startCommand: cd pythonHandler && gunicorn app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -11,9 +11,7 @@ services:
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
-      - key: BACKEND_API
-        sync: false
-      - key: GOOGLE_SERVICE_ACCOUNT
+      - key: REPLICATE_API_TOKEN
         sync: false
     healthCheckPath: /
     autoDeploy: true
