@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Tuple
 import logging
 from supabase import create_client, Client
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -19,36 +20,192 @@ class ClassificationService:
         self.backend_api = backend_api
         self.bucket_name = "txclassify"
 
+    def train(self, training_data: pd.DataFrame, sheet_id: str, user_id: str) -> None:
+        """Train the classifier with descriptions and their categories."""
+        try:
+            logger.info(f"Training with {len(training_data)} transactions")
+            
+            # Get embeddings for descriptions
+            descriptions = training_data['Narrative'].astype(str).tolist()
+            categories = training_data['Category'].astype(str).tolist()
+            
+            # Run prediction with webhook
+            prediction = self.run_prediction(
+                "training",
+                sheet_id,
+                user_id,
+                descriptions
+            )
+            
+            logger.info("Training request sent successfully")
+            return prediction
+            
+        except Exception as e:
+            logger.error(f"Error in training: {str(e)}")
+            raise
+
+    def classify(self, new_data: pd.DataFrame, sheet_id: str, user_id: str) -> None:
+        """Start classification of new transactions."""
+        try:
+            logger.info(f"Classifying {len(new_data)} transactions")
+            
+            # Get descriptions for new data
+            descriptions = new_data['Narrative'].astype(str).tolist()
+            
+            # Run prediction with webhook
+            prediction = self.run_prediction(
+                "classify",
+                sheet_id,
+                user_id,
+                descriptions
+            )
+            
+            logger.info("Classification request sent successfully")
+            return prediction
+            
+        except Exception as e:
+            logger.error(f"Error starting classification: {str(e)}")
+            raise
+
     def run_prediction(
         self, 
         api_mode: str,
         sheet_id: str,
         user_id: str,
-        sheet_api: str,
-        training_data: List[str]
+        texts: List[str]
     ) -> Dict[str, Any]:
-        """Run prediction using Replicate API."""
-        run_key = self._generate_timestamp()
-        
+        """Run prediction using Replicate API with webhook."""
         try:
-            logger.info(f"Running prediction with data: {training_data}")
+            logger.info(f"Running prediction for {len(texts)} texts in {api_mode} mode")
             
             model = replicate.models.get("replicate/all-mpnet-base-v2")
             version = model.versions.get(
                 "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
             )
 
-            webhook = f"{self.backend_api}/{api_mode}?sheetId={sheet_id}&runKey={run_key}&userId={user_id}&sheetApi={sheet_api}"
+            # Create webhook URL - ensure no double slashes
+            base_url = self.backend_api.rstrip('/')
+            webhook = f"{base_url}/{api_mode}?sheetId={sheet_id}&userId={user_id}"
+            logger.info(f"Using webhook endpoint: {webhook}")
 
+            # Create prediction with webhook
             prediction = replicate.predictions.create(
                 version=version,
-                input={"text_batch": json.dumps(training_data)},
+                input={"text_batch": json.dumps(texts)},
                 webhook=webhook,
                 webhook_events_filter=["completed"],
             )
+            
+            logger.info(f"Started {api_mode} with prediction ID: {prediction.id}")
             return prediction
+            
         except Exception as e:
             logger.error(f"Error in run_prediction: {str(e)}")
+            raise
+
+    def process_webhook_response(self, data: Dict[str, Any], sheet_id: str) -> pd.DataFrame:
+        """Process webhook response and classify transactions."""
+        try:
+            logger.info("Processing webhook response")
+            
+            # Get embeddings from response
+            new_embeddings = self.process_embeddings(data)
+            logger.info(f"Processed embeddings shape: {new_embeddings.shape}")
+            
+            # Load trained data
+            trained_data = self._load_training_data(sheet_id)
+            logger.info(f"Loaded {len(trained_data['categories'])} training examples")
+            
+            # Find most similar categories
+            similarities = cosine_similarity(new_embeddings, trained_data['embeddings'])
+            best_matches = similarities.argmax(axis=1)
+            best_scores = similarities.max(axis=1)
+            
+            # Get the original descriptions from the webhook response
+            new_descriptions = [item.get("text", "") for item in data["output"]]
+            
+            # Create results DataFrame
+            results = pd.DataFrame({
+                'description': new_descriptions,
+                'predicted_category': [trained_data['categories'][i] for i in best_matches],
+                'similarity_score': best_scores,
+                'matched_description': [trained_data['descriptions'][i] for i in best_matches]
+            })
+            
+            logger.info(f"Generated predictions for {len(results)} items")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error processing webhook response: {str(e)}")
+            raise
+
+    def process_embeddings(self, data: Dict[str, Any]) -> np.ndarray:
+        """Convert JSON response to numpy array of embeddings."""
+        try:
+            embeddings = [item["embedding"] for item in data["output"]]
+            return np.array(embeddings)
+        except KeyError as e:
+            logger.error(f"KeyError in process_embeddings: {e}")
+            logger.error(f"Data structure: {data}")
+            raise
+
+    def _store_training_data(self, embeddings: np.ndarray, descriptions: List[str], 
+                           categories: List[str], sheet_id: str) -> None:
+        """Store training data in Supabase storage."""
+        try:
+            # Create a structured array with all training data
+            training_data = {
+                'embeddings': embeddings,
+                'descriptions': descriptions,
+                'categories': categories
+            }
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+                np.savez_compressed(temp_file, **training_data)
+                temp_file_path = temp_file.name
+            
+            # Upload to Supabase
+            with open(temp_file_path, 'rb') as f:
+                self.supabase.storage.from_(self.bucket_name).upload(
+                    f"{sheet_id}_training.npz",
+                    f,
+                    file_options={"x-upsert": "true"}
+                )
+            
+            # Clean up
+            os.unlink(temp_file_path)
+            logger.info(f"Stored training data for {len(descriptions)} examples")
+                
+        except Exception as e:
+            logger.error(f"Error storing training data: {str(e)}")
+            raise
+
+    def _load_training_data(self, sheet_id: str) -> Dict[str, Any]:
+        """Load training data from Supabase storage."""
+        try:
+            # Download to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+                response = self.supabase.storage.from_(self.bucket_name).download(
+                    f"{sheet_id}_training.npz"
+                )
+                temp_file.write(response)
+                temp_file.flush()
+                
+                # Load the data
+                data = np.load(temp_file.name)
+                result = {
+                    'embeddings': data['embeddings'],
+                    'descriptions': data['descriptions'],
+                    'categories': data['categories']
+                }
+                
+                # Clean up
+                os.unlink(temp_file.name)
+                return result
+                
+        except Exception as e:
+            logger.error(f"Error loading training data: {str(e)}")
             raise
 
     def classify_expenses(
@@ -83,16 +240,6 @@ class ClassificationService:
             logger.error(f"df_unclassified shape: {df_unclassified.shape}")
             logger.error(f"trained_embeddings: {type(trained_embeddings)}")
             logger.error(f"new_embeddings shape: {new_embeddings.shape}")
-            raise
-
-    def process_embeddings(self, data: Dict[str, Any]) -> np.ndarray:
-        """Convert JSON response to numpy array of embeddings."""
-        try:
-            embeddings = [item["embedding"] for item in data["output"]]
-            return np.array(embeddings)
-        except KeyError as e:
-            logger.error(f"KeyError in process_embeddings: {e}")
-            logger.error(f"Data structure: {data}")
             raise
 
     def save_embeddings(self, file_name: str, embeddings_array: np.ndarray) -> None:
