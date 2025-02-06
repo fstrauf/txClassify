@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from services.classification_service import ClassificationService
+from flask_cors import CORS
 import pandas as pd
 import logging
 from dotenv import load_dotenv
@@ -22,6 +23,16 @@ if not all([supabase_url, supabase_key]):
     raise ValueError("Missing required environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY")
 
 app = Flask(__name__)
+CORS(app)
+
+@app.route('/')
+def root():
+    """Root endpoint"""
+    return jsonify({
+        "message": "TX Classify API",
+        "version": "1.0.0",
+        "endpoints": ["/health", "/classify", "/train"]
+    })
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -121,5 +132,5 @@ def train_model():
         }), 500
 
 if __name__ == '__main__':
-    # Only for local development
-    app.run(host='0.0.0.0', port=5001) 
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port) 
