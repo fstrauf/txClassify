@@ -85,7 +85,7 @@ class ClassificationService:
 
             # Create webhook URL - ensure no double slashes
             base_url = self.backend_api.rstrip('/')
-            webhook = f"{base_url}/{api_mode}?sheetId={sheet_id}&userId={user_id}"
+            webhook = f"{base_url}/classify/webhook?sheetId={sheet_id}&userId={user_id}"
             logger.info(f"Using webhook endpoint: {webhook}")
 
             # Create prediction with webhook

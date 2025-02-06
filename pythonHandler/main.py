@@ -102,9 +102,41 @@ def classify_transactions():
             backend_api=request.host_url.rstrip('/')
         )
         
-        # Run classification
+        # Start classification (this will trigger a webhook callback)
         prediction = classifier.classify(df, "sheet_default", "user_default")
-        results = classifier.process_webhook_response(prediction, "sheet_default")
+        
+        # Return prediction ID and status
+        return jsonify({
+            "status": "processing",
+            "message": "Classification started",
+            "prediction_id": prediction.id
+        })
+        
+    except Exception as e:
+        logger.error(f"Error processing request: {str(e)}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+@app.route('/classify/webhook', methods=['POST'])
+def classify_webhook():
+    """Handle classification webhook from Replicate"""
+    try:
+        data = request.get_json()
+        sheet_id = request.args.get('sheetId', 'sheet_default')
+        user_id = request.args.get('userId', 'user_default')
+        
+        logger.info(f"Received webhook for sheet {sheet_id} and user {user_id}")
+        
+        # Initialize classification service
+        classifier = ClassificationService(
+            supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
+            supabase_key=os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+            backend_api=request.host_url.rstrip('/')
+        )
+        
+        # Process the webhook response
+        results = classifier.process_webhook_response(data, sheet_id)
         
         # Convert results to list of dictionaries
         results_list = results.to_dict('records')
@@ -112,7 +144,7 @@ def classify_transactions():
         return jsonify(results_list)
         
     except Exception as e:
-        logger.error(f"Error processing request: {str(e)}")
+        logger.error(f"Error processing webhook: {str(e)}")
         return jsonify({
             "error": str(e)
         }), 500
@@ -233,106 +265,6 @@ def process_transactions():
 
     except Exception as e:
         logger.error(f"Error in process_transactions: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/classify", methods=["POST"])
-def handle_classify_webhook():
-    """Handle classification webhook from Replicate."""
-    try:
-        data = request.get_json()
-        webhook_url = data.get("webhook")
-        
-        # Extract parameters from webhook URL
-        params = dict(param.split('=') for param in webhook_url.split('?')[1].split('&'))
-        sheet_id = params.get("sheetId")
-        user_id = params.get("userId")
-        run_key = params.get("runKey")
-        
-        # Get user configuration
-        config = get_user_config(user_id)
-        
-        # Process embeddings
-        update_process_status("Processing classification results", "classify", user_id)
-        new_embeddings = services["classification"].process_embeddings(data)
-        trained_embeddings = services["classification"].fetch_embeddings(f"{sheet_id}.npy")
-        trained_index = services["classification"].fetch_embeddings(f"{sheet_id}_index.npy")
-        
-        # Get sheet configuration
-        first_col, last_col, source_cols = services["spreadsheet"].get_column_range(
-            config.get("columnOrderCategorisation")
-        )
-        _, _, target_cols = services["spreadsheet"].get_column_range(
-            config.get("columnOrderTraining")
-        )
-        
-        # Get current transactions
-        sheet_range = f"{config['categorisationTab']}!{first_col}:{last_col}"
-        transactions = services["spreadsheet"].get_sheet_data(sheet_id, sheet_range)
-        
-        # Convert trained_index to DataFrame for easier handling
-        trained_df = pd.DataFrame(trained_index)
-        logger.info(f"Trained index fields: {trained_df.columns.tolist()}")
-        logger.info(f"Sample of trained categories: {trained_df[['category', 'description']].to_dict()}")
-        
-        # Create DataFrame from transactions
-        df_transactions = pd.DataFrame(transactions, columns=source_cols)
-        
-        # Classify and prepare data
-        classified_data = services["classification"].classify_expenses(
-            df_transactions,
-            trained_embeddings,
-            new_embeddings
-        )
-        
-        # Map indices to categories using trained_index
-        df_output = pd.DataFrame.from_dict(classified_data)
-        logger.info(f"Classification output before merge: {df_output.to_dict()}")
-        
-        # Merge with trained index to get categories
-        combined_df = df_output.merge(
-            trained_df,
-            left_on="categoryIndex",
-            right_on="item_id",
-            how="left"
-        )
-        
-        # Log some info about the merge
-        logger.info(f"Original data shape: {df_output.shape}")
-        logger.info(f"Combined data shape: {combined_df.shape}")
-        logger.info(f"Final categories:")
-        for desc, cat in zip(combined_df["description_x"], combined_df["category"]):
-            logger.info(f"  {desc} -> {cat if pd.notnull(cat) else 'Unknown'}")
-        
-        # Drop unnecessary columns and keep only what we need
-        combined_df.drop(columns=["item_id", "categoryIndex", "description_y"], inplace=True, errors='ignore')
-        if "description_x" in combined_df.columns:
-            combined_df.rename(columns={"description_x": "description"}, inplace=True)
-        
-        # Fill NaN categories with "Unknown"
-        combined_df["category"] = combined_df["category"].fillna("Unknown")
-        
-        # Prepare and append to sheet
-        final_df = services["spreadsheet"].prepare_sheet_data(
-            transactions,
-            combined_df,
-            source_cols,
-            target_cols
-        )
-        
-        # Update sheet
-        update_process_status("Updating spreadsheet", "classify", user_id)
-        services["spreadsheet"].append_to_sheet(
-            sheet_id,
-            f"{config['trainingTab']}!{first_col}:{last_col}",
-            final_df.values.tolist()
-        )
-        
-        update_process_status("completed", "classify", user_id)
-        return "", 200
-
-    except Exception as e:
-        logger.error(f"Error in classify webhook: {str(e)}")
-        update_process_status(f"Error: {str(e)}", "classify", user_id)
         return jsonify({"error": str(e)}), 500
 
 @app.route("/runTraining", methods=["POST"])
