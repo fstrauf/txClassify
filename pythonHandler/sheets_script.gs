@@ -2,7 +2,8 @@
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('Transaction Classifier')
-    .addItem('Setup Service URL', 'setupService')
+    .addItem('Setup Service', 'setupService')
+    .addItem('Train Model', 'trainModel')
     .addItem('Classify New Transactions', 'showClassifyDialog')
     .addToUi();
 }
@@ -61,19 +62,113 @@ function showClassifyDialog() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Classify Transactions');
 }
 
+// Setup function to configure service URL and API key
+function setupService() {
+  var ui = SpreadsheetApp.getUi();
+  var properties = PropertiesService.getScriptProperties();
+  
+  // Get service URL
+  var serviceUrl = ui.prompt(
+    'Setup Classification Service',
+    'Enter the classification service URL:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (serviceUrl.getSelectedButton() !== ui.Button.OK) return;
+  
+  // Get API key
+  var apiKey = ui.prompt(
+    'Setup API Key',
+    'Enter your API key (or leave blank to generate a new one):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (apiKey.getSelectedButton() !== ui.Button.OK) return;
+  
+  // If no API key provided, generate one
+  var key = apiKey.getResponseText().trim();
+  if (!key) {
+    key = Utilities.getUuid();
+    ui.alert('Generated new API key', 'Your API key is: ' + key + '\n\nPlease save this key somewhere safe.', ui.ButtonSet.OK);
+  }
+  
+  // Store both values
+  properties.setProperties({
+    'CLASSIFICATION_SERVICE_URL': serviceUrl.getResponseText(),
+    'API_KEY': key
+  });
+  
+  ui.alert('Setup completed successfully!');
+}
+
+// Helper function to get stored properties
+function getServiceConfig() {
+  var properties = PropertiesService.getScriptProperties();
+  var serviceUrl = properties.getProperty('CLASSIFICATION_SERVICE_URL');
+  var apiKey = properties.getProperty('API_KEY');
+  
+  if (!serviceUrl || !apiKey) {
+    throw new Error('Service not configured. Please use "Setup Service" first.');
+  }
+  
+  return { serviceUrl, apiKey };
+}
+
+// Train model with existing categorized transactions
+function trainModel() {
+  var ui = SpreadsheetApp.getUi();
+  
+  try {
+    var config = getServiceConfig();
+    var sheet = SpreadsheetApp.getActiveSheet();
+    var lastRow = sheet.getLastRow();
+    var data = sheet.getRange("A2:D" + lastRow).getValues();
+    
+    // Filter out empty rows and prepare training data
+    var transactions = data
+      .filter(row => row[2] && row[3]) // Narrative and Category columns must have values
+      .map(row => ({
+        Narrative: row[2],
+        Category: row[3]
+      }));
+    
+    if (transactions.length === 0) {
+      ui.alert('No training data found. Please ensure you have transactions with categories.');
+      return;
+    }
+    
+    // Show progress
+    ui.alert('Training model with ' + transactions.length + ' transactions...');
+    
+    // Call training endpoint
+    var options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        'X-API-Key': config.apiKey
+      },
+      payload: JSON.stringify({ transactions: transactions }),
+      muteHttpExceptions: true
+    };
+    
+    var response = UrlFetchApp.fetch(config.serviceUrl + '/train', options);
+    if (response.getResponseCode() !== 200) {
+      throw new Error('Training error: ' + response.getContentText());
+    }
+    
+    ui.alert('Training completed successfully!\n\nProcessed: ' + transactions.length + ' transactions');
+    
+  } catch (error) {
+    ui.alert('Error: ' + error.toString());
+  }
+}
+
 // Main classification function
 function classifyTransactions(config) {
   var sheet = SpreadsheetApp.getActiveSheet();
   var ui = SpreadsheetApp.getUi();
   
-  // Get service URL
-  var serviceUrl = PropertiesService.getScriptProperties().getProperty('CLASSIFICATION_SERVICE_URL');
-  if (!serviceUrl) {
-    ui.alert('Please set up the service URL first');
-    return;
-  }
-  
   try {
+    var serviceConfig = getServiceConfig();
+    
     // Get all descriptions from the specified column
     var lastRow = sheet.getLastRow();
     var descriptionRange = sheet.getRange(config.descriptionCol + config.startRow + ":" + config.descriptionCol + lastRow);
@@ -98,27 +193,40 @@ function classifyTransactions(config) {
     var options = {
       method: 'post',
       contentType: 'application/json',
+      headers: {
+        'X-API-Key': serviceConfig.apiKey
+      },
       payload: JSON.stringify({ transactions: transactions }),
       muteHttpExceptions: true
     };
     
-    var response = UrlFetchApp.fetch(serviceUrl + '/classify', options);
+    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/classify', options);
     if (response.getResponseCode() !== 200) {
       throw new Error('Classification service error: ' + response.getContentText());
     }
     
-    // Process results
-    var results = JSON.parse(response.getContentText());
+    var result = JSON.parse(response.getContentText());
+    
+    // Check if we got a prediction ID (async mode)
+    if (result.prediction_id) {
+      ui.alert('Classification started. Please wait a moment and try again.');
+      return;
+    }
+    
+    // Process results if we got them directly
+    if (!Array.isArray(result)) {
+      throw new Error('Unexpected response format');
+    }
     
     // Write categories back to sheet
     var categoryCol = sheet.getRange(config.categoryCol + config.startRow);
-    var categories = results.map(r => [r.predicted_category]);
+    var categories = result.map(r => [r.predicted_category]);
     sheet.getRange(config.categoryCol + config.startRow + ":" + config.categoryCol + (parseInt(config.startRow) + categories.length - 1))
       .setValues(categories);
     
     // Optional: Add confidence scores in next column
     var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
-    var confidences = results.map(r => [r.similarity_score]);
+    var confidences = result.map(r => [r.similarity_score]);
     sheet.getRange(confidenceCol + config.startRow + ":" + confidenceCol + (parseInt(config.startRow) + confidences.length - 1))
       .setValues(confidences)
       .setNumberFormat("0.00");
@@ -134,24 +242,4 @@ function classifyTransactions(config) {
   } catch (error) {
     ui.alert('Error: ' + error.toString());
   }
-}
-
-// Setup function to configure service URL
-function setupService() {
-  var ui = SpreadsheetApp.getUi();
-  
-  var serviceUrl = ui.prompt(
-    'Setup Classification Service',
-    'Enter the classification service URL:',
-    ui.ButtonSet.OK_CANCEL
-  );
-  
-  if (serviceUrl.getSelectedButton() !== ui.Button.OK) return;
-  
-  PropertiesService.getScriptProperties().setProperty(
-    'CLASSIFICATION_SERVICE_URL',
-    serviceUrl.getResponseText()
-  );
-  
-  ui.alert('Setup completed successfully!');
 } 

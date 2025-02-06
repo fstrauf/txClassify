@@ -7,6 +7,7 @@ from typing import Dict, Any
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+from functools import wraps
 
 from services.transaction_service import TransactionService
 from services.classification_service import ClassificationService
@@ -60,6 +61,18 @@ def update_process_status(status_text: str, mode: str, user_id: str) -> None:
     except Exception as e:
         logger.error(f"Error updating process status: {e}")
 
+def require_api_key(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        api_key = request.headers.get('X-API-Key')
+        if not api_key:
+            return jsonify({"error": "No API key provided"}), 401
+            
+        # Use API key as user identifier
+        request.user_id = api_key[:8]  # Use first 8 chars as user ID
+        return f(*args, **kwargs)
+    return decorated_function
+
 @app.route('/')
 def root():
     """Root endpoint"""
@@ -78,6 +91,7 @@ def health_check():
     })
 
 @app.route('/classify', methods=['POST'])
+@require_api_key
 def classify_transactions():
     """Endpoint to classify transactions"""
     try:
@@ -103,7 +117,7 @@ def classify_transactions():
         )
         
         # Start classification (this will trigger a webhook callback)
-        prediction = classifier.classify(df, "sheet_default", "user_default")
+        prediction = classifier.classify(df, f"sheet_{request.user_id}", request.user_id)
         
         # Return prediction ID and status
         return jsonify({
@@ -150,6 +164,7 @@ def classify_webhook():
         }), 500
 
 @app.route('/train', methods=['POST'])
+@require_api_key
 def train_model():
     """Endpoint to train the model with new data"""
     try:
@@ -176,15 +191,15 @@ def train_model():
         )
         
         # Train model
-        training_response = classifier.train(df, "sheet_default", "user_default")
+        training_response = classifier.train(df, f"sheet_{request.user_id}", request.user_id)
         
         # Process and store embeddings
-        classifier.process_embeddings(training_response)
+        embeddings = classifier.process_embeddings(training_response)
         classifier._store_training_data(
-            training_response['embeddings'],
+            embeddings,
             df['Narrative'].tolist(),
             df['Category'].tolist(),
-            "sheet_default"
+            f"sheet_{request.user_id}"
         )
         
         return jsonify({
