@@ -227,6 +227,7 @@ def train_webhook():
         data = request.get_json()
         sheet_id = request.args.get('sheetId', 'sheet_default')
         user_id = request.args.get('userId', 'user_default')
+        training_data = request.args.get('training_data', '[]')
         
         logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id}")
         
@@ -241,8 +242,7 @@ def train_webhook():
         embeddings = classifier.process_embeddings(data)
         logger.info(f"Processed embeddings shape: {embeddings.shape}")
         
-        # Get the original training data from the request
-        training_data = request.args.get('training_data', '[]')
+        # Parse training data
         training_data = json.loads(training_data)
         logger.info(f"Received {len(training_data)} training examples")
         
@@ -250,8 +250,8 @@ def train_webhook():
             raise ValueError("No training data received in webhook")
             
         # Extract descriptions and categories
-        descriptions = [t['Narrative'] for t in training_data]
-        categories = [t['Category'] for t in training_data]
+        descriptions = [t['description'] for t in training_data]
+        categories = [t['category'] for t in training_data]
         
         logger.info(f"Storing training data: {len(descriptions)} descriptions, {len(categories)} categories")
         
@@ -379,7 +379,7 @@ def run_training():
             'Date': 'date',
             'Narrative': 'description',
             'Amount': 'amount',
-            'Categories': 'category',
+            'Category': 'category',
             'Currency': 'currency'
         }
         
@@ -414,12 +414,19 @@ def run_training():
         
         # Run training
         update_process_status("Training model", "training", user_id)
+        
+        # Prepare training data for webhook
+        training_data = df_training.to_dict('records')
+        webhook_params = {
+            'training_data': json.dumps(training_data)
+        }
+        
         services["classification"].run_prediction(
             "training",
             sheet_id,
             user_id,
-            "https://www.expensesorted.com/api/finishedTrainingHook",
-            df_training["description"].tolist()
+            df_training["description"].tolist(),
+            webhook_params=webhook_params
         )
         
         return jsonify({"message": "Training started"})
