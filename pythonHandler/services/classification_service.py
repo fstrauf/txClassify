@@ -25,16 +25,21 @@ class ClassificationService:
         try:
             logger.info(f"Training with {len(training_data)} transactions")
             
+            # Store training data first
+            training_records = training_data.to_dict('records')
+            training_key = self.store_temp_training_data(training_records, sheet_id)
+            logger.info(f"Stored training data with key: {training_key}")
+            
             # Get embeddings for descriptions
             descriptions = training_data['Narrative'].astype(str).tolist()
-            categories = training_data['Category'].astype(str).tolist()
             
             # Run prediction with webhook
             prediction = self.run_prediction(
                 "training",
                 sheet_id,
                 user_id,
-                descriptions
+                descriptions,
+                webhook_params={'training_key': training_key}
             )
             
             logger.info("Training request sent successfully")
@@ -99,7 +104,10 @@ class ClassificationService:
             # Create prediction with webhook
             prediction = replicate.predictions.create(
                 version=version,
-                input={"text_batch": json.dumps(texts)},
+                input={
+                    "text_batch": json.dumps(texts),
+                    "webhook_url": webhook  # Pass webhook URL in input
+                },
                 webhook=webhook,
                 webhook_events_filter=["completed"],
             )

@@ -227,12 +227,22 @@ def train_webhook():
         data = request.get_json()
         sheet_id = request.args.get('sheetId', 'sheet_default')
         user_id = request.args.get('userId', 'user_default')
+        
+        # Try to get training key from different sources
         training_key = request.args.get('training_key')
+        if not training_key and 'input' in data:
+            # Try to extract from webhook URL in input
+            webhook_url = data['input'].get('webhook_url', '')
+            if webhook_url:
+                from urllib.parse import parse_qs, urlparse
+                parsed = urlparse(webhook_url)
+                params = parse_qs(parsed.query)
+                training_key = params.get('training_key', [None])[0]
         
         if not training_key:
-            raise ValueError("No training key provided")
+            raise ValueError("No training key provided in webhook URL or input")
         
-        logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id}")
+        logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id} with key {training_key}")
         
         # Initialize classification service
         classifier = ClassificationService(
@@ -269,6 +279,13 @@ def train_webhook():
         # Verify storage
         stored_data = classifier._load_training_data(sheet_id)
         logger.info(f"Verified stored data: {len(stored_data['descriptions'])} examples")
+        
+        # Clean up temporary training data
+        try:
+            classifier.supabase.table("temp_training_data").delete().eq("key", training_key).execute()
+            logger.info(f"Cleaned up temporary training data for key {training_key}")
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to clean up temporary training data: {cleanup_error}")
         
         return jsonify({
             "status": "success",
