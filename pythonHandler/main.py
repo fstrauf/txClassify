@@ -8,6 +8,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 from functools import wraps
+import replicate
 
 from services.transaction_service import TransactionService
 from services.classification_service import ClassificationService
@@ -429,6 +430,38 @@ def handle_training_webhook():
         if user_id:
             update_process_status(f"Error: {str(e)}", "training", user_id)
         return jsonify({"error": str(e)}), 500
+
+@app.route('/status/<prediction_id>', methods=['GET'])
+@require_api_key
+def check_status(prediction_id):
+    """Check status of a prediction"""
+    try:
+        # Get prediction from Replicate
+        prediction = replicate.predictions.get(prediction_id)
+        
+        # Return appropriate status
+        if prediction.status == "succeeded":
+            return jsonify({
+                "status": "completed",
+                "result": prediction.output
+            })
+        elif prediction.status == "failed":
+            return jsonify({
+                "status": "failed",
+                "error": prediction.error
+            })
+        else:
+            return jsonify({
+                "status": "processing",
+                "message": f"Operation in progress... ({prediction.status})"
+            })
+            
+    except Exception as e:
+        logger.error(f"Error checking prediction status: {str(e)}")
+        return jsonify({
+            "status": "failed",
+            "error": str(e)
+        }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5001))
