@@ -227,7 +227,10 @@ def train_webhook():
         data = request.get_json()
         sheet_id = request.args.get('sheetId', 'sheet_default')
         user_id = request.args.get('userId', 'user_default')
-        training_data = request.args.get('training_data', '[]')
+        training_key = request.args.get('training_key')
+        
+        if not training_key:
+            raise ValueError("No training key provided")
         
         logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id}")
         
@@ -242,12 +245,12 @@ def train_webhook():
         embeddings = classifier.process_embeddings(data)
         logger.info(f"Processed embeddings shape: {embeddings.shape}")
         
-        # Parse training data
-        training_data = json.loads(training_data)
-        logger.info(f"Received {len(training_data)} training examples")
+        # Retrieve training data using the key
+        training_data = classifier.get_temp_training_data(training_key)
+        logger.info(f"Retrieved {len(training_data)} training examples")
         
         if not training_data:
-            raise ValueError("No training data received in webhook")
+            raise ValueError("No training data found")
             
         # Extract descriptions and categories
         descriptions = [t['description'] for t in training_data]
@@ -409,16 +412,16 @@ def run_training():
         df_training = df_training.drop_duplicates(subset=["description"])
         df_training["item_id"] = range(len(df_training))
         
-        # Store training data index
-        services["classification"].store_training_data(df_training, sheet_id)
-        
         # Run training
         update_process_status("Training model", "training", user_id)
         
-        # Prepare training data for webhook
+        # Store training data temporarily and get reference key
         training_data = df_training.to_dict('records')
+        training_key = services["classification"].store_temp_training_data(training_data, sheet_id)
+        
+        # Pass only the training key in webhook params
         webhook_params = {
-            'training_data': json.dumps(training_data)
+            'training_key': training_key
         }
         
         services["classification"].run_prediction(
