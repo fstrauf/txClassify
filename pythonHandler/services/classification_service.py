@@ -358,8 +358,11 @@ class ClassificationService:
             training_key = f"temp_training_{sheet_id}_{int(time.time())}"
             
             # Create temporary file
-            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
-                json.dump(training_data, temp_file)
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w+b') as temp_file:
+                # Convert to JSON and encode as bytes
+                json_data = json.dumps(training_data).encode('utf-8')
+                temp_file.write(json_data)
+                temp_file.flush()
                 temp_file_path = temp_file.name
             
             try:
@@ -386,7 +389,7 @@ class ClassificationService:
         """Retrieve temporary training data from Supabase Storage."""
         try:
             # Download to temporary file
-            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w+b') as temp_file:
                 response = self.supabase.storage.from_(self.bucket_name).download(
                     f"{training_key}.json"
                 )
@@ -394,8 +397,8 @@ class ClassificationService:
                 temp_file.flush()
                 
                 # Load the data
-                with open(temp_file.name, 'r') as f:
-                    training_data = json.load(f)
+                with open(temp_file.name, 'rb') as f:
+                    training_data = json.loads(f.read().decode('utf-8'))
                 
                 # Clean up
                 os.unlink(temp_file.name)
