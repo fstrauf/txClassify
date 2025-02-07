@@ -318,4 +318,38 @@ class ClassificationService:
     @staticmethod
     def _generate_timestamp() -> str:
         """Generate a timestamp for run tracking."""
-        return datetime.now().strftime("%Y-%m-%d-%H-%M-%S") 
+        return datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+
+    def store_temp_training_data(self, training_data: list, sheet_id: str) -> str:
+        """Store training data temporarily in Supabase."""
+        try:
+            # Create a unique key for this training session
+            training_key = f"temp_training_{sheet_id}_{int(time.time())}"
+            
+            # Store in Supabase
+            self.supabase.table("temp_training_data").insert({
+                "key": training_key,
+                "data": training_data,
+                "created_at": time.time(),
+                "sheet_id": sheet_id
+            }).execute()
+            
+            return training_key
+            
+        except Exception as e:
+            logger.error(f"Error storing temp training data: {str(e)}")
+            raise
+
+    def get_temp_training_data(self, training_key: str) -> list:
+        """Retrieve temporary training data from Supabase."""
+        try:
+            response = self.supabase.table("temp_training_data").select("*").eq("key", training_key).execute()
+            
+            if not response.data:
+                raise ValueError(f"No training data found for key {training_key}")
+                
+            return response.data[0]["data"]
+            
+        except Exception as e:
+            logger.error(f"Error retrieving temp training data: {str(e)}")
+            raise 
