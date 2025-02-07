@@ -227,13 +227,16 @@ def train_webhook():
         # Process embeddings from webhook response
         embeddings = classifier.process_embeddings(data)
         
+        # Get the original training data from the request
+        training_data = request.args.get('training_data', '[]')
+        training_data = json.loads(training_data)
+        
         # Store training data
-        df = pd.DataFrame(data['transactions'])
         classifier._store_training_data(
-            embeddings,
-            df['Narrative'].tolist(),
-            df['Category'].tolist(),
-            sheet_id
+            embeddings=embeddings,
+            descriptions=[t['Narrative'] for t in training_data],
+            categories=[t['Category'] for t in training_data],
+            sheet_id=sheet_id
         )
         
         return jsonify({
