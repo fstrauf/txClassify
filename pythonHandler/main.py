@@ -190,25 +190,58 @@ def train_model():
             backend_api=request.host_url.rstrip('/')
         )
         
-        # Train model
-        training_response = classifier.train(df, f"sheet_{request.user_id}", request.user_id)
+        # Train model and wait for completion
+        prediction = classifier.train(df, f"sheet_{request.user_id}", request.user_id)
         
-        # Process and store embeddings
-        embeddings = classifier.process_embeddings(training_response)
-        classifier._store_training_data(
-            embeddings,
-            df['Narrative'].tolist(),
-            df['Category'].tolist(),
-            f"sheet_{request.user_id}"
-        )
-        
+        # Return prediction ID and status
         return jsonify({
-            "status": "success",
-            "message": "Model trained successfully"
+            "status": "processing",
+            "message": "Training started",
+            "prediction_id": prediction.id
         })
         
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+@app.route('/train/webhook', methods=['POST'])
+def train_webhook():
+    """Handle training webhook from Replicate"""
+    try:
+        data = request.get_json()
+        sheet_id = request.args.get('sheetId', 'sheet_default')
+        user_id = request.args.get('userId', 'user_default')
+        
+        logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id}")
+        
+        # Initialize classification service
+        classifier = ClassificationService(
+            supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
+            supabase_key=os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+            backend_api=request.host_url.rstrip('/')
+        )
+        
+        # Process embeddings from webhook response
+        embeddings = classifier.process_embeddings(data)
+        
+        # Store training data
+        df = pd.DataFrame(data['transactions'])
+        classifier._store_training_data(
+            embeddings,
+            df['Narrative'].tolist(),
+            df['Category'].tolist(),
+            sheet_id
+        )
+        
+        return jsonify({
+            "status": "success",
+            "message": "Training data stored successfully"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}")
         return jsonify({
             "error": str(e)
         }), 500

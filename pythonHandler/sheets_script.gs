@@ -150,8 +150,16 @@ function trainModel() {
     };
     
     var response = UrlFetchApp.fetch(config.serviceUrl + '/train', options);
+    var result = JSON.parse(response.getContentText());
+    
     if (response.getResponseCode() !== 200) {
       throw new Error('Training error: ' + response.getContentText());
+    }
+    
+    // Check if we got a prediction ID (async mode)
+    if (result.prediction_id) {
+      ui.alert('Training started successfully!\n\nThe model will be ready in a few moments.');
+      return;
     }
     
     ui.alert('Training completed successfully!\n\nProcessed: ' + transactions.length + ' transactions');
