@@ -243,6 +243,9 @@ function trainModel() {
     
     updateStatus("Processing " + transactions.length + " transactions...");
     
+    // Encode training data for URL
+    var encodedTrainingData = encodeURIComponent(JSON.stringify(transactions));
+    
     // Call training endpoint
     var options = {
       method: 'post',
@@ -250,7 +253,12 @@ function trainModel() {
       headers: {
         'X-API-Key': config.apiKey
       },
-      payload: JSON.stringify({ transactions: transactions }),
+      payload: JSON.stringify({ 
+        transactions: transactions,
+        webhook_params: {
+          training_data: encodedTrainingData
+        }
+      }),
       muteHttpExceptions: true
     };
     

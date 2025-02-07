@@ -72,7 +72,8 @@ class ClassificationService:
         api_mode: str,
         sheet_id: str,
         user_id: str,
-        texts: List[str]
+        texts: List[str],
+        webhook_params: Dict[str, str] = None
     ) -> Dict[str, Any]:
         """Run prediction using Replicate API with webhook."""
         try:
@@ -87,6 +88,12 @@ class ClassificationService:
             base_url = self.backend_api.rstrip('/')
             webhook_endpoint = f"train/webhook" if api_mode == "training" else "classify/webhook"
             webhook = f"{base_url}/{webhook_endpoint}?sheetId={sheet_id}&userId={user_id}"
+            
+            # Add webhook parameters if provided
+            if webhook_params:
+                for key, value in webhook_params.items():
+                    webhook += f"&{key}={value}"
+                    
             logger.info(f"Using webhook endpoint: {webhook}")
 
             # Create prediction with webhook
