@@ -23,15 +23,32 @@ class ClassificationService:
     def train(self, training_data: pd.DataFrame, sheet_id: str, user_id: str) -> None:
         """Train the classifier with descriptions and their categories."""
         try:
+            if training_data.empty:
+                raise ValueError("Training data is empty")
+                
             logger.info(f"Training with {len(training_data)} transactions")
             
+            # Validate required columns
+            required_columns = ['Narrative', 'Category']
+            missing_columns = [col for col in required_columns if col not in training_data.columns]
+            if missing_columns:
+                raise ValueError(f"Missing required columns: {missing_columns}")
+            
+            # Remove any rows with empty narratives or categories
+            valid_data = training_data.dropna(subset=['Narrative', 'Category'])
+            if len(valid_data) == 0:
+                raise ValueError("No valid training data after removing empty values")
+            
+            if len(valid_data) < len(training_data):
+                logger.warning(f"Dropped {len(training_data) - len(valid_data)} rows with empty values")
+            
             # Store training data first
-            training_records = training_data.to_dict('records')
+            training_records = valid_data.to_dict('records')
             training_key = self.store_temp_training_data(training_records, sheet_id)
             logger.info(f"Stored training data with key: {training_key}")
             
             # Get embeddings for descriptions
-            descriptions = training_data['Narrative'].astype(str).tolist()
+            descriptions = valid_data['Narrative'].astype(str).tolist()
             
             # Run prediction with webhook
             prediction = self.run_prediction(
@@ -47,6 +64,12 @@ class ClassificationService:
             
         except Exception as e:
             logger.error(f"Error in training: {str(e)}")
+            # Try to clean up temporary data if it was created
+            if 'training_key' in locals():
+                try:
+                    self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temporary data: {cleanup_error}")
             raise
 
     def classify(self, new_data: pd.DataFrame, sheet_id: str, user_id: str) -> None:
@@ -329,18 +352,29 @@ class ClassificationService:
         return datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
     def store_temp_training_data(self, training_data: list, sheet_id: str) -> str:
-        """Store training data temporarily in Supabase."""
+        """Store training data temporarily in Supabase Storage."""
         try:
             # Create a unique key for this training session
             training_key = f"temp_training_{sheet_id}_{int(time.time())}"
             
-            # Store in Supabase
-            self.supabase.table("temp_training_data").insert({
-                "key": training_key,
-                "data": training_data,
-                "created_at": time.time(),
-                "sheet_id": sheet_id
-            }).execute()
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+                json.dump(training_data, temp_file)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Upload to Supabase Storage
+                with open(temp_file_path, 'rb') as f:
+                    self.supabase.storage.from_(self.bucket_name).upload(
+                        f"{training_key}.json",
+                        f,
+                        file_options={"x-upsert": "true"}
+                    )
+                logger.info(f"Stored temporary training data with key: {training_key}")
+                
+            finally:
+                # Clean up temporary file
+                os.unlink(temp_file_path)
             
             return training_key
             
@@ -349,15 +383,31 @@ class ClassificationService:
             raise
 
     def get_temp_training_data(self, training_key: str) -> list:
-        """Retrieve temporary training data from Supabase."""
+        """Retrieve temporary training data from Supabase Storage."""
         try:
-            response = self.supabase.table("temp_training_data").select("*").eq("key", training_key).execute()
-            
-            if not response.data:
-                raise ValueError(f"No training data found for key {training_key}")
+            # Download to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+                response = self.supabase.storage.from_(self.bucket_name).download(
+                    f"{training_key}.json"
+                )
+                temp_file.write(response)
+                temp_file.flush()
                 
-            return response.data[0]["data"]
-            
+                # Load the data
+                with open(temp_file.name, 'r') as f:
+                    training_data = json.load(f)
+                
+                # Clean up
+                os.unlink(temp_file.name)
+                
+                # Clean up the temporary file from storage
+                try:
+                    self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
+                except Exception as e:
+                    logger.warning(f"Failed to remove temporary file: {e}")
+                
+                return training_data
+                
         except Exception as e:
             logger.error(f"Error retrieving temp training data: {str(e)}")
             raise 
