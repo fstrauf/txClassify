@@ -243,9 +243,6 @@ function trainModel() {
     
     updateStatus("Processing " + transactions.length + " transactions...");
     
-    // Encode training data for URL
-    var encodedTrainingData = encodeURIComponent(JSON.stringify(transactions));
-    
     // Call training endpoint
     var options = {
       method: 'post',
@@ -253,12 +250,7 @@ function trainModel() {
       headers: {
         'X-API-Key': config.apiKey
       },
-      payload: JSON.stringify({ 
-        transactions: transactions,
-        webhook_params: {
-          training_data: encodedTrainingData
-        }
-      }),
+      payload: JSON.stringify({ transactions: transactions }),
       muteHttpExceptions: true
     };
     
@@ -270,17 +262,25 @@ function trainModel() {
       throw new Error('Training error: ' + response.getContentText());
     }
     
-    // Check if we got a prediction ID (async mode)
+    // Check if we got a prediction ID
     if (result.prediction_id) {
       updateStatus("Training in progress...");
-      // Poll for completion
-      result = pollStatus(result.prediction_id, config);
-      if (result.stored_examples) {
-        updateStatus(`Training completed successfully! Stored ${result.stored_examples} examples.`);
-      } else {
-        updateStatus("Training completed successfully!");
-      }
-      ui.alert('Training completed successfully!\n\nProcessed: ' + transactions.length + ' transactions');
+      
+      // Create a trigger to check status every minute
+      var trigger = ScriptApp.newTrigger('checkTrainingStatus')
+        .timeBased()
+        .everyMinutes(1)
+        .create();
+      
+      // Store prediction ID and trigger ID in user properties
+      var userProperties = PropertiesService.getUserProperties();
+      userProperties.setProperties({
+        'PREDICTION_ID': result.prediction_id,
+        'TRIGGER_ID': trigger.getUniqueId(),
+        'START_TIME': new Date().getTime().toString()
+      });
+      
+      ui.alert('Training has started! The sheet will update automatically when training is complete.\n\nYou can close this window.');
       return;
     }
     
@@ -290,6 +290,66 @@ function trainModel() {
   } catch (error) {
     updateStatus("Error: " + error.toString());
     ui.alert('Error: ' + error.toString());
+  }
+}
+
+function checkTrainingStatus() {
+  try {
+    var userProperties = PropertiesService.getUserProperties();
+    var predictionId = userProperties.getProperty('PREDICTION_ID');
+    var triggerId = userProperties.getProperty('TRIGGER_ID');
+    var startTime = parseInt(userProperties.getProperty('START_TIME'));
+    
+    if (!predictionId || !triggerId) {
+      // Clean up if no prediction ID or trigger ID
+      if (triggerId) {
+        ScriptApp.getProjectTrigger(triggerId).delete();
+      }
+      return;
+    }
+    
+    // Check if we've been running for more than 30 minutes
+    if (new Date().getTime() - startTime > 30 * 60 * 1000) {
+      updateStatus("Error: Training timed out after 30 minutes");
+      ScriptApp.getProjectTrigger(triggerId).delete();
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    var config = getServiceConfig();
+    var response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, {
+      headers: { 'X-API-Key': config.apiKey },
+      muteHttpExceptions: true
+    });
+    
+    var result = JSON.parse(response.getContentText());
+    
+    if (result.status === "completed") {
+      updateStatus("Training completed successfully!");
+      // Clean up
+      ScriptApp.getProjectTrigger(triggerId).delete();
+      userProperties.deleteAllProperties();
+      return;
+    } else if (result.status === "failed") {
+      updateStatus("Error: Training failed - " + (result.error || "Unknown error"));
+      // Clean up
+      ScriptApp.getProjectTrigger(triggerId).delete();
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    // Still processing, update status
+    updateStatus("Training in progress... " + (result.message || ""));
+    
+  } catch (error) {
+    Logger.log("Error checking training status: " + error);
+    // Clean up on error
+    var triggerId = userProperties.getProperty('TRIGGER_ID');
+    if (triggerId) {
+      ScriptApp.getProjectTrigger(triggerId).delete();
+    }
+    userProperties.deleteAllProperties();
+    updateStatus("Error: " + error.toString());
   }
 }
 
