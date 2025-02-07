@@ -9,6 +9,7 @@ import requests
 from dotenv import load_dotenv
 from functools import wraps
 import replicate
+import numpy as np
 
 from services.transaction_service import TransactionService
 from services.classification_service import ClassificationService
@@ -221,85 +222,50 @@ def train_model():
         }), 500
 
 @app.route('/train/webhook', methods=['POST'])
-def train_webhook():
-    """Handle training webhook from Replicate"""
+def training_webhook():
     try:
-        data = request.get_json()
-        sheet_id = request.args.get('sheetId', 'sheet_default')
-        user_id = request.args.get('userId', 'user_default')
-        
-        # Try to get training key from different sources
+        # Get training key from request args
         training_key = request.args.get('training_key')
-        if not training_key and 'input' in data:
-            # Try to extract from webhook URL in input
-            webhook_url = data['input'].get('webhook_url', '')
-            if webhook_url:
-                from urllib.parse import parse_qs, urlparse
-                parsed = urlparse(webhook_url)
-                params = parse_qs(parsed.query)
-                training_key = params.get('training_key', [None])[0]
-        
-        if not training_key:
-            raise ValueError("No training key provided in webhook URL or input")
+        sheet_id = request.args.get('sheetId')
+        user_id = request.args.get('userId')
         
         logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id} with key {training_key}")
         
-        # Initialize classification service
-        classifier = ClassificationService(
-            supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
-            supabase_key=os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
-            backend_api=request.host_url.rstrip('/')
-        )
-        
-        # Process embeddings from webhook response
-        embeddings = classifier.process_embeddings(data)
-        logger.info(f"Processed embeddings shape: {embeddings.shape}")
-        
-        # Retrieve training data using the key
-        training_data = classifier.get_temp_training_data(training_key)
-        logger.info(f"Retrieved {len(training_data)} training examples")
-        
-        if not training_data:
-            raise ValueError("No training data found")
+        if not training_key:
+            raise ValueError("No training key provided in webhook URL")
             
-        # Extract descriptions and categories
-        descriptions = [t['description'] for t in training_data]
-        categories = [t['category'] for t in training_data]
+        # Parse the webhook data
+        data = request.get_json()
+        if not data:
+            raise ValueError("No data received in webhook")
+            
+        # Get embeddings from the prediction output
+        embeddings = []
+        if 'output' in data and isinstance(data['output'], list):
+            embeddings = [item['embedding'] for item in data['output'] if 'embedding' in item]
         
-        logger.info(f"Storing training data: {len(descriptions)} descriptions, {len(categories)} categories")
+        if not embeddings:
+            raise ValueError("No embeddings found in prediction output")
+            
+        embeddings_array = np.array(embeddings)
+        logger.info(f"Processed embeddings shape: {embeddings_array.shape}")
         
-        # Store training data
-        classifier._store_training_data(
-            embeddings=embeddings,
-            descriptions=descriptions,
-            categories=categories,
-            sheet_id=sheet_id
-        )
+        # Get the training data
+        training_data = classifier.get_temp_training_data(training_key)
         
-        # Verify storage
-        stored_data = classifier._load_training_data(sheet_id)
-        logger.info(f"Verified stored data: {len(stored_data['descriptions'])} examples")
+        # Store embeddings with categories
+        classifier.store_embeddings(embeddings_array, training_data)
         
-        # Clean up temporary training data
-        try:
-            classifier.supabase.table("temp_training_data").delete().eq("key", training_key).execute()
-            logger.info(f"Cleaned up temporary training data for key {training_key}")
-        except Exception as cleanup_error:
-            logger.warning(f"Failed to clean up temporary training data: {cleanup_error}")
+        # Only clean up temporary data after successful processing
+        classifier.cleanup_temp_training_data(training_key)
         
-        return jsonify({
-            "status": "success",
-            "message": "Training data stored successfully",
-            "stored_examples": len(stored_data['descriptions'])
-        })
+        return jsonify({"status": "success", "message": "Training data processed successfully"})
         
     except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
+        logger.error(f"Error processing webhook: {e}")
         logger.error(f"Request args: {request.args}")
-        logger.error(f"Request data: {data if 'data' in locals() else 'Not available'}")
-        return jsonify({
-            "error": str(e)
-        }), 500
+        logger.error(f"Request data: {request.get_json()}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/process_transactions", methods=["POST"])
 def process_transactions():

@@ -400,17 +400,43 @@ class ClassificationService:
                 with open(temp_file.name, 'rb') as f:
                     training_data = json.loads(f.read().decode('utf-8'))
                 
-                # Clean up
+                # Clean up temporary file
                 os.unlink(temp_file.name)
-                
-                # Clean up the temporary file from storage
-                try:
-                    self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
-                except Exception as e:
-                    logger.warning(f"Failed to remove temporary file: {e}")
                 
                 return training_data
                 
         except Exception as e:
-            logger.error(f"Error retrieving temp training data: {str(e)}")
+            logger.error(f"Error retrieving temp training data: {e}")
+            raise
+
+    def cleanup_temp_training_data(self, training_key: str) -> None:
+        """Clean up temporary training data from Supabase Storage."""
+        try:
+            self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
+            logger.info(f"Cleaned up temporary training data for key: {training_key}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up temporary training data: {e}")
+
+    def store_embeddings(self, embeddings: np.ndarray, training_data: list) -> None:
+        """Store embeddings with their corresponding categories."""
+        try:
+            if len(embeddings) != len(training_data):
+                raise ValueError(f"Mismatch between embeddings ({len(embeddings)}) and training data ({len(training_data)})")
+            
+            # Extract categories from training data
+            categories = [item['Category'] for item in training_data]
+            descriptions = [item['Narrative'] for item in training_data]
+            
+            # Store training data
+            self._store_training_data(
+                embeddings=embeddings,
+                descriptions=descriptions,
+                categories=categories,
+                sheet_id=None  # We'll use the default sheet ID
+            )
+            
+            logger.info(f"Successfully stored {len(embeddings)} embeddings with categories")
+            
+        except Exception as e:
+            logger.error(f"Error storing embeddings: {e}")
             raise 
