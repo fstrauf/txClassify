@@ -151,7 +151,18 @@ def classify_webhook():
         )
         
         # Process the webhook response
+        logger.info("Processing webhook response")
+        
+        # First verify we have training data
+        training_data = classifier._load_training_data(sheet_id)
+        if not training_data or len(training_data['descriptions']) == 0:
+            raise ValueError(f"No training data found for sheet {sheet_id}. Please train the model first.")
+            
+        logger.info(f"Found {len(training_data['descriptions'])} training examples")
+        
+        # Process embeddings and classify
         results = classifier.process_webhook_response(data, sheet_id)
+        logger.info(f"Successfully classified {len(results)} transactions")
         
         # Convert results to list of dictionaries
         results_list = results.to_dict('records')
@@ -160,6 +171,8 @@ def classify_webhook():
         
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
+        logger.error(f"Request args: {request.args}")
+        logger.error(f"Request data: {data if 'data' in locals() else 'Not available'}")
         return jsonify({
             "error": str(e)
         }), 500
@@ -226,26 +239,44 @@ def train_webhook():
         
         # Process embeddings from webhook response
         embeddings = classifier.process_embeddings(data)
+        logger.info(f"Processed embeddings shape: {embeddings.shape}")
         
         # Get the original training data from the request
         training_data = request.args.get('training_data', '[]')
         training_data = json.loads(training_data)
+        logger.info(f"Received {len(training_data)} training examples")
+        
+        if not training_data:
+            raise ValueError("No training data received in webhook")
+            
+        # Extract descriptions and categories
+        descriptions = [t['Narrative'] for t in training_data]
+        categories = [t['Category'] for t in training_data]
+        
+        logger.info(f"Storing training data: {len(descriptions)} descriptions, {len(categories)} categories")
         
         # Store training data
         classifier._store_training_data(
             embeddings=embeddings,
-            descriptions=[t['Narrative'] for t in training_data],
-            categories=[t['Category'] for t in training_data],
+            descriptions=descriptions,
+            categories=categories,
             sheet_id=sheet_id
         )
         
+        # Verify storage
+        stored_data = classifier._load_training_data(sheet_id)
+        logger.info(f"Verified stored data: {len(stored_data['descriptions'])} examples")
+        
         return jsonify({
             "status": "success",
-            "message": "Training data stored successfully"
+            "message": "Training data stored successfully",
+            "stored_examples": len(stored_data['descriptions'])
         })
         
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
+        logger.error(f"Request args: {request.args}")
+        logger.error(f"Request data: {data if 'data' in locals() else 'Not available'}")
         return jsonify({
             "error": str(e)
         }), 500

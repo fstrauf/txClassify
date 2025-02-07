@@ -275,7 +275,11 @@ function trainModel() {
       updateStatus("Training in progress...");
       // Poll for completion
       result = pollStatus(result.prediction_id, config);
-      updateStatus("Training completed successfully!");
+      if (result.stored_examples) {
+        updateStatus(`Training completed successfully! Stored ${result.stored_examples} examples.`);
+      } else {
+        updateStatus("Training completed successfully!");
+      }
       ui.alert('Training completed successfully!\n\nProcessed: ' + transactions.length + ' transactions');
       return;
     }
