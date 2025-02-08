@@ -147,13 +147,24 @@ class ClassificationService:
         try:
             logger.info("Processing webhook response")
             
+            # Validate webhook data
+            if not data or 'output' not in data:
+                raise ValueError("Invalid webhook data: missing 'output' field")
+            
             # Get embeddings from response
             new_embeddings = self.process_embeddings(data)
             logger.info(f"Processed embeddings shape: {new_embeddings.shape}")
             
             # Load trained data
             trained_data = self._load_training_data(sheet_id)
+            if not trained_data:
+                raise ValueError(f"No training data found for sheet {sheet_id}")
+                
             logger.info(f"Loaded {len(trained_data['categories'])} training examples")
+            
+            # Validate embeddings dimensions match
+            if new_embeddings.shape[1] != trained_data['embeddings'].shape[1]:
+                raise ValueError(f"Embedding dimensions mismatch: new {new_embeddings.shape[1]} vs trained {trained_data['embeddings'].shape[1]}")
             
             # Find most similar categories
             similarities = cosine_similarity(new_embeddings, trained_data['embeddings'])
@@ -161,7 +172,21 @@ class ClassificationService:
             best_scores = similarities.max(axis=1)
             
             # Get the original descriptions from the webhook response
-            new_descriptions = [item.get("text", "") for item in data["output"]]
+            new_descriptions = []
+            for item in data["output"]:
+                text = None
+                if isinstance(item, dict) and "text" in item:
+                    text = item["text"]
+                elif isinstance(item, dict) and "embedding" in item:
+                    # If text is not in output, try to get it from input
+                    if "input" in data and "text_batch" in data["input"]:
+                        try:
+                            texts = json.loads(data["input"]["text_batch"])
+                            text = texts[len(new_descriptions)] if len(texts) > len(new_descriptions) else None
+                        except (json.JSONDecodeError, IndexError):
+                            pass
+                text = text or "Unknown description"
+                new_descriptions.append(text)
             
             # Create results DataFrame
             results = pd.DataFrame({
@@ -176,6 +201,7 @@ class ClassificationService:
             
         except Exception as e:
             logger.error(f"Error processing webhook response: {str(e)}")
+            logger.error(f"Data structure: {json.dumps(data, indent=2) if data else 'No data'}")
             raise
 
     def process_embeddings(self, data: Dict[str, Any]) -> np.ndarray:
@@ -230,22 +256,46 @@ class ClassificationService:
                 )
                 temp_file.write(response)
                 temp_file.flush()
-                
+                temp_file_path = temp_file.name
+
+            try:
                 # Load the data
-                data = np.load(temp_file.name)
+                data = np.load(temp_file_path, allow_pickle=True)
+                
+                # Verify all required keys are present
+                required_keys = ['embeddings', 'descriptions', 'categories']
+                missing_keys = [key for key in required_keys if key not in data.files]
+                if missing_keys:
+                    raise ValueError(f"Training data is missing required keys: {missing_keys}")
+                
+                # Verify data is not empty
+                if len(data['embeddings']) == 0 or len(data['descriptions']) == 0 or len(data['categories']) == 0:
+                    raise ValueError("Training data is empty")
+                
+                # Verify data lengths match
+                if not (len(data['embeddings']) == len(data['descriptions']) == len(data['categories'])):
+                    raise ValueError("Mismatch in training data lengths")
+                
                 result = {
                     'embeddings': data['embeddings'],
                     'descriptions': data['descriptions'],
                     'categories': data['categories']
                 }
                 
-                # Clean up
-                os.unlink(temp_file.name)
+                logger.info(f"Successfully loaded training data: {len(result['descriptions'])} examples")
                 return result
                 
+            except Exception as e:
+                raise ValueError(f"Error processing training data: {str(e)}")
+            
+            finally:
+                # Clean up
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+                
         except Exception as e:
-            logger.error(f"Error loading training data: {str(e)}")
-            raise
+            logger.error(f"Error loading training data for sheet {sheet_id}: {str(e)}")
+            raise ValueError(f"No training data found for sheet {sheet_id}. Please train the model first.")
 
     def classify_expenses(
         self,
@@ -439,4 +489,5 @@ class ClassificationService:
             
         except Exception as e:
             logger.error(f"Error storing embeddings: {e}")
+            raise 
             raise 
