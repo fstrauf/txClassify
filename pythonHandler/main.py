@@ -250,11 +250,18 @@ def training_webhook():
         embeddings_array = np.array(embeddings)
         logger.info(f"Processed embeddings shape: {embeddings_array.shape}")
         
+        # Initialize classification service
+        classifier = ClassificationService(
+            supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
+            supabase_key=os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+            backend_api=request.host_url.rstrip('/')
+        )
+        
         # Get the training data
         training_data = classifier.get_temp_training_data(training_key)
         
         # Store embeddings with categories
-        classifier.store_embeddings(embeddings_array, training_data)
+        classifier.store_embeddings(embeddings_array, training_data, sheet_id)
         
         # Only clean up temporary data after successful processing
         classifier.cleanup_temp_training_data(training_key)
