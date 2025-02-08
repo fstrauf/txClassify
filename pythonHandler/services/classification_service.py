@@ -467,7 +467,7 @@ class ClassificationService:
         except Exception as e:
             logger.warning(f"Failed to clean up temporary training data: {e}")
 
-    def store_embeddings(self, embeddings: np.ndarray, training_data: list) -> None:
+    def store_embeddings(self, embeddings: np.ndarray, training_data: list, sheet_id: str = None) -> None:
         """Store embeddings with their corresponding categories."""
         try:
             if len(embeddings) != len(training_data):
@@ -477,15 +477,28 @@ class ClassificationService:
             categories = [item['Category'] for item in training_data]
             descriptions = [item['Narrative'] for item in training_data]
             
+            # Get sheet_id from training data if not provided
+            if not sheet_id:
+                # Try to extract from the first item's key
+                first_key = next(iter(training_data[0].keys()))
+                if '_' in first_key:
+                    sheet_id = first_key.split('_')[0]
+                else:
+                    raise ValueError("Could not determine sheet_id and none was provided")
+            
+            # Remove 'sheet_' prefix if present
+            if sheet_id.startswith('sheet_'):
+                sheet_id = sheet_id[6:]
+            
             # Store training data
             self._store_training_data(
                 embeddings=embeddings,
                 descriptions=descriptions,
                 categories=categories,
-                sheet_id=None  # We'll use the default sheet ID
+                sheet_id=f"sheet_{sheet_id}"
             )
             
-            logger.info(f"Successfully stored {len(embeddings)} embeddings with categories")
+            logger.info(f"Successfully stored {len(embeddings)} embeddings with categories for sheet {sheet_id}")
             
         except Exception as e:
             logger.error(f"Error storing embeddings: {e}")
