@@ -466,6 +466,7 @@ function checkOperationStatus() {
     });
     
     var result = JSON.parse(response.getContentText());
+    Logger.log("Status response: " + JSON.stringify(result));
     
     if (result.status === "completed") {
       if (operationType === "classify" && result.result && config) {
@@ -473,27 +474,31 @@ function checkOperationStatus() {
         var sheet = SpreadsheetApp.getActiveSheet();
         var results = result.result;
         
+        Logger.log("Processing results: " + JSON.stringify(results));
+        
         // Write categories back to sheet
         updateStatus("Writing results to sheet...");
         var categories = results.map(r => [r.predicted_category]);
-        sheet.getRange(config.categoryCol + config.startRow + ":" + config.categoryCol + (parseInt(config.startRow) + categories.length - 1))
-          .setValues(categories);
+        Logger.log("Categories to write: " + JSON.stringify(categories));
+        
+        var categoryRange = sheet.getRange(config.categoryCol + config.startRow + ":" + config.categoryCol + (parseInt(config.startRow) + categories.length - 1));
+        categoryRange.setValues(categories);
         
         // Add confidence scores in next column
         var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
         var confidences = results.map(r => [r.similarity_score]);
-        sheet.getRange(confidenceCol + config.startRow + ":" + confidenceCol + (parseInt(config.startRow) + confidences.length - 1))
-          .setValues(confidences)
-          .setNumberFormat("0.00");
+        var confidenceRange = sheet.getRange(confidenceCol + config.startRow + ":" + confidenceCol + (parseInt(config.startRow) + confidences.length - 1));
+        confidenceRange.setValues(confidences)
+          .setNumberFormat("0.00%");  // Format as percentage
         
         // Add headers if needed
         if (config.startRow === "2") {
           sheet.getRange(config.categoryCol + "1").setValue("Category");
           sheet.getRange(confidenceCol + "1").setValue("Confidence");
         }
+        
+        updateStatus("Classification completed successfully!");
       }
-      
-      updateStatus(operationType + " completed successfully!");
       
       // Clean up
       ScriptApp.getProjectTrigger(triggerId).delete();

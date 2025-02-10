@@ -197,6 +197,7 @@ class ClassificationService:
             })
             
             logger.info(f"Generated predictions for {len(results)} items")
+            logger.info(f"Sample predictions: {results['predicted_category'].head().tolist()}")
             return results
             
         except Exception as e:
@@ -218,12 +219,19 @@ class ClassificationService:
                            categories: List[str], sheet_id: str) -> None:
         """Store training data in Supabase storage."""
         try:
+            # Ensure categories are strings
+            categories = [str(cat) for cat in categories]
+            
             # Create a structured array with all training data
             training_data = {
                 'embeddings': embeddings,
                 'descriptions': descriptions,
                 'categories': categories
             }
+            
+            # Log training data for verification
+            logger.info(f"Storing training data with {len(categories)} examples")
+            logger.info(f"Sample categories: {categories[:5]}")
             
             # Save to temporary file
             with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
@@ -276,13 +284,17 @@ class ClassificationService:
                 if not (len(data['embeddings']) == len(data['descriptions']) == len(data['categories'])):
                     raise ValueError("Mismatch in training data lengths")
                 
+                # Ensure categories are strings
+                categories = [str(cat) for cat in data['categories']]
+                
                 result = {
                     'embeddings': data['embeddings'],
                     'descriptions': data['descriptions'],
-                    'categories': data['categories']
+                    'categories': categories
                 }
                 
                 logger.info(f"Successfully loaded training data: {len(result['descriptions'])} examples")
+                logger.info(f"Sample categories: {categories[:5]}")
                 return result
                 
             except Exception as e:
