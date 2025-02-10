@@ -401,44 +401,123 @@ function classifyTransactions(config) {
       throw new Error('Classification service error: ' + response.getContentText());
     }
     
-    // Check if we got a prediction ID (async mode)
+    // Check if we got a prediction ID
     if (result.prediction_id) {
       updateStatus("Classification in progress...");
-      // Poll for completion
-      result = pollStatus(result.prediction_id, serviceConfig);
+      
+      // Store configuration for status checking
+      var userProperties = PropertiesService.getUserProperties();
+      userProperties.setProperties({
+        'PREDICTION_ID': result.prediction_id,
+        'OPERATION_TYPE': 'classify',
+        'START_TIME': new Date().getTime().toString(),
+        'CONFIG': JSON.stringify({
+          categoryCol: config.categoryCol,
+          startRow: config.startRow
+        })
+      });
+      
+      // Create a trigger to check status every minute
+      var trigger = ScriptApp.newTrigger('checkOperationStatus')
+        .timeBased()
+        .everyMinutes(1)
+        .create();
+      
+      userProperties.setProperty('TRIGGER_ID', trigger.getUniqueId());
+      
+      ui.alert('Classification has started! The sheet will update automatically when complete.\n\nYou can close this window.');
+      return;
     }
-    
-    // Process results
-    if (!Array.isArray(result)) {
-      updateStatus("Error: Unexpected response format");
-      throw new Error('Unexpected response format');
-    }
-    
-    // Write categories back to sheet
-    updateStatus("Writing results to sheet...");
-    var categoryCol = sheet.getRange(config.categoryCol + config.startRow);
-    var categories = result.map(r => [r.predicted_category]);
-    sheet.getRange(config.categoryCol + config.startRow + ":" + config.categoryCol + (parseInt(config.startRow) + categories.length - 1))
-      .setValues(categories);
-    
-    // Optional: Add confidence scores in next column
-    var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
-    var confidences = result.map(r => [r.similarity_score]);
-    sheet.getRange(confidenceCol + config.startRow + ":" + confidenceCol + (parseInt(config.startRow) + confidences.length - 1))
-      .setValues(confidences)
-      .setNumberFormat("0.00");
-    
-    // Add headers if needed
-    if (config.startRow === "2") {
-      sheet.getRange(config.categoryCol + "1").setValue("Category");
-      sheet.getRange(confidenceCol + "1").setValue("Confidence");
-    }
-    
-    updateStatus("Classification completed successfully!");
-    ui.alert('Classification completed!\n\nProcessed: ' + transactions.length + ' transactions');
-    
   } catch (error) {
     updateStatus("Error: " + error.toString());
     ui.alert('Error: ' + error.toString());
+  }
+}
+
+function checkOperationStatus() {
+  var userProperties = PropertiesService.getUserProperties();
+  var predictionId = userProperties.getProperty('PREDICTION_ID');
+  var triggerId = userProperties.getProperty('TRIGGER_ID');
+  var operationType = userProperties.getProperty('OPERATION_TYPE');
+  var startTime = parseInt(userProperties.getProperty('START_TIME'));
+  var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
+  
+  if (!predictionId || !triggerId) {
+    // Clean up if no prediction ID or trigger ID
+    if (triggerId) {
+      ScriptApp.getProjectTrigger(triggerId).delete();
+    }
+    return;
+  }
+  
+  try {
+    // Check if we've been running for more than 30 minutes
+    if (new Date().getTime() - startTime > 30 * 60 * 1000) {
+      updateStatus(`Error: ${operationType} timed out after 30 minutes`);
+      ScriptApp.getProjectTrigger(triggerId).delete();
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    var serviceConfig = getServiceConfig();
+    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, {
+      headers: { 'X-API-Key': serviceConfig.apiKey },
+      muteHttpExceptions: true
+    });
+    
+    var result = JSON.parse(response.getContentText());
+    
+    if (result.status === "completed") {
+      if (operationType === "classify" && result.result && config) {
+        // Process classification results
+        var sheet = SpreadsheetApp.getActiveSheet();
+        var results = result.result;
+        
+        // Write categories back to sheet
+        updateStatus("Writing results to sheet...");
+        var categories = results.map(r => [r.predicted_category]);
+        sheet.getRange(config.categoryCol + config.startRow + ":" + config.categoryCol + (parseInt(config.startRow) + categories.length - 1))
+          .setValues(categories);
+        
+        // Add confidence scores in next column
+        var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
+        var confidences = results.map(r => [r.similarity_score]);
+        sheet.getRange(confidenceCol + config.startRow + ":" + confidenceCol + (parseInt(config.startRow) + confidences.length - 1))
+          .setValues(confidences)
+          .setNumberFormat("0.00");
+        
+        // Add headers if needed
+        if (config.startRow === "2") {
+          sheet.getRange(config.categoryCol + "1").setValue("Category");
+          sheet.getRange(confidenceCol + "1").setValue("Confidence");
+        }
+      }
+      
+      updateStatus(operationType + " completed successfully!");
+      
+      // Clean up
+      ScriptApp.getProjectTrigger(triggerId).delete();
+      userProperties.deleteAllProperties();
+      return;
+      
+    } else if (result.status === "failed") {
+      updateStatus(`Error: ${operationType} failed - ` + (result.error || "Unknown error"));
+      // Clean up
+      ScriptApp.getProjectTrigger(triggerId).delete();
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    // Still processing, update status
+    updateStatus(operationType + " in progress... " + (result.message || ""));
+    
+  } catch (error) {
+    Logger.log(`Error checking ${operationType} status: ` + error);
+    // Clean up on error
+    if (triggerId) {
+      ScriptApp.getProjectTrigger(triggerId).delete();
+    }
+    userProperties.deleteAllProperties();
+    updateStatus("Error: " + error.toString());
   }
 } 

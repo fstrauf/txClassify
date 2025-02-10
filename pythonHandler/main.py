@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from functools import wraps
 import replicate
 import numpy as np
+from datetime import datetime
 
 from services.transaction_service import TransactionService
 from services.classification_service import ClassificationService
@@ -167,6 +168,16 @@ def classify_webhook():
         
         # Convert results to list of dictionaries
         results_list = results.to_dict('records')
+        
+        # Store results in Supabase for status endpoint
+        try:
+            services["classification"].supabase.table("webhook_results").upsert({
+                "prediction_id": data.get("id"),
+                "results": results_list,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.warning(f"Failed to store webhook results: {e}")
         
         return jsonify(results_list)
         
@@ -473,12 +484,30 @@ def check_status(prediction_id):
         # Get prediction from Replicate
         prediction = replicate.predictions.get(prediction_id)
         
+        # Get webhook results from memory or storage
+        webhook_results = {}
+        try:
+            # Try to get webhook results from Supabase
+            response = services["classification"].supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
+            if response.data:
+                webhook_results = response.data[0].get("results", {})
+        except Exception as e:
+            logger.warning(f"Failed to get webhook results: {e}")
+        
         # Return appropriate status
         if prediction.status == "succeeded":
-            return jsonify({
-                "status": "completed",
-                "result": prediction.output
-            })
+            if webhook_results:
+                # If we have webhook results, return those
+                return jsonify({
+                    "status": "completed",
+                    "result": webhook_results
+                })
+            else:
+                # If no webhook results yet, still processing
+                return jsonify({
+                    "status": "processing",
+                    "message": "Webhook processing in progress..."
+                })
         elif prediction.status == "failed":
             return jsonify({
                 "status": "failed",
