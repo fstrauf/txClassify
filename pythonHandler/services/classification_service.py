@@ -27,12 +27,18 @@ class ClassificationService:
                 raise ValueError("Training data is empty")
                 
             logger.info(f"Training with {len(training_data)} transactions")
+            logger.info(f"Training data columns: {training_data.columns.tolist()}")
             
             # Validate required columns
             required_columns = ['Narrative', 'Category']
             missing_columns = [col for col in required_columns if col not in training_data.columns]
             if missing_columns:
                 raise ValueError(f"Missing required columns: {missing_columns}")
+            
+            # Log sample of training data
+            logger.info("Sample of training data:")
+            logger.info(f"Narratives: {training_data['Narrative'].head().tolist()}")
+            logger.info(f"Categories: {training_data['Category'].head().tolist()}")
             
             # Remove any rows with empty narratives or categories
             valid_data = training_data.dropna(subset=['Narrative', 'Category'])
@@ -488,6 +494,9 @@ class ClassificationService:
             # Extract categories from training data
             categories = [item['Category'] for item in training_data]
             descriptions = [item['Narrative'] for item in training_data]
+            
+            logger.info("Sample of categories being stored:")
+            logger.info(f"Categories: {categories[:5]}")
             
             # Get sheet_id from training data if not provided
             if not sheet_id:

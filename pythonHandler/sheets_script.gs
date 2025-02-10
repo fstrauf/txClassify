@@ -225,15 +225,33 @@ function trainModel() {
     var config = getServiceConfig();
     var sheet = SpreadsheetApp.getActiveSheet();
     var lastRow = sheet.getLastRow();
-    var data = sheet.getRange("A2:D" + lastRow).getValues();
+    
+    // Get column indices
+    var headers = sheet.getRange("A1:Z1").getValues()[0];
+    var narrativeCol = headers.indexOf("Narrative") + 1;
+    var categoryCol = headers.indexOf("Category") + 1;
+    
+    if (narrativeCol === 0 || categoryCol === 0) {
+      throw new Error("Could not find required columns. Please ensure your sheet has 'Narrative' and 'Category' columns.");
+    }
+    
+    // Convert column numbers to letters for range
+    var narrativeColLetter = columnToLetter(narrativeCol);
+    var categoryColLetter = columnToLetter(categoryCol);
+    
+    // Get data from the correct columns
+    var data = sheet.getRange(narrativeColLetter + "2:" + categoryColLetter + lastRow).getValues();
     
     // Filter out empty rows and prepare training data
     var transactions = data
-      .filter(row => row[2] && row[3]) // Narrative and Category columns must have values
+      .filter(row => row[0] && row[1]) // Narrative and Category must have values
       .map(row => ({
-        Narrative: row[2],
-        Category: row[3]
+        Narrative: row[0],
+        Category: row[1]
       }));
+    
+    Logger.log("Training data sample:");
+    Logger.log(JSON.stringify(transactions.slice(0, 3)));
     
     if (transactions.length === 0) {
       updateStatus("Error: No training data found");
@@ -291,6 +309,17 @@ function trainModel() {
     updateStatus("Error: " + error.toString());
     ui.alert('Error: ' + error.toString());
   }
+}
+
+// Helper function to convert column number to letter
+function columnToLetter(column) {
+  var temp, letter = '';
+  while (column > 0) {
+    temp = (column - 1) % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    column = (column - temp - 1) / 26;
+  }
+  return letter;
 }
 
 function checkTrainingStatus() {
