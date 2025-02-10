@@ -270,6 +270,8 @@ def training_webhook():
         
         # Get the training data
         training_data = classifier.get_temp_training_data(training_key)
+        logger.info("Sample of training data in webhook:")
+        logger.info(f"First few records: {json.dumps(training_data[:2], indent=2)}")
         
         # Store embeddings with categories
         classifier.store_embeddings(embeddings_array, training_data, sheet_id)
