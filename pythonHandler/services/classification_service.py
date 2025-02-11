@@ -167,6 +167,11 @@ class ClassificationService:
                 raise ValueError(f"No training data found for sheet {sheet_id}")
                 
             logger.info(f"Loaded {len(trained_data['categories'])} training examples")
+            logger.info(f"Training categories sample: {trained_data['categories'][:5]}")
+            
+            # Validate categories are not just numbers
+            if all(cat.replace('-', '').replace('.', '').isdigit() for cat in trained_data['categories']):
+                raise ValueError("Training data categories appear to be numerical values instead of category names")
             
             # Validate embeddings dimensions match
             if new_embeddings.shape[1] != trained_data['embeddings'].shape[1]:
@@ -195,9 +200,12 @@ class ClassificationService:
                 new_descriptions.append(text)
             
             # Create results DataFrame
+            predicted_categories = [trained_data['categories'][i] for i in best_matches]
+            logger.info(f"Predicted categories: {predicted_categories}")
+            
             results = pd.DataFrame({
                 'description': new_descriptions,
-                'predicted_category': [trained_data['categories'][i] for i in best_matches],
+                'predicted_category': predicted_categories,
                 'similarity_score': best_scores,
                 'matched_description': [trained_data['descriptions'][i] for i in best_matches]
             })
@@ -225,8 +233,12 @@ class ClassificationService:
                            categories: List[str], sheet_id: str) -> None:
         """Store training data in Supabase storage."""
         try:
-            # Ensure categories are strings
-            categories = [str(cat) for cat in categories]
+            # Ensure categories are strings and validate they are not just numbers
+            categories = [str(cat).strip() for cat in categories]
+            
+            # Validate categories are not just numbers
+            if all(cat.replace('-', '').replace('.', '').isdigit() for cat in categories):
+                raise ValueError("Categories appear to be numerical values instead of category names")
             
             # Create a structured array with all training data
             training_data = {
@@ -290,8 +302,10 @@ class ClassificationService:
                 if not (len(data['embeddings']) == len(data['descriptions']) == len(data['categories'])):
                     raise ValueError("Mismatch in training data lengths")
                 
-                # Ensure categories are strings
-                categories = [str(cat) for cat in data['categories']]
+                # Ensure categories are strings and not just numbers
+                categories = [str(cat).strip() for cat in data['categories']]
+                if all(cat.replace('-', '').replace('.', '').isdigit() for cat in categories):
+                    raise ValueError("Training data categories appear to be numerical values instead of category names")
                 
                 result = {
                     'embeddings': data['embeddings'],
