@@ -11,6 +11,7 @@ import logging
 from supabase import create_client, Client
 import re
 import time
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,18 @@ class ClassificationService:
         try:
             logger.info("Processing webhook response")
             
+            # Get chunk information from webhook URL if available
+            webhook_url = data.get('webhook', '')
+            chunk_params = {}
+            if webhook_url:
+                parsed = urlparse(webhook_url)
+                query_params = parse_qs(parsed.query)
+                chunk_params = {
+                    'training_key': query_params.get('training_key', [None])[0],
+                    'chunk_index': query_params.get('chunk_index', [None])[0],
+                    'total_chunks': query_params.get('total_chunks', [None])[0]
+                }
+            
             # Validate webhook data
             if not data or 'output' not in data:
                 raise ValueError("Invalid webhook data: missing 'output' field")
@@ -303,6 +316,31 @@ class ClassificationService:
             new_embeddings = self.process_embeddings(data)
             logger.info(f"Processed embeddings shape: {new_embeddings.shape}")
             
+            # For training mode with chunks
+            if all(chunk_params.values()):
+                try:
+                    # Load training data for this chunk
+                    training_data = self.get_temp_training_data(chunk_params['training_key'])
+                    
+                    # Store embeddings for this chunk
+                    self.store_embeddings(new_embeddings, training_data, sheet_id)
+                    
+                    # Clean up temporary data, but only if all chunks are processed
+                    self.cleanup_temp_training_data(
+                        chunk_params['training_key'],
+                        sheet_id,
+                        chunk_params['chunk_index'],
+                        chunk_params['total_chunks']
+                    )
+                    
+                    # Return early for training chunks
+                    return pd.DataFrame()
+                    
+                except Exception as e:
+                    logger.error(f"Error processing training chunk: {str(e)}")
+                    raise
+            
+            # For classification mode or non-chunked training
             # Load trained data
             trained_data = self._load_training_data(sheet_id)
             if not trained_data:
@@ -622,6 +660,7 @@ class ClassificationService:
             # Download to temporary file with retries
             max_retries = 3
             retry_delay = 1  # seconds
+            last_error = None
             
             for attempt in range(max_retries):
                 try:
@@ -642,20 +681,44 @@ class ClassificationService:
                         
                         return training_data
                 except Exception as download_error:
-                    if attempt == max_retries - 1:
-                        raise
-                    logger.warning(f"Download attempt {attempt + 1} failed: {str(download_error)}")
-                    time.sleep(retry_delay)
+                    last_error = download_error
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Download attempt {attempt + 1} failed: {str(download_error)}")
+                        time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    
+            raise Exception(f"Failed to retrieve training data after {max_retries} attempts: {str(last_error)}")
                     
         except Exception as e:
             logger.error(f"Error retrieving temp training data: {e}")
             raise
 
-    def cleanup_temp_training_data(self, training_key: str) -> None:
+    def cleanup_temp_training_data(self, training_key: str, sheet_id: str = None, chunk_index: str = None, total_chunks: str = None) -> None:
         """Clean up temporary training data from Supabase Storage."""
         try:
+            # If we have chunk information, verify all chunks are processed before cleanup
+            if sheet_id and chunk_index is not None and total_chunks is not None:
+                chunk_idx = int(chunk_index)
+                total = int(total_chunks)
+                
+                # Mark this chunk as processed
+                all_processed = self._mark_chunk_processed(sheet_id, chunk_idx, total)
+                
+                if not all_processed:
+                    logger.info(f"Not cleaning up temp data yet - waiting for all chunks to complete")
+                    return
+                
+                logger.info(f"All {total} chunks processed, proceeding with cleanup")
+                
+                # Clean up the processed chunks tracking
+                try:
+                    self.supabase.table("processed_chunks").delete().eq("sheet_id", sheet_id).execute()
+                except Exception as e:
+                    logger.warning(f"Error cleaning up processed chunks tracking: {e}")
+            
+            # Proceed with cleanup
             self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
             logger.info(f"Cleaned up temporary training data for key: {training_key}")
+            
         except Exception as e:
             logger.warning(f"Failed to clean up temporary training data: {e}")
 
@@ -683,11 +746,51 @@ class ClassificationService:
                     embeddings=embeddings_chunk,
                     descriptions=descriptions,
                     categories=categories,
-                    sheet_id=f"sheet_{sheet_id}_chunk_{i//CHUNK_SIZE}"
+                    sheet_id=sheet_id
                 )
             
             logger.info(f"Successfully stored all {len(embeddings)} embeddings in chunks")
             
         except Exception as e:
             logger.error(f"Error storing embeddings: {e}")
-            raise 
+            raise
+
+    def _get_processed_chunks_key(self, sheet_id: str) -> str:
+        """Get the key for storing processed chunks information."""
+        return f"{sheet_id}_processed_chunks"
+
+    def _mark_chunk_processed(self, sheet_id: str, chunk_index: int, total_chunks: int) -> bool:
+        """Mark a chunk as processed and check if all chunks are done."""
+        try:
+            key = self._get_processed_chunks_key(sheet_id)
+            
+            # Get current processed chunks
+            try:
+                response = self.supabase.table("processed_chunks").select("*").eq("sheet_id", sheet_id).execute()
+                record = response.data[0] if response.data else None
+            except Exception:
+                record = None
+            
+            if not record:
+                # Create new record
+                processed = [chunk_index]
+                self.supabase.table("processed_chunks").insert({
+                    "sheet_id": sheet_id,
+                    "processed_chunks": processed,
+                    "total_chunks": total_chunks
+                }).execute()
+            else:
+                # Update existing record
+                processed = record.get("processed_chunks", [])
+                if chunk_index not in processed:
+                    processed.append(chunk_index)
+                    self.supabase.table("processed_chunks").update({
+                        "processed_chunks": processed
+                    }).eq("sheet_id", sheet_id).execute()
+            
+            # Check if all chunks are processed
+            return len(processed) == total_chunks
+            
+        except Exception as e:
+            logger.error(f"Error marking chunk as processed: {e}")
+            return False 
