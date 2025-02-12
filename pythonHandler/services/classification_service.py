@@ -26,7 +26,7 @@ class ClassificationService:
             if training_data.empty:
                 raise ValueError("Training data is empty")
                 
-            logger.info(f"Training with {len(training_data)} transactions")
+            logger.info(f"Initial training data size: {len(training_data)} transactions")
             logger.info(f"Training data columns: {training_data.columns.tolist()}")
             
             # Validate required columns
@@ -35,26 +35,50 @@ class ClassificationService:
             if missing_columns:
                 raise ValueError(f"Missing required columns: {missing_columns}")
             
-            # Log sample of training data
-            logger.info("Sample of training data:")
-            logger.info(f"Narratives: {training_data['Narrative'].head().tolist()}")
-            logger.info(f"Categories: {training_data['Category'].head().tolist()}")
+            # Clean and preprocess data
+            # 1. Convert to string and strip whitespace
+            training_data['Narrative'] = training_data['Narrative'].astype(str).str.strip()
+            training_data['Category'] = training_data['Category'].astype(str).str.strip()
             
-            # Remove any rows with empty narratives or categories
+            # 2. Remove rows with empty or invalid values
             valid_data = training_data.dropna(subset=['Narrative', 'Category'])
+            valid_data = valid_data[
+                (valid_data['Narrative'].str.len() > 0) & 
+                (valid_data['Category'].str.len() > 0)
+            ]
+            
+            # 3. Clean transaction descriptions
+            valid_data['Narrative'] = valid_data['Narrative'].apply(self._clean_description)
+            
+            # 4. Remove duplicates, keeping the most recent entry for each unique description
+            valid_data = valid_data.drop_duplicates(subset=['Narrative'], keep='last')
+            
+            # 5. Group similar transactions
+            valid_data['Narrative_clean'] = valid_data['Narrative'].apply(self._normalize_description)
+            valid_data = valid_data.drop_duplicates(subset=['Narrative_clean'], keep='last')
+            valid_data = valid_data.drop('Narrative_clean', axis=1)
+            
+            # Log cleaning results
+            logger.info(f"After cleaning:")
+            logger.info(f"- Removed {len(training_data) - len(valid_data)} duplicate or invalid entries")
+            logger.info(f"- Final training size: {len(valid_data)} transactions")
+            
             if len(valid_data) == 0:
-                raise ValueError("No valid training data after removing empty values")
+                raise ValueError("No valid training data after cleaning")
             
-            if len(valid_data) < len(training_data):
-                logger.warning(f"Dropped {len(training_data) - len(valid_data)} rows with empty values")
-            
-            # Store training data first
+            # Store training data
             training_records = valid_data.to_dict('records')
             training_key = self.store_temp_training_data(training_records, sheet_id)
             logger.info(f"Stored training data with key: {training_key}")
             
             # Get embeddings for descriptions
-            descriptions = valid_data['Narrative'].astype(str).tolist()
+            descriptions = valid_data['Narrative'].tolist()
+            
+            # Log sample of cleaned data
+            logger.info("Sample of cleaned training data:")
+            sample_size = min(5, len(descriptions))
+            logger.info(f"Narratives: {descriptions[:sample_size]}")
+            logger.info(f"Categories: {valid_data['Category'].tolist()[:sample_size]}")
             
             # Run prediction with webhook
             prediction = self.run_prediction(
@@ -77,6 +101,59 @@ class ClassificationService:
                 except Exception as cleanup_error:
                     logger.warning(f"Failed to clean up temporary data: {cleanup_error}")
             raise
+
+    def _clean_description(self, text: str) -> str:
+        """Clean transaction description."""
+        try:
+            # Convert to string if not already
+            text = str(text)
+            
+            # Remove common noise patterns
+            patterns_to_remove = [
+                r'\s+\|\s*[\d\.]+$',  # Remove amount at the end (e.g., "| 0.03")
+                r'\s+\|\s*[A-Z0-9\s]+$',  # Remove reference codes
+                r'\d{6}$',  # Remove 6-digit numbers at end
+                r'Card xx\d{4}',  # Remove card numbers
+                r'Value Date: \d{2}/\d{2}/\d{4}',  # Remove value dates
+                r'AUS$',  # Remove country codes at end
+                r'\s+AU$',  # Remove AU at end
+                r'\s+AUS$',  # Remove AUS at end
+                r'\s+NS$',  # Remove NS at end
+                r'\s+CYP$',  # Remove CYP at end
+            ]
+            
+            for pattern in patterns_to_remove:
+                text = re.sub(pattern, '', text)
+            
+            # Remove extra whitespace
+            text = ' '.join(text.split())
+            
+            return text.strip()
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning description '{text}': {str(e)}")
+            return text
+
+    def _normalize_description(self, text: str) -> str:
+        """Normalize description for grouping similar transactions."""
+        try:
+            # Convert to lowercase
+            text = text.lower()
+            
+            # Remove all numbers
+            text = re.sub(r'\d+', '', text)
+            
+            # Remove special characters
+            text = re.sub(r'[^\w\s]', '', text)
+            
+            # Remove extra whitespace
+            text = ' '.join(text.split())
+            
+            return text.strip()
+            
+        except Exception as e:
+            logger.warning(f"Error normalizing description '{text}': {str(e)}")
+            return text
 
     def classify(self, new_data: pd.DataFrame, sheet_id: str, user_id: str) -> None:
         """Start classification of new transactions."""
