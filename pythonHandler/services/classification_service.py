@@ -65,41 +65,46 @@ class ClassificationService:
             
             if len(valid_data) == 0:
                 raise ValueError("No valid training data after cleaning")
+
+            # Process in chunks to avoid memory issues
+            CHUNK_SIZE = 500
+            chunks = [valid_data[i:i + CHUNK_SIZE] for i in range(0, len(valid_data), CHUNK_SIZE)]
             
-            # Store training data
-            training_records = valid_data.to_dict('records')
-            training_key = self.store_temp_training_data(training_records, sheet_id)
-            logger.info(f"Stored training data with key: {training_key}")
+            all_predictions = []
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk)} records)")
+                
+                # Store chunk data
+                chunk_key = f"temp_training_{sheet_id}_chunk_{i}_{int(time.time())}"
+                training_records = chunk.to_dict('records')
+                self.store_temp_training_data(training_records, chunk_key)
+                
+                # Get embeddings for descriptions
+                descriptions = chunk['Narrative'].tolist()
+                
+                # Run prediction with webhook for this chunk
+                prediction = self.run_prediction(
+                    "training",
+                    sheet_id,
+                    user_id,
+                    descriptions,
+                    webhook_params={
+                        'training_key': chunk_key,
+                        'chunk_index': str(i),
+                        'total_chunks': str(len(chunks))
+                    }
+                )
+                all_predictions.append(prediction)
+                
+                # Add a small delay between chunks to avoid rate limiting
+                if i < len(chunks) - 1:
+                    time.sleep(2)
             
-            # Get embeddings for descriptions
-            descriptions = valid_data['Narrative'].tolist()
-            
-            # Log sample of cleaned data
-            logger.info("Sample of cleaned training data:")
-            sample_size = min(5, len(descriptions))
-            logger.info(f"Narratives: {descriptions[:sample_size]}")
-            logger.info(f"Categories: {valid_data['Category'].tolist()[:sample_size]}")
-            
-            # Run prediction with webhook
-            prediction = self.run_prediction(
-                "training",
-                sheet_id,
-                user_id,
-                descriptions,
-                webhook_params={'training_key': training_key}
-            )
-            
-            logger.info("Training request sent successfully")
-            return prediction
+            logger.info("All training chunks sent successfully")
+            return all_predictions[-1]  # Return the last prediction ID for status checking
             
         except Exception as e:
             logger.error(f"Error in training: {str(e)}")
-            # Try to clean up temporary data if it was created
-            if 'training_key' in locals():
-                try:
-                    self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to clean up temporary data: {cleanup_error}")
             raise
 
     def _clean_description(self, text: str) -> str:
@@ -570,33 +575,40 @@ class ClassificationService:
         """Generate a timestamp for run tracking."""
         return datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
-    def store_temp_training_data(self, training_data: list, sheet_id: str) -> str:
+    def store_temp_training_data(self, training_data: list, training_key: str) -> str:
         """Store training data temporarily in Supabase Storage."""
         try:
-            # Create a unique key for this training session
-            training_key = f"temp_training_{sheet_id}_{int(time.time())}"
-            
             # Create temporary file
-            with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w+b') as temp_file:
-                # Convert to JSON and encode as bytes
-                json_data = json.dumps(training_data).encode('utf-8')
-                temp_file.write(json_data)
-                temp_file.flush()
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w') as temp_file:
+                # Write JSON data
+                json.dump(training_data, temp_file, ensure_ascii=False)
                 temp_file_path = temp_file.name
             
             try:
-                # Upload to Supabase Storage
-                with open(temp_file_path, 'rb') as f:
-                    self.supabase.storage.from_(self.bucket_name).upload(
-                        f"{training_key}.json",
-                        f,
-                        file_options={"x-upsert": "true"}
-                    )
-                logger.info(f"Stored temporary training data with key: {training_key}")
+                # Upload to Supabase Storage with retries
+                max_retries = 3
+                retry_delay = 1  # seconds
+                
+                for attempt in range(max_retries):
+                    try:
+                        with open(temp_file_path, 'rb') as f:
+                            self.supabase.storage.from_(self.bucket_name).upload(
+                                f"{training_key}.json",
+                                f,
+                                file_options={"x-upsert": "true"}
+                            )
+                        logger.info(f"Successfully stored temporary training data with key: {training_key}")
+                        break
+                    except Exception as upload_error:
+                        if attempt == max_retries - 1:
+                            raise
+                        logger.warning(f"Upload attempt {attempt + 1} failed: {str(upload_error)}")
+                        time.sleep(retry_delay)
                 
             finally:
                 # Clean up temporary file
-                os.unlink(temp_file_path)
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
             
             return training_key
             
@@ -607,23 +619,34 @@ class ClassificationService:
     def get_temp_training_data(self, training_key: str) -> list:
         """Retrieve temporary training data from Supabase Storage."""
         try:
-            # Download to temporary file
-            with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w+b') as temp_file:
-                response = self.supabase.storage.from_(self.bucket_name).download(
-                    f"{training_key}.json"
-                )
-                temp_file.write(response)
-                temp_file.flush()
-                
-                # Load the data
-                with open(temp_file.name, 'rb') as f:
-                    training_data = json.loads(f.read().decode('utf-8'))
-                
-                # Clean up temporary file
-                os.unlink(temp_file.name)
-                
-                return training_data
-                
+            # Download to temporary file with retries
+            max_retries = 3
+            retry_delay = 1  # seconds
+            
+            for attempt in range(max_retries):
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w+b') as temp_file:
+                        response = self.supabase.storage.from_(self.bucket_name).download(
+                            f"{training_key}.json"
+                        )
+                        temp_file.write(response)
+                        temp_file.flush()
+                        temp_file_path = temp_file.name
+                        
+                        # Load the data
+                        with open(temp_file_path, 'r') as f:
+                            training_data = json.load(f)
+                        
+                        # Clean up temporary file
+                        os.unlink(temp_file_path)
+                        
+                        return training_data
+                except Exception as download_error:
+                    if attempt == max_retries - 1:
+                        raise
+                    logger.warning(f"Download attempt {attempt + 1} failed: {str(download_error)}")
+                    time.sleep(retry_delay)
+                    
         except Exception as e:
             logger.error(f"Error retrieving temp training data: {e}")
             raise
@@ -642,37 +665,29 @@ class ClassificationService:
             if len(embeddings) != len(training_data):
                 raise ValueError(f"Mismatch between embeddings ({len(embeddings)}) and training data ({len(training_data)})")
             
-            # Extract categories from training data
-            categories = [item['Category'] for item in training_data]
-            descriptions = [item['Narrative'] for item in training_data]
+            # Process in chunks to avoid memory issues
+            CHUNK_SIZE = 500
+            for i in range(0, len(embeddings), CHUNK_SIZE):
+                chunk_end = min(i + CHUNK_SIZE, len(embeddings))
+                embeddings_chunk = embeddings[i:chunk_end]
+                training_data_chunk = training_data[i:chunk_end]
+                
+                # Extract categories from training data chunk
+                categories = [item['Category'] for item in training_data_chunk]
+                descriptions = [item['Narrative'] for item in training_data_chunk]
+                
+                logger.info(f"Processing chunk {i//CHUNK_SIZE + 1}, size: {len(embeddings_chunk)}")
+                
+                # Store training data chunk
+                self._store_training_data(
+                    embeddings=embeddings_chunk,
+                    descriptions=descriptions,
+                    categories=categories,
+                    sheet_id=f"sheet_{sheet_id}_chunk_{i//CHUNK_SIZE}"
+                )
             
-            logger.info("Sample of categories being stored:")
-            logger.info(f"Categories: {categories[:5]}")
-            
-            # Get sheet_id from training data if not provided
-            if not sheet_id:
-                # Try to extract from the first item's key
-                first_key = next(iter(training_data[0].keys()))
-                if '_' in first_key:
-                    sheet_id = first_key.split('_')[0]
-                else:
-                    raise ValueError("Could not determine sheet_id and none was provided")
-            
-            # Remove 'sheet_' prefix if present
-            if sheet_id.startswith('sheet_'):
-                sheet_id = sheet_id[6:]
-            
-            # Store training data
-            self._store_training_data(
-                embeddings=embeddings,
-                descriptions=descriptions,
-                categories=categories,
-                sheet_id=f"sheet_{sheet_id}"
-            )
-            
-            logger.info(f"Successfully stored {len(embeddings)} embeddings with categories for sheet {sheet_id}")
+            logger.info(f"Successfully stored all {len(embeddings)} embeddings in chunks")
             
         except Exception as e:
             logger.error(f"Error storing embeddings: {e}")
-            raise 
             raise 
