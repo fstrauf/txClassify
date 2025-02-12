@@ -316,7 +316,7 @@ class ClassificationService:
                     "webhook_url": webhook  # Keep for backward compatibility
                 },
                 webhook=webhook,
-                webhook_events_filter=["completed", "failed"],  # Add failed events
+                webhook_events_filter=["completed", "output", "logs"],  # Use valid event types
             )
             
             logger.info(f"Started {api_mode} with prediction ID: {prediction.id}")
