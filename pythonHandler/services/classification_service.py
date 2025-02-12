@@ -244,6 +244,40 @@ class ClassificationService:
             logger.error(f"Error starting classification: {str(e)}")
             raise
 
+    def verify_webhook_delivery(self, prediction_id: str, max_retries: int = 3, retry_delay: int = 5) -> bool:
+        """Verify webhook delivery and trigger manual processing if needed."""
+        try:
+            for attempt in range(max_retries):
+                # Check prediction status
+                prediction = replicate.predictions.get(prediction_id)
+                status = prediction.status
+                
+                logger.info(f"Checking prediction {prediction_id} status: {status}")
+                
+                if status == "succeeded":
+                    # If succeeded but no webhook result, trigger manual processing
+                    webhook_results = self.supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
+                    
+                    if not webhook_results.data:
+                        logger.warning(f"Webhook not received for completed prediction {prediction_id}, manually processing")
+                        self.process_webhook_response(prediction, prediction.output.get("sheetId"))
+                        return True
+                    return True
+                    
+                elif status == "failed":
+                    logger.error(f"Prediction {prediction_id} failed")
+                    return False
+                    
+                elif attempt < max_retries - 1:
+                    logger.info(f"Prediction still processing, attempt {attempt + 1}/{max_retries}")
+                    time.sleep(retry_delay)
+                    
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error verifying webhook delivery: {str(e)}")
+            return False
+
     def run_prediction(
         self, 
         api_mode: str,
@@ -278,13 +312,18 @@ class ClassificationService:
                 version=version,
                 input={
                     "text_batch": json.dumps(texts),
-                    "webhook_url": webhook  # Pass webhook URL in input
+                    "webhook": webhook,  # Add webhook URL to input as well
+                    "webhook_url": webhook  # Keep for backward compatibility
                 },
                 webhook=webhook,
-                webhook_events_filter=["completed"],
+                webhook_events_filter=["completed", "failed"],  # Add failed events
             )
             
             logger.info(f"Started {api_mode} with prediction ID: {prediction.id}")
+            
+            # Verify webhook delivery for this prediction
+            self.verify_webhook_delivery(prediction.id)
+            
             return prediction
             
         except Exception as e:
