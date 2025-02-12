@@ -1,11 +1,12 @@
 // Add menu to the spreadsheet
 function onOpen() {
-  var ui = SpreadsheetApp.getUi();
-  ui.createMenu('Transaction Classifier')
-    .addItem('Setup Service', 'setupService')
-    .addItem('Train Model', 'trainModel')
-    .addItem('Classify New Transactions', 'showClassifyDialog')
-    .addToUi();
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var menuEntries = [
+    {name: "Setup Service", functionName: "setupService"},
+    {name: "Train Model", functionName: "showTrainingDialog"},
+    {name: "Classify New Transactions", functionName: "showClassifyDialog"}
+  ];
+  spreadsheet.addMenu("Transaction Classifier", menuEntries);
 }
 
 // Show dialog to select columns for classification
@@ -16,7 +17,10 @@ function showClassifyDialog() {
       .form-group { margin-bottom: 15px; }
       label { display: block; margin-bottom: 5px; }
       select { width: 100%; padding: 5px; }
+      input { width: 100%; padding: 5px; }
       button { padding: 8px 15px; background: #4285f4; color: white; border: none; border-radius: 3px; cursor: pointer; }
+      .help-text { font-size: 12px; color: #666; margin-top: 4px; }
+      .error { color: red; margin-top: 10px; display: none; }
     </style>
     <div class="form-group">
       <label>Description Column:</label>
@@ -27,39 +31,224 @@ function showClassifyDialog() {
         <option value="D">D</option>
         <option value="E">E</option>
       </select>
+      <div class="help-text">Column containing transaction descriptions</div>
     </div>
     <div class="form-group">
       <label>Category Column (where to write results):</label>
       <select id="categoryCol">
-        <option value="D" selected>D</option>
-        <option value="E">E</option>
+        <option value="D">D</option>
+        <option value="E" selected>E</option>
         <option value="F">F</option>
         <option value="G">G</option>
         <option value="H">H</option>
       </select>
+      <div class="help-text">Column where categories will be written</div>
     </div>
     <div class="form-group">
       <label>Start Row:</label>
-      <input type="number" id="startRow" value="2" min="2" style="width: 100%; padding: 5px;">
+      <input type="number" id="startRow" value="1" min="1" style="width: 100%; padding: 5px;">
+      <div class="help-text">First row of data to classify</div>
     </div>
+    <div id="error" class="error"></div>
     <button onclick="submitForm()">Classify Transactions</button>
     <script>
       function submitForm() {
-        var result = {
-          descriptionCol: document.getElementById('descriptionCol').value,
-          categoryCol: document.getElementById('categoryCol').value,
-          startRow: document.getElementById('startRow').value
+        var descriptionCol = document.getElementById('descriptionCol').value;
+        var categoryCol = document.getElementById('categoryCol').value;
+        var startRow = document.getElementById('startRow').value;
+        var errorDiv = document.getElementById('error');
+        
+        // Validate inputs
+        if (!descriptionCol || !categoryCol || !startRow) {
+          errorDiv.textContent = 'Please fill in all fields';
+          errorDiv.style.display = 'block';
+          return;
+        }
+        
+        // Ensure start row is at least 1
+        startRow = parseInt(startRow);
+        if (isNaN(startRow) || startRow < 1) {
+          errorDiv.textContent = 'Start row must be 1 or higher';
+          errorDiv.style.display = 'block';
+          return;
+        }
+        
+        // Clear any previous errors
+        errorDiv.style.display = 'none';
+        
+        var config = {
+          descriptionCol: descriptionCol,
+          categoryCol: categoryCol,
+          startRow: startRow.toString()
         };
+        
         google.script.run
           .withSuccessHandler(function() { google.script.host.close(); })
-          .classifyTransactions(result);
+          .withFailureHandler(function(error) {
+            errorDiv.textContent = error.message || 'An error occurred';
+            errorDiv.style.display = 'block';
+          })
+          .classifyTransactions(config);
+      }
+      
+      // Set default value and min for start row
+      window.onload = function() {
+        var startRowInput = document.getElementById('startRow');
+        startRowInput.value = "1";
+        startRowInput.min = "1";
       }
     </script>
   `)
     .setWidth(400)
-    .setHeight(300);
+    .setHeight(350);
   
   SpreadsheetApp.getUi().showModalDialog(html, 'Classify Transactions');
+}
+
+// Show dialog to select columns for training
+function showTrainingDialog() {
+  // Get current sheet to determine default columns
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var headers = sheet.getRange("A1:Z1").getValues()[0];
+  
+  // Find default column indices
+  var narrativeColDefault = columnToLetter(headers.indexOf("Narrative") + 1);
+  var categoryColDefault = columnToLetter(headers.indexOf("Category") + 1);
+  
+  // Create column options
+  var columnOptions = headers.map((header, index) => {
+    if (header) {
+      return `<option value="${columnToLetter(index + 1)}"${columnToLetter(index + 1) === narrativeColDefault ? ' selected' : ''}>${columnToLetter(index + 1)} (${header})</option>`;
+    }
+    return '';
+  }).filter(Boolean).join('\n');
+
+  var html = HtmlService.createHtmlOutput(`
+    <style>
+      body { font-family: Arial, sans-serif; padding: 20px; }
+      .form-group { margin-bottom: 15px; }
+      label { display: block; margin-bottom: 5px; }
+      select { width: 100%; padding: 5px; }
+      button { 
+        padding: 8px 15px; 
+        background: #4285f4; 
+        color: white; 
+        border: none; 
+        border-radius: 3px; 
+        cursor: pointer;
+        position: relative;
+        min-width: 120px;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+      .help-text { font-size: 12px; color: #666; margin-top: 4px; }
+      .error { color: red; margin-top: 10px; display: none; }
+      .spinner {
+        display: none;
+        width: 20px;
+        height: 20px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #3498db;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+      @keyframes spin {
+        0% { transform: translateY(-50%) rotate(0deg); }
+        100% { transform: translateY(-50%) rotate(360deg); }
+      }
+      .button-text { display: inline-block; }
+      .processing-text { display: none; }
+    </style>
+    <div class="form-group">
+      <label>Description Column:</label>
+      <select id="narrativeCol">
+        ${columnOptions}
+      </select>
+      <div class="help-text">Select the column containing transaction descriptions</div>
+    </div>
+    <div class="form-group">
+      <label>Category Column:</label>
+      <select id="categoryCol">
+        ${headers.map((header, index) => {
+          if (header) {
+            return `<option value="${columnToLetter(index + 1)}"${columnToLetter(index + 1) === categoryColDefault ? ' selected' : ''}>${columnToLetter(index + 1)} (${header})</option>`;
+          }
+          return '';
+        }).filter(Boolean).join('\n')}
+      </select>
+      <div class="help-text">Select the column containing categories for training</div>
+    </div>
+    <div class="form-group">
+      <label>Start Row:</label>
+      <input type="number" id="startRow" value="2" min="2" style="width: 100%; padding: 5px;">
+      <div class="help-text">First row of data (usually 2 to skip headers)</div>
+    </div>
+    <div id="error" class="error"></div>
+    <button onclick="submitForm()" id="submitBtn">
+      <span class="button-text">Start Training</span>
+      <span class="processing-text">Processing...</span>
+      <div class="spinner"></div>
+    </button>
+    <script>
+      function submitForm() {
+        var narrativeCol = document.getElementById('narrativeCol').value;
+        var categoryCol = document.getElementById('categoryCol').value;
+        var startRow = document.getElementById('startRow').value;
+        var errorDiv = document.getElementById('error');
+        var submitBtn = document.getElementById('submitBtn');
+        var spinner = document.querySelector('.spinner');
+        var buttonText = document.querySelector('.button-text');
+        var processingText = document.querySelector('.processing-text');
+        
+        // Validate inputs
+        if (!narrativeCol || !categoryCol || !startRow) {
+          errorDiv.textContent = 'Please fill in all fields';
+          errorDiv.style.display = 'block';
+          return;
+        }
+        
+        // Clear any previous errors
+        errorDiv.style.display = 'none';
+        
+        var config = {
+          narrativeCol: narrativeCol,
+          categoryCol: categoryCol,
+          startRow: startRow
+        };
+        
+        // Show processing state
+        submitBtn.disabled = true;
+        spinner.style.display = 'block';
+        buttonText.style.display = 'none';
+        processingText.style.display = 'inline-block';
+        
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(error) {
+            errorDiv.textContent = error.message || 'An error occurred';
+            errorDiv.style.display = 'block';
+            // Reset button state
+            submitBtn.disabled = false;
+            spinner.style.display = 'none';
+            buttonText.style.display = 'inline-block';
+            processingText.style.display = 'none';
+          })
+          .trainModel(config);
+      }
+    </script>
+  `)
+    .setWidth(400)
+    .setHeight(350);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, 'Train Model');
 }
 
 // Setup function to configure service URL and API key
@@ -113,7 +302,7 @@ function getServiceConfig() {
 }
 
 // Helper function to update status in sheet
-function updateStatus(message) {
+function updateStatus(message, additionalDetails = '') {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var logSheet = ss.getSheetByName('Log');
   
@@ -121,12 +310,19 @@ function updateStatus(message) {
   if (!logSheet) {
     logSheet = ss.insertSheet('Log');
     // Add headers
-    logSheet.getRange('A1:C1').setValues([['Timestamp', 'Status', 'Details']]);
+    logSheet.getRange('A1:D1').setValues([['Timestamp', 'Status', 'Message', 'Details']]);
     logSheet.setFrozenRows(1);
     // Set column widths
     logSheet.setColumnWidth(1, 180);  // Timestamp
-    logSheet.setColumnWidth(2, 150);  // Status
-    logSheet.setColumnWidth(3, 400);  // Details
+    logSheet.setColumnWidth(2, 100);  // Status
+    logSheet.setColumnWidth(3, 300);  // Message
+    logSheet.setColumnWidth(4, 400);  // Details
+    
+    // Format headers
+    var headerRange = logSheet.getRange('A1:D1');
+    headerRange.setBackground('#f3f3f3')
+               .setFontWeight('bold')
+               .setHorizontalAlignment('center');
   }
   
   // Get current timestamp
@@ -134,21 +330,28 @@ function updateStatus(message) {
   
   // Determine status and details
   var status = "INFO";
-  var details = message;
-  
   if (message.toLowerCase().includes("error")) {
     status = "ERROR";
-  } else if (message.toLowerCase().includes("completed")) {
+  } else if (message.toLowerCase().includes("completed") || message.toLowerCase().includes("success")) {
     status = "SUCCESS";
   } else if (message.toLowerCase().includes("progress") || message.toLowerCase().includes("processing")) {
     status = "PROCESSING";
   }
   
+  // Get active sheet name and additional context
+  var activeSheet = SpreadsheetApp.getActiveSheet().getName();
+  var contextDetails = additionalDetails || `Active Sheet: ${activeSheet}`;
+  
   // Insert new row after header
   logSheet.insertRowAfter(1);
   
   // Write the log entry
-  logSheet.getRange('A2:C2').setValues([[timestamp, status, details]]);
+  logSheet.getRange('A2:D2').setValues([[
+    timestamp,
+    status,
+    message,
+    contextDetails
+  ]]);
   
   // Color coding
   var statusCell = logSheet.getRange('B2');
@@ -166,6 +369,12 @@ function updateStatus(message) {
       statusCell.setBackground('#ffffff');  // White
   }
   
+  // Format the new row
+  logSheet.getRange('A2:D2')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle')
+    .setWrap(true);
+  
   // Keep only last 100 entries
   var lastRow = logSheet.getLastRow();
   if (lastRow > 101) {  // 1 header row + 100 log entries
@@ -173,7 +382,12 @@ function updateStatus(message) {
   }
   
   // Make sure the log is visible
-  logSheet.autoResizeColumns(1, 3);
+  logSheet.autoResizeColumns(1, 4);
+  
+  // Show the Log sheet if it's hidden
+  if (logSheet.isSheetHidden()) {
+    logSheet.showSheet();
+  }
 }
 
 // Helper function to poll training/classification status
@@ -216,39 +430,511 @@ function pollStatus(predictionId, config) {
   throw new Error("Operation timed out");
 }
 
-// Train model with existing categorized transactions
-function trainModel() {
+// Helper function to manage settings sheet
+function getSettingsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var settingsSheet = ss.getSheetByName('Settings');
+  
+  // Create Settings sheet if it doesn't exist
+  if (!settingsSheet) {
+    settingsSheet = ss.insertSheet('Settings');
+    // Add headers
+    settingsSheet.getRange('A1:B1').setValues([['Setting', 'Value']]);
+    settingsSheet.setFrozenRows(1);
+    // Set column widths
+    settingsSheet.setColumnWidth(1, 200);  // Setting name
+    settingsSheet.setColumnWidth(2, 300);  // Value
+    // Hide the sheet
+    settingsSheet.hideSheet();
+  }
+  
+  return settingsSheet;
+}
+
+// Helper function to update settings
+function updateSetting(settingName, value) {
+  var sheet = getSettingsSheet();
+  var data = sheet.getDataRange().getValues();
+  var rowIndex = -1;
+  
+  // Look for existing setting
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === settingName) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+  
+  if (rowIndex === -1) {
+    // Add new setting at the end
+    rowIndex = data.length + 1;
+  }
+  
+  // Update the setting
+  sheet.getRange(rowIndex, 1, 1, 2).setValues([[settingName, value]]);
+}
+
+function checkTrainingStatus() {
+  try {
+    var userProperties = PropertiesService.getUserProperties();
+    var predictionId = userProperties.getProperty('PREDICTION_ID');
+    var triggerId = userProperties.getProperty('TRIGGER_ID');
+    var startTime = parseInt(userProperties.getProperty('START_TIME'));
+    
+    if (!predictionId || !triggerId) {
+      // Clean up if no prediction ID or trigger ID
+      if (triggerId) {
+        // Get all triggers and find the one with matching ID
+        var triggers = ScriptApp.getProjectTriggers();
+        for (var i = 0; i < triggers.length; i++) {
+          if (triggers[i].getUniqueId() === triggerId) {
+            ScriptApp.deleteTrigger(triggers[i]);
+            break;
+          }
+        }
+      }
+      return;
+    }
+    
+    // Check if we've been running for more than 30 minutes
+    if (new Date().getTime() - startTime > 30 * 60 * 1000) {
+      updateStatus("Error: Training timed out after 30 minutes");
+      // Get all triggers and find the one with matching ID
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    var config = getServiceConfig();
+    var response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, {
+      headers: { 'X-API-Key': config.apiKey },
+      muteHttpExceptions: true
+    });
+    
+    var result = JSON.parse(response.getContentText());
+    
+    if (result.status === "completed") {
+      updateStatus("Training completed successfully!");
+      
+      // Store training completion details
+      var completionTime = new Date().toISOString();
+      updateSetting('Last Training Completion', completionTime);
+      updateSetting('Last Training Size', userProperties.getProperty('TRAINING_SIZE') || 'Unknown');
+      updateSetting('Last Training Sheet', SpreadsheetApp.getActiveSheet().getName());
+      
+      // Clean up
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+      userProperties.deleteAllProperties();
+      return;
+    } else if (result.status === "failed") {
+      updateStatus("Error: Training failed - " + (result.error || "Unknown error"));
+      // Clean up
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    // Still processing, update status
+    updateStatus("Training in progress... " + (result.message || ""));
+    
+  } catch (error) {
+    Logger.log("Error checking training status: " + error);
+    // Clean up on error
+    var triggerId = userProperties.getProperty('TRIGGER_ID');
+    if (triggerId) {
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+    }
+    userProperties.deleteAllProperties();
+    updateStatus("Error: " + error.toString());
+  }
+}
+
+// Main classification function
+function classifyTransactions(config) {
+  var sheet = SpreadsheetApp.getActiveSheet();
   var ui = SpreadsheetApp.getUi();
   
   try {
+    Logger.log("Starting classification with config: " + JSON.stringify(config));
+    updateStatus("Starting classification...");
+    var serviceConfig = getServiceConfig();
+    
+    // Store the original sheet name
+    var originalSheetName = sheet.getName();
+    Logger.log("Original sheet name: " + originalSheetName);
+    
+    // Get all descriptions from the specified column
+    var lastRow = sheet.getLastRow();
+    var descriptionRange = sheet.getRange(config.descriptionCol + config.startRow + ":" + config.descriptionCol + lastRow);
+    var descriptions = descriptionRange.getValues();
+    
+    // Filter out empty descriptions
+    var transactions = descriptions
+      .filter(row => row[0] && row[0].toString().trim() !== '')
+      .map(row => ({
+        Narrative: row[0]
+      }));
+    
+    if (transactions.length === 0) {
+      updateStatus("Error: No transactions found");
+      ui.alert('No transactions found to classify');
+      return;
+    }
+    
+    Logger.log("Found " + transactions.length + " transactions to classify");
+    updateStatus("Processing " + transactions.length + " transactions...");
+    
+    // Call classification service
+    var options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        'X-API-Key': serviceConfig.apiKey
+      },
+      payload: JSON.stringify({ transactions: transactions }),
+      muteHttpExceptions: true
+    };
+    
+    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/classify', options);
+    var result = JSON.parse(response.getContentText());
+    
+    Logger.log("Classification service response: " + JSON.stringify(result));
+    
+    if (response.getResponseCode() !== 200) {
+      updateStatus("Error: Classification failed");
+      throw new Error('Classification service error: ' + response.getContentText());
+    }
+    
+    // Check if we got a prediction ID
+    if (result.prediction_id) {
+      updateStatus("Classification in progress...");
+      
+      // Store configuration for status checking
+      var userProperties = PropertiesService.getUserProperties();
+      
+      // Clear any existing properties first
+      userProperties.deleteAllProperties();
+      
+      // Store new properties
+      var properties = {
+        'PREDICTION_ID': result.prediction_id,
+        'OPERATION_TYPE': 'classify',
+        'START_TIME': new Date().getTime().toString(),
+        'ORIGINAL_SHEET_NAME': originalSheetName,
+        'CONFIG': JSON.stringify({
+          categoryCol: config.categoryCol,
+          startRow: config.startRow
+        })
+      };
+      
+      Logger.log("Storing properties: " + JSON.stringify(properties));
+      userProperties.setProperties(properties);
+      
+      // Create a trigger to check status every minute
+      var trigger = ScriptApp.newTrigger('checkOperationStatus')
+        .timeBased()
+        .everyMinutes(1)
+        .create();
+      
+      var triggerId = trigger.getUniqueId();
+      Logger.log("Created trigger with ID: " + triggerId);
+      userProperties.setProperty('TRIGGER_ID', triggerId);
+      
+      // Verify properties were stored
+      var storedProps = userProperties.getProperties();
+      Logger.log("Stored properties: " + JSON.stringify(storedProps));
+      
+      ui.alert('Classification has started! The sheet will update automatically when complete.\n\nYou can close this window.');
+      return;
+    }
+  } catch (error) {
+    Logger.log("Classification error: " + error.toString());
+    updateStatus("Error: " + error.toString());
+    ui.alert('Error: ' + error.toString());
+  }
+}
+
+function checkOperationStatus() {
+  var userProperties = PropertiesService.getUserProperties();
+  var predictionId = userProperties.getProperty('PREDICTION_ID');
+  var triggerId = userProperties.getProperty('TRIGGER_ID');
+  var operationType = userProperties.getProperty('OPERATION_TYPE');
+  var startTime = parseInt(userProperties.getProperty('START_TIME'));
+  var originalSheetName = userProperties.getProperty('ORIGINAL_SHEET_NAME');
+  var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
+  
+  Logger.log("Starting checkOperationStatus");
+  Logger.log("PredictionId: " + predictionId);
+  Logger.log("TriggerId: " + triggerId);
+  Logger.log("OperationType: " + operationType);
+  Logger.log("Original Sheet Name: " + originalSheetName);
+  Logger.log("Config: " + JSON.stringify(config));
+  
+  if (!predictionId || !triggerId) {
+    Logger.log("Missing predictionId or triggerId - cleaning up");
+    // Clean up if no prediction ID or trigger ID
+    if (triggerId) {
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+    }
+    return;
+  }
+  
+  try {
+    // Check if we've been running for more than 30 minutes
+    if (new Date().getTime() - startTime > 30 * 60 * 1000) {
+      updateStatus(`Error: ${operationType} timed out after 30 minutes`);
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    var serviceConfig = getServiceConfig();
+    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, {
+      headers: { 'X-API-Key': serviceConfig.apiKey },
+      muteHttpExceptions: true
+    });
+    
+    var result = JSON.parse(response.getContentText());
+    Logger.log("Status response: " + JSON.stringify(result));
+    
+    if (result.status === "completed") {
+      if (operationType === "classify" && result.result && config) {
+        try {
+          // Get the original sheet by name
+          var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+          var sheet = spreadsheet.getSheetByName(originalSheetName);
+          if (!sheet) {
+            throw new Error("Could not find original sheet: " + originalSheetName);
+          }
+          Logger.log("Retrieved original sheet: " + sheet.getName());
+          updateStatus("Processing results for sheet: " + sheet.getName());
+
+          // Get webhook results from the result field
+          var webhookResults = [];
+          if (Array.isArray(result.result)) {
+            webhookResults = result.result;
+          } else if (typeof result.result === 'object' && Array.isArray(result.result.results)) {
+            webhookResults = result.result.results;
+          }
+          
+          Logger.log("Webhook results length: " + webhookResults.length);
+          Logger.log("First webhook result: " + JSON.stringify(webhookResults[0]));
+          
+          if (webhookResults.length === 0) {
+            updateStatus("Error: No classification results found");
+            throw new Error("No classification results found in webhook response");
+          }
+          
+          // Write categories back to sheet
+          updateStatus("Writing " + webhookResults.length + " categories to sheet...");
+          var categories = webhookResults.map(r => [r.predicted_category]);
+          Logger.log("Categories to write: " + JSON.stringify(categories.slice(0, 5)));
+          
+          // Calculate the range - allow starting from row 1
+          var startRow = parseInt(config.startRow);
+          if (isNaN(startRow)) {
+            startRow = 1; // Default to 1 if parsing fails
+          }
+          
+          // Calculate end row based on number of results
+          var endRow = startRow + categories.length - 1;
+          Logger.log("Writing to rows: " + startRow + " to " + endRow);
+          
+          // Write categories
+          try {
+            var categoryRangeA1 = config.categoryCol + startRow + ":" + config.categoryCol + endRow;
+            Logger.log("Category range A1 notation: " + categoryRangeA1);
+            updateStatus("Writing categories to range: " + categoryRangeA1);
+            
+            var categoryRange = sheet.getRange(categoryRangeA1);
+            Logger.log("Got range object successfully");
+            
+            // Log the current values in the range before writing
+            var currentValues = categoryRange.getValues();
+            Logger.log("Current values in range: " + JSON.stringify(currentValues.slice(0, 5)));
+            
+            categoryRange.setValues(categories);
+            Logger.log("Categories written successfully");
+            
+            // Verify the write
+            var writtenValues = sheet.getRange(categoryRangeA1).getValues();
+            Logger.log("Verification - written values: " + JSON.stringify(writtenValues.slice(0, 5)));
+            updateStatus("Categories written successfully to column " + config.categoryCol);
+          } catch (categoryError) {
+            Logger.log("Error writing categories: " + categoryError);
+            Logger.log("Error stack: " + categoryError.stack);
+            updateStatus("Error writing categories: " + categoryError.toString());
+            throw new Error("Failed to write categories: " + categoryError.toString());
+          }
+          
+          // Write confidence scores
+          try {
+            var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
+            var confidences = webhookResults.map(r => [r.similarity_score]);
+            var confidenceRangeA1 = confidenceCol + startRow + ":" + confidenceCol + endRow;
+            Logger.log("Confidence range A1 notation: " + confidenceRangeA1);
+            updateStatus("Writing confidence scores to range: " + confidenceRangeA1);
+            
+            var confidenceRange = sheet.getRange(confidenceRangeA1);
+            Logger.log("Got confidence range object successfully");
+            
+            // Log current values in confidence range
+            var currentConfidences = confidenceRange.getValues();
+            Logger.log("Current confidence values: " + JSON.stringify(currentConfidences.slice(0, 5)));
+            
+            confidenceRange.setValues(confidences)
+              .setNumberFormat("0.00%");  // Format as percentage
+            Logger.log("Confidence scores written successfully");
+            
+            // Verify the write
+            var writtenConfidences = sheet.getRange(confidenceRangeA1).getValues();
+            Logger.log("Verification - written confidences: " + JSON.stringify(writtenConfidences.slice(0, 5)));
+            updateStatus("Confidence scores written successfully to column " + confidenceCol);
+          } catch (confidenceError) {
+            Logger.log("Error writing confidence scores: " + confidenceError);
+            Logger.log("Error stack: " + confidenceError.stack);
+            updateStatus("Error writing confidence scores: " + confidenceError.toString());
+            throw new Error("Failed to write confidence scores: " + confidenceError.toString());
+          }
+          
+          updateStatus("Classification completed successfully!");
+          
+        } catch (writeError) {
+          Logger.log("Error writing to sheet: " + writeError);
+          Logger.log("Error stack: " + writeError.stack);
+          updateStatus("Error writing results: " + writeError.toString());
+          throw writeError;
+        }
+      }
+      
+      // Clean up
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+      userProperties.deleteAllProperties();
+      return;
+      
+    } else if (result.status === "failed") {
+      updateStatus(`Error: ${operationType} failed - ` + (result.error || "Unknown error"));
+      // Clean up
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    // Still processing, update status
+    updateStatus(operationType + " in progress... " + (result.message || ""));
+    
+  } catch (error) {
+    Logger.log(`Error checking ${operationType} status: ` + error);
+    Logger.log("Error details: " + error.stack);
+    // Clean up on error
+    if (triggerId) {
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getUniqueId() === triggerId) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          break;
+        }
+      }
+    }
+    userProperties.deleteAllProperties();
+    updateStatus("Error: " + error.toString());
+  }
+}
+
+// Helper function to convert column number to letter
+function columnToLetter(column) {
+  var temp, letter = '';
+  while (column > 0) {
+    temp = (column - 1) % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    column = (column - temp - 1) / 26;
+  }
+  return letter;
+}
+
+function trainModel(config) {
+  var ui = SpreadsheetApp.getUi();
+  
+  try {
+    // Validate config object
+    if (!config) {
+      throw new Error('Configuration object is missing');
+    }
+
+    // Validate required parameters
+    if (!config.narrativeCol || !config.categoryCol || !config.startRow) {
+      throw new Error('Missing required configuration parameters. Please ensure all fields are filled out.');
+    }
+
     updateStatus("Starting training...");
-    var config = getServiceConfig();
+    var serviceConfig = getServiceConfig();
     var sheet = SpreadsheetApp.getActiveSheet();
     var lastRow = sheet.getLastRow();
     
-    // Get column indices
-    var headers = sheet.getRange("A1:Z1").getValues()[0];
-    var narrativeCol = headers.indexOf("Narrative") + 1;
-    var categoryCol = headers.indexOf("Category") + 1;
-    
-    if (narrativeCol === 0 || categoryCol === 0) {
-      throw new Error("Could not find required columns. Please ensure your sheet has 'Narrative' and 'Category' columns.");
-    }
-    
-    // Convert column numbers to letters for range
-    var narrativeColLetter = columnToLetter(narrativeCol);
-    var categoryColLetter = columnToLetter(categoryCol);
-    
-    // Get data from the correct columns
-    var data = sheet.getRange(narrativeColLetter + "2:" + categoryColLetter + lastRow).getValues();
+    // Get data from the selected columns
+    var narrativeRange = sheet.getRange(config.narrativeCol + config.startRow + ":" + config.narrativeCol + lastRow);
+    var categoryRange = sheet.getRange(config.categoryCol + config.startRow + ":" + config.categoryCol + lastRow);
+    var narratives = narrativeRange.getValues();
+    var categories = categoryRange.getValues();
     
     // Filter out empty rows and prepare training data
-    var transactions = data
-      .filter(row => row[0] && row[1]) // Narrative and Category must have values
-      .map(row => ({
-        Narrative: row[0],
-        Category: row[1]
-      }));
+    var transactions = [];
+    for (var i = 0; i < narratives.length; i++) {
+      if (narratives[i][0] && categories[i][0]) {
+        transactions.push({
+          Narrative: narratives[i][0],
+          Category: categories[i][0]
+        });
+      }
+    }
     
     Logger.log("Training data sample:");
     Logger.log(JSON.stringify(transactions.slice(0, 3)));
@@ -266,13 +952,13 @@ function trainModel() {
       method: 'post',
       contentType: 'application/json',
       headers: {
-        'X-API-Key': config.apiKey
+        'X-API-Key': serviceConfig.apiKey
       },
       payload: JSON.stringify({ transactions: transactions }),
       muteHttpExceptions: true
     };
     
-    var response = UrlFetchApp.fetch(config.serviceUrl + '/train', options);
+    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/train', options);
     var result = JSON.parse(response.getContentText());
     
     if (response.getResponseCode() !== 200) {
@@ -295,7 +981,8 @@ function trainModel() {
       userProperties.setProperties({
         'PREDICTION_ID': result.prediction_id,
         'TRIGGER_ID': trigger.getUniqueId(),
-        'START_TIME': new Date().getTime().toString()
+        'START_TIME': new Date().getTime().toString(),
+        'TRAINING_SIZE': transactions.length.toString()
       });
       
       ui.alert('Training has started! The sheet will update automatically when training is complete.\n\nYou can close this window.');
@@ -306,252 +993,8 @@ function trainModel() {
     ui.alert('Training completed successfully!\n\nProcessed: ' + transactions.length + ' transactions');
     
   } catch (error) {
+    Logger.log("Training error: " + error.toString());
     updateStatus("Error: " + error.toString());
     ui.alert('Error: ' + error.toString());
-  }
-}
-
-// Helper function to convert column number to letter
-function columnToLetter(column) {
-  var temp, letter = '';
-  while (column > 0) {
-    temp = (column - 1) % 26;
-    letter = String.fromCharCode(temp + 65) + letter;
-    column = (column - temp - 1) / 26;
-  }
-  return letter;
-}
-
-function checkTrainingStatus() {
-  try {
-    var userProperties = PropertiesService.getUserProperties();
-    var predictionId = userProperties.getProperty('PREDICTION_ID');
-    var triggerId = userProperties.getProperty('TRIGGER_ID');
-    var startTime = parseInt(userProperties.getProperty('START_TIME'));
-    
-    if (!predictionId || !triggerId) {
-      // Clean up if no prediction ID or trigger ID
-      if (triggerId) {
-        ScriptApp.getProjectTrigger(triggerId).delete();
-      }
-      return;
-    }
-    
-    // Check if we've been running for more than 30 minutes
-    if (new Date().getTime() - startTime > 30 * 60 * 1000) {
-      updateStatus("Error: Training timed out after 30 minutes");
-      ScriptApp.getProjectTrigger(triggerId).delete();
-      userProperties.deleteAllProperties();
-      return;
-    }
-    
-    var config = getServiceConfig();
-    var response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, {
-      headers: { 'X-API-Key': config.apiKey },
-      muteHttpExceptions: true
-    });
-    
-    var result = JSON.parse(response.getContentText());
-    
-    if (result.status === "completed") {
-      updateStatus("Training completed successfully!");
-      // Clean up
-      ScriptApp.getProjectTrigger(triggerId).delete();
-      userProperties.deleteAllProperties();
-      return;
-    } else if (result.status === "failed") {
-      updateStatus("Error: Training failed - " + (result.error || "Unknown error"));
-      // Clean up
-      ScriptApp.getProjectTrigger(triggerId).delete();
-      userProperties.deleteAllProperties();
-      return;
-    }
-    
-    // Still processing, update status
-    updateStatus("Training in progress... " + (result.message || ""));
-    
-  } catch (error) {
-    Logger.log("Error checking training status: " + error);
-    // Clean up on error
-    var triggerId = userProperties.getProperty('TRIGGER_ID');
-    if (triggerId) {
-      ScriptApp.getProjectTrigger(triggerId).delete();
-    }
-    userProperties.deleteAllProperties();
-    updateStatus("Error: " + error.toString());
-  }
-}
-
-// Main classification function
-function classifyTransactions(config) {
-  var sheet = SpreadsheetApp.getActiveSheet();
-  var ui = SpreadsheetApp.getUi();
-  
-  try {
-    updateStatus("Starting classification...");
-    var serviceConfig = getServiceConfig();
-    
-    // Get all descriptions from the specified column
-    var lastRow = sheet.getLastRow();
-    var descriptionRange = sheet.getRange(config.descriptionCol + config.startRow + ":" + config.descriptionCol + lastRow);
-    var descriptions = descriptionRange.getValues();
-    
-    // Filter out empty descriptions
-    var transactions = descriptions
-      .filter(row => row[0] && row[0].toString().trim() !== '')
-      .map(row => ({
-        Narrative: row[0]
-      }));
-    
-    if (transactions.length === 0) {
-      updateStatus("Error: No transactions found");
-      ui.alert('No transactions found to classify');
-      return;
-    }
-    
-    updateStatus("Processing " + transactions.length + " transactions...");
-    
-    // Call classification service
-    var options = {
-      method: 'post',
-      contentType: 'application/json',
-      headers: {
-        'X-API-Key': serviceConfig.apiKey
-      },
-      payload: JSON.stringify({ transactions: transactions }),
-      muteHttpExceptions: true
-    };
-    
-    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/classify', options);
-    var result = JSON.parse(response.getContentText());
-    
-    if (response.getResponseCode() !== 200) {
-      updateStatus("Error: Classification failed");
-      throw new Error('Classification service error: ' + response.getContentText());
-    }
-    
-    // Check if we got a prediction ID
-    if (result.prediction_id) {
-      updateStatus("Classification in progress...");
-      
-      // Store configuration for status checking
-      var userProperties = PropertiesService.getUserProperties();
-      userProperties.setProperties({
-        'PREDICTION_ID': result.prediction_id,
-        'OPERATION_TYPE': 'classify',
-        'START_TIME': new Date().getTime().toString(),
-        'CONFIG': JSON.stringify({
-          categoryCol: config.categoryCol,
-          startRow: config.startRow
-        })
-      });
-      
-      // Create a trigger to check status every minute
-      var trigger = ScriptApp.newTrigger('checkOperationStatus')
-        .timeBased()
-        .everyMinutes(1)
-        .create();
-      
-      userProperties.setProperty('TRIGGER_ID', trigger.getUniqueId());
-      
-      ui.alert('Classification has started! The sheet will update automatically when complete.\n\nYou can close this window.');
-      return;
-    }
-  } catch (error) {
-    updateStatus("Error: " + error.toString());
-    ui.alert('Error: ' + error.toString());
-  }
-}
-
-function checkOperationStatus() {
-  var userProperties = PropertiesService.getUserProperties();
-  var predictionId = userProperties.getProperty('PREDICTION_ID');
-  var triggerId = userProperties.getProperty('TRIGGER_ID');
-  var operationType = userProperties.getProperty('OPERATION_TYPE');
-  var startTime = parseInt(userProperties.getProperty('START_TIME'));
-  var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
-  
-  if (!predictionId || !triggerId) {
-    // Clean up if no prediction ID or trigger ID
-    if (triggerId) {
-      ScriptApp.getProjectTrigger(triggerId).delete();
-    }
-    return;
-  }
-  
-  try {
-    // Check if we've been running for more than 30 minutes
-    if (new Date().getTime() - startTime > 30 * 60 * 1000) {
-      updateStatus(`Error: ${operationType} timed out after 30 minutes`);
-      ScriptApp.getProjectTrigger(triggerId).delete();
-      userProperties.deleteAllProperties();
-      return;
-    }
-    
-    var serviceConfig = getServiceConfig();
-    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, {
-      headers: { 'X-API-Key': serviceConfig.apiKey },
-      muteHttpExceptions: true
-    });
-    
-    var result = JSON.parse(response.getContentText());
-    Logger.log("Status response: " + JSON.stringify(result));
-    
-    if (result.status === "completed") {
-      if (operationType === "classify" && result.result && config) {
-        // Process classification results
-        var sheet = SpreadsheetApp.getActiveSheet();
-        var results = result.result;
-        
-        Logger.log("Processing results: " + JSON.stringify(results));
-        
-        // Write categories back to sheet
-        updateStatus("Writing results to sheet...");
-        var categories = results.map(r => [r.predicted_category]);
-        Logger.log("Categories to write: " + JSON.stringify(categories));
-        
-        var categoryRange = sheet.getRange(config.categoryCol + config.startRow + ":" + config.categoryCol + (parseInt(config.startRow) + categories.length - 1));
-        categoryRange.setValues(categories);
-        
-        // Add confidence scores in next column
-        var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
-        var confidences = results.map(r => [r.similarity_score]);
-        var confidenceRange = sheet.getRange(confidenceCol + config.startRow + ":" + confidenceCol + (parseInt(config.startRow) + confidences.length - 1));
-        confidenceRange.setValues(confidences)
-          .setNumberFormat("0.00%");  // Format as percentage
-        
-        // Add headers if needed
-        if (config.startRow === "2") {
-          sheet.getRange(config.categoryCol + "1").setValue("Category");
-          sheet.getRange(confidenceCol + "1").setValue("Confidence");
-        }
-        
-        updateStatus("Classification completed successfully!");
-      }
-      
-      // Clean up
-      ScriptApp.getProjectTrigger(triggerId).delete();
-      userProperties.deleteAllProperties();
-      return;
-      
-    } else if (result.status === "failed") {
-      updateStatus(`Error: ${operationType} failed - ` + (result.error || "Unknown error"));
-      // Clean up
-      ScriptApp.getProjectTrigger(triggerId).delete();
-      userProperties.deleteAllProperties();
-      return;
-    }
-    
-    // Still processing, update status
-    updateStatus(operationType + " in progress... " + (result.message || ""));
-    
-  } catch (error) {
-    Logger.log(`Error checking ${operationType} status: ` + error);
-    // Clean up on error
-    if (triggerId) {
-      ScriptApp.getProjectTrigger(triggerId).delete();
-    }
-    userProperties.deleteAllProperties();
-    updateStatus("Error: " + error.toString());
   }
 } 
