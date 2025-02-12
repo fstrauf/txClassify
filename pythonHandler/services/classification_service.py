@@ -67,40 +67,69 @@ class ClassificationService:
             if len(valid_data) == 0:
                 raise ValueError("No valid training data after cleaning")
 
-            # Process in chunks to avoid memory issues
-            CHUNK_SIZE = 500
+            # Process in smaller chunks to avoid memory issues
+            CHUNK_SIZE = 250  # Reduced chunk size
             chunks = [valid_data[i:i + CHUNK_SIZE] for i in range(0, len(valid_data), CHUNK_SIZE)]
             
             all_predictions = []
             for i, chunk in enumerate(chunks):
                 logger.info(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk)} records)")
                 
-                # Store chunk data
-                chunk_key = f"temp_training_{sheet_id}_chunk_{i}_{int(time.time())}"
-                training_records = chunk.to_dict('records')
-                self.store_temp_training_data(training_records, chunk_key)
-                
-                # Get embeddings for descriptions
-                descriptions = chunk['Narrative'].tolist()
-                
-                # Run prediction with webhook for this chunk
-                prediction = self.run_prediction(
-                    "training",
-                    sheet_id,
-                    user_id,
-                    descriptions,
-                    webhook_params={
-                        'training_key': chunk_key,
-                        'chunk_index': str(i),
-                        'total_chunks': str(len(chunks))
-                    }
-                )
-                all_predictions.append(prediction)
-                
-                # Add a small delay between chunks to avoid rate limiting
-                if i < len(chunks) - 1:
-                    time.sleep(2)
+                try:
+                    # Clear any previous temporary data for this chunk
+                    chunk_key = f"temp_training_{sheet_id}_chunk_{i}_{int(time.time())}"
+                    try:
+                        self.cleanup_temp_training_data(chunk_key)
+                    except Exception:
+                        pass
+                    
+                    # Convert chunk to records and free memory
+                    training_records = chunk.to_dict('records')
+                    chunk = None  # Free memory
+                    
+                    # Store chunk data with retries
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            self.store_temp_training_data(training_records, chunk_key)
+                            break
+                        except Exception as e:
+                            if attempt == max_retries - 1:
+                                raise
+                            logger.warning(f"Retry {attempt + 1} storing temp data: {str(e)}")
+                            time.sleep(2 ** attempt)  # Exponential backoff
+                    
+                    # Get descriptions and free memory
+                    descriptions = [record['Narrative'] for record in training_records]
+                    training_records = None  # Free memory
+                    
+                    # Run prediction with webhook
+                    prediction = self.run_prediction(
+                        "training",
+                        sheet_id,
+                        user_id,
+                        descriptions,
+                        webhook_params={
+                            'training_key': chunk_key,
+                            'chunk_index': str(i),
+                            'total_chunks': str(len(chunks))
+                        }
+                    )
+                    all_predictions.append(prediction)
+                    
+                    # Add delay between chunks with exponential backoff
+                    if i < len(chunks) - 1:
+                        delay = min(5 * (i + 1), 30)  # Max 30 seconds delay
+                        time.sleep(delay)
+                        
+                except Exception as chunk_error:
+                    logger.error(f"Error processing chunk {i+1}: {str(chunk_error)}")
+                    # Continue with next chunk instead of failing completely
+                    continue
             
+            if not all_predictions:
+                raise ValueError("No chunks were successfully processed")
+                
             logger.info("All training chunks sent successfully")
             return all_predictions[-1]  # Return the last prediction ID for status checking
             
@@ -681,8 +710,9 @@ class ClassificationService:
         try:
             # Create temporary file
             with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w') as temp_file:
-                # Write JSON data
-                json.dump(training_data, temp_file, ensure_ascii=False)
+                # Write JSON data with explicit encoding
+                json.dump(training_data, temp_file, ensure_ascii=False, default=str)
+                temp_file.flush()
                 temp_file_path = temp_file.name
             
             try:
@@ -704,7 +734,7 @@ class ClassificationService:
                         if attempt == max_retries - 1:
                             raise
                         logger.warning(f"Upload attempt {attempt + 1} failed: {str(upload_error)}")
-                        time.sleep(retry_delay)
+                        time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
                 
             finally:
                 # Clean up temporary file
@@ -719,6 +749,7 @@ class ClassificationService:
 
     def get_temp_training_data(self, training_key: str) -> list:
         """Retrieve temporary training data from Supabase Storage."""
+        temp_file_path = None
         try:
             # Download to temporary file with retries
             max_retries = 3
@@ -734,26 +765,38 @@ class ClassificationService:
                         temp_file.write(response)
                         temp_file.flush()
                         temp_file_path = temp_file.name
+                    
+                    # Load the data with explicit encoding
+                    with open(temp_file_path, 'r', encoding='utf-8') as f:
+                        training_data = json.load(f)
+                    
+                    return training_data
+                    
+                except json.JSONDecodeError as json_error:
+                    logger.error(f"JSON decode error: {str(json_error)}")
+                    last_error = json_error
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
                         
-                        # Load the data
-                        with open(temp_file_path, 'r') as f:
-                            training_data = json.load(f)
-                        
-                        # Clean up temporary file
-                        os.unlink(temp_file_path)
-                        
-                        return training_data
                 except Exception as download_error:
                     last_error = download_error
                     if attempt < max_retries - 1:
                         logger.warning(f"Download attempt {attempt + 1} failed: {str(download_error)}")
-                        time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-                    
+                        time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+            
             raise Exception(f"Failed to retrieve training data after {max_retries} attempts: {str(last_error)}")
-                    
+            
         except Exception as e:
             logger.error(f"Error retrieving temp training data: {e}")
             raise
+            
+        finally:
+            # Clean up temporary file
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception:
+                    pass
 
     def cleanup_temp_training_data(self, training_key: str, sheet_id: str = None, chunk_index: str = None, total_chunks: str = None) -> None:
         """Clean up temporary training data from Supabase Storage."""
