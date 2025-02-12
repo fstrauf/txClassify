@@ -24,6 +24,16 @@ class ClassificationService:
     def train(self, training_data: pd.DataFrame, sheet_id: str, user_id: str) -> None:
         """Train the classifier with descriptions and their categories."""
         try:
+            # First, check if there's an existing training session
+            try:
+                tracking_info = self._get_training_state(sheet_id)
+                if tracking_info:
+                    logger.info("Found existing training session, attempting to resume")
+                    return self._resume_training(tracking_info)
+            except Exception as e:
+                logger.warning(f"Error checking training state: {e}")
+                # Continue with new training session
+            
             if training_data.empty:
                 raise ValueError("Training data is empty")
                 
@@ -36,7 +46,91 @@ class ClassificationService:
             if missing_columns:
                 raise ValueError(f"Missing required columns: {missing_columns}")
             
-            # Clean and preprocess data
+            # Clean and preprocess data with progress tracking
+            try:
+                valid_data = self._preprocess_training_data(training_data)
+            except Exception as e:
+                logger.error(f"Error preprocessing training data: {e}")
+                raise ValueError(f"Data preprocessing failed: {str(e)}")
+            
+            if len(valid_data) == 0:
+                raise ValueError("No valid training data after cleaning")
+
+            # Process in chunks with state management
+            CHUNK_SIZE = 500
+            chunks = [valid_data[i:i + CHUNK_SIZE] for i in range(0, len(valid_data), CHUNK_SIZE)]
+            
+            # Initialize training state
+            training_state = {
+                'sheet_id': sheet_id,
+                'user_id': user_id,
+                'total_chunks': len(chunks),
+                'current_chunk': 0,
+                'chunk_size': CHUNK_SIZE,
+                'processed_chunks': [],
+                'failed_chunks': [],
+                'start_time': datetime.now().isoformat(),
+                'status': 'in_progress'
+            }
+            
+            # Save initial state
+            self._save_training_state(training_state)
+            
+            # Process first chunk with retries
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    chunk = chunks[0]
+                    logger.info(f"Processing chunk 1/{len(chunks)} ({len(chunk)} records)")
+                    
+                    # Store chunk data with unique timestamp and retry mechanism
+                    chunk_key = f"temp_training_{sheet_id}_chunk_0_{int(time.time())}"
+                    training_records = chunk.to_dict('records')
+                    
+                    self._store_chunk_with_retry(training_records, chunk_key)
+                    
+                    # Get embeddings for descriptions
+                    descriptions = chunk['Narrative'].tolist()
+                    
+                    # Run prediction with webhook for this chunk
+                    prediction = self.run_prediction(
+                        "training",
+                        sheet_id,
+                        user_id,
+                        descriptions,
+                        webhook_params={
+                            'training_key': chunk_key,
+                            'chunk_index': '0',
+                            'total_chunks': str(len(chunks))
+                        }
+                    )
+                    
+                    # Update state with successful first chunk
+                    training_state['current_chunk'] = 1
+                    training_state['last_processed_chunk_key'] = chunk_key
+                    training_state['last_prediction_id'] = prediction.id
+                    training_state['remaining_chunks'] = valid_data[CHUNK_SIZE:].to_dict('records')
+                    self._save_training_state(training_state)
+                    
+                    return prediction
+                    
+                except Exception as e:
+                    logger.error(f"Error processing first chunk (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                    if attempt == max_retries - 1:
+                        # Update state with failure
+                        training_state['status'] = 'failed'
+                        training_state['error'] = str(e)
+                        self._save_training_state(training_state)
+                        raise
+                    time.sleep(2 ** attempt)  # Exponential backoff
+            
+        except Exception as e:
+            logger.error(f"Error in training: {str(e)}")
+            raise
+
+    def _preprocess_training_data(self, training_data: pd.DataFrame) -> pd.DataFrame:
+        """Preprocess training data with robust error handling."""
+        try:
             # 1. Convert to string and strip whitespace
             training_data['Narrative'] = training_data['Narrative'].astype(str).str.strip()
             training_data['Category'] = training_data['Category'].astype(str).str.strip()
@@ -48,64 +142,171 @@ class ClassificationService:
                 (valid_data['Category'].str.len() > 0)
             ]
             
-            # 3. Clean transaction descriptions
-            valid_data['Narrative'] = valid_data['Narrative'].apply(self._clean_description)
+            # 3. Clean transaction descriptions with progress tracking
+            cleaned_descriptions = []
+            total = len(valid_data)
+            for idx, desc in enumerate(valid_data['Narrative']):
+                try:
+                    cleaned = self._clean_description(desc)
+                    cleaned_descriptions.append(cleaned)
+                    if (idx + 1) % 1000 == 0:
+                        logger.info(f"Cleaned {idx + 1}/{total} descriptions")
+                except Exception as e:
+                    logger.warning(f"Error cleaning description '{desc}': {e}")
+                    cleaned_descriptions.append(desc)  # Use original if cleaning fails
             
-            # 4. Remove duplicates, keeping the most recent entry for each unique description
+            valid_data['Narrative'] = cleaned_descriptions
+            
+            # 4. Remove duplicates, keeping the most recent entry
             valid_data = valid_data.drop_duplicates(subset=['Narrative'], keep='last')
             
-            # 5. Group similar transactions
-            valid_data['Narrative_clean'] = valid_data['Narrative'].apply(self._normalize_description)
-            valid_data = valid_data.drop_duplicates(subset=['Narrative_clean'], keep='last')
-            valid_data = valid_data.drop('Narrative_clean', axis=1)
+            # 5. Group similar transactions with error handling
+            try:
+                valid_data['Narrative_clean'] = valid_data['Narrative'].apply(self._normalize_description)
+                valid_data = valid_data.drop_duplicates(subset=['Narrative_clean'], keep='last')
+                valid_data = valid_data.drop('Narrative_clean', axis=1)
+            except Exception as e:
+                logger.warning(f"Error in normalization step: {e}")
+                # Continue without normalization if it fails
             
             # Log cleaning results
             logger.info(f"After cleaning:")
-            logger.info(f"- Removed {len(training_data) - len(valid_data)} duplicate or invalid entries")
-            logger.info(f"- Final training size: {len(valid_data)} transactions")
+            logger.info(f"- Initial size: {len(training_data)} transactions")
+            logger.info(f"- Final size: {len(valid_data)} transactions")
+            logger.info(f"- Removed {len(training_data) - len(valid_data)} entries")
             
-            if len(valid_data) == 0:
-                raise ValueError("No valid training data after cleaning")
-
-            # Process in chunks to avoid memory issues
-            CHUNK_SIZE = 500
-            chunks = [valid_data[i:i + CHUNK_SIZE] for i in range(0, len(valid_data), CHUNK_SIZE)]
-            
-            all_predictions = []
-            for i, chunk in enumerate(chunks):
-                logger.info(f"Processing chunk {i+1}/{len(chunks)} ({len(chunk)} records)")
-                
-                # Store chunk data
-                chunk_key = f"temp_training_{sheet_id}_chunk_{i}_{int(time.time())}"
-                training_records = chunk.to_dict('records')
-                self.store_temp_training_data(training_records, chunk_key)
-                
-                # Get embeddings for descriptions
-                descriptions = chunk['Narrative'].tolist()
-                
-                # Run prediction with webhook for this chunk
-                prediction = self.run_prediction(
-                    "training",
-                    sheet_id,
-                    user_id,
-                    descriptions,
-                    webhook_params={
-                        'training_key': chunk_key,
-                        'chunk_index': str(i),
-                        'total_chunks': str(len(chunks))
-                    }
-                )
-                all_predictions.append(prediction)
-                
-                # Add a small delay between chunks to avoid rate limiting
-                if i < len(chunks) - 1:
-                    time.sleep(2)
-            
-            logger.info("All training chunks sent successfully")
-            return all_predictions[-1]  # Return the last prediction ID for status checking
+            return valid_data
             
         except Exception as e:
-            logger.error(f"Error in training: {str(e)}")
+            logger.error(f"Error in preprocessing: {str(e)}")
+            raise
+
+    def _store_chunk_with_retry(self, training_records: list, chunk_key: str, max_retries: int = 3) -> None:
+        """Store chunk data with retries and validation."""
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                # Store the data
+                stored_key = self.store_temp_training_data(training_records, chunk_key)
+                
+                # Verify the data was stored correctly
+                retrieved_data = self.get_temp_training_data(stored_key)
+                if len(retrieved_data) != len(training_records):
+                    raise ValueError("Data verification failed: size mismatch")
+                
+                logger.info(f"Successfully stored and verified chunk data (attempt {attempt + 1})")
+                return
+                
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Chunk storage attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+        
+        raise Exception(f"Failed to store chunk after {max_retries} attempts: {str(last_error)}")
+
+    def _save_training_state(self, state: dict) -> None:
+        """Save training state to Supabase with retries."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                state_key = f"{state['sheet_id']}_training_state.json"
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                    json.dump(state, f)
+                    temp_path = f.name
+                
+                with open(temp_path, 'rb') as f:
+                    self.supabase.storage.from_(self.bucket_name).upload(
+                        state_key,
+                        f,
+                        file_options={"x-upsert": "true"}
+                    )
+                
+                os.unlink(temp_path)
+                return
+                
+            except Exception as e:
+                logger.error(f"Error saving training state (attempt {attempt + 1}): {str(e)}")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
+
+    def _get_training_state(self, sheet_id: str) -> dict:
+        """Get training state from Supabase with retries."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                state_key = f"{sheet_id}_training_state.json"
+                with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+                    response = self.supabase.storage.from_(self.bucket_name).download(state_key)
+                    temp_file.write(response)
+                    temp_file.flush()
+                    
+                    with open(temp_file.name, 'r') as f:
+                        state = json.load(f)
+                    
+                    os.unlink(temp_file.name)
+                    return state
+                    
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep(2 ** attempt)
+
+    def _resume_training(self, state: dict) -> Any:
+        """Resume training from saved state."""
+        try:
+            logger.info(f"Resuming training from chunk {state['current_chunk']}/{state['total_chunks']}")
+            
+            # Verify the last chunk was processed correctly
+            if state.get('last_processed_chunk_key'):
+                try:
+                    self.get_temp_training_data(state['last_processed_chunk_key'])
+                except Exception:
+                    logger.warning("Last chunk data not found, rolling back one chunk")
+                    state['current_chunk'] -= 1
+            
+            # Process next chunk
+            if state['current_chunk'] < state['total_chunks']:
+                remaining_data = pd.DataFrame(state['remaining_chunks'])
+                next_chunk = remaining_data[:state['chunk_size']]
+                
+                # Update state
+                state['remaining_chunks'] = remaining_data[state['chunk_size']:].to_dict('records')
+                
+                # Process chunk
+                chunk_key = f"temp_training_{state['sheet_id']}_chunk_{state['current_chunk']}_{int(time.time())}"
+                training_records = next_chunk.to_dict('records')
+                
+                self._store_chunk_with_retry(training_records, chunk_key)
+                
+                # Run prediction
+                prediction = self.run_prediction(
+                    "training",
+                    state['sheet_id'],
+                    state['user_id'],
+                    next_chunk['Narrative'].tolist(),
+                    webhook_params={
+                        'training_key': chunk_key,
+                        'chunk_index': str(state['current_chunk']),
+                        'total_chunks': str(state['total_chunks'])
+                    }
+                )
+                
+                # Update state
+                state['current_chunk'] += 1
+                state['last_processed_chunk_key'] = chunk_key
+                state['last_prediction_id'] = prediction.id
+                self._save_training_state(state)
+                
+                return prediction
+                
+            else:
+                logger.info("All chunks already processed")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error resuming training: {str(e)}")
             raise
 
     def _clean_description(self, text: str) -> str:
@@ -364,15 +565,83 @@ class ClassificationService:
                     # Store embeddings for this chunk
                     self.store_embeddings(new_embeddings, training_data, sheet_id)
                     
-                    # Clean up temporary data, but only if all chunks are processed
-                    self.cleanup_temp_training_data(
-                        chunk_params['training_key'],
-                        sheet_id,
-                        chunk_params['chunk_index'],
-                        chunk_params['total_chunks']
-                    )
+                    # Clean up temporary data for this chunk
+                    self.cleanup_temp_training_data(chunk_params['training_key'])
                     
-                    # Return early for training chunks
+                    # Process next chunk if available
+                    try:
+                        # Load chunk tracking information
+                        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+                            response = self.supabase.storage.from_(self.bucket_name).download(
+                                f"{sheet_id}_chunk_tracking.json"
+                            )
+                            temp_file.write(response)
+                            temp_file.flush()
+                            
+                            with open(temp_file.name, 'r') as f:
+                                tracking_info = json.load(f)
+                            
+                            os.unlink(temp_file.name)
+                            
+                            current_chunk = tracking_info['current_chunk']
+                            total_chunks = tracking_info['total_chunks']
+                            
+                            if current_chunk < total_chunks:
+                                # Process next chunk
+                                chunk_size = tracking_info['chunk_size']
+                                remaining_data = pd.DataFrame(tracking_info['remaining_chunks'])
+                                next_chunk = remaining_data[:chunk_size]
+                                remaining_chunks = remaining_data[chunk_size:].to_dict('records')
+                                
+                                # Update tracking information
+                                tracking_info.update({
+                                    'current_chunk': current_chunk + 1,
+                                    'remaining_chunks': remaining_chunks
+                                })
+                                
+                                # Store updated tracking information
+                                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                                    json.dump(tracking_info, f)
+                                    temp_path = f.name
+                                    
+                                with open(temp_path, 'rb') as f:
+                                    self.supabase.storage.from_(self.bucket_name).upload(
+                                        f"{sheet_id}_chunk_tracking.json",
+                                        f,
+                                        file_options={"x-upsert": "true"}
+                                    )
+                                os.unlink(temp_path)
+                                
+                                # Process next chunk
+                                logger.info(f"Processing chunk {current_chunk + 1}/{total_chunks} ({len(next_chunk)} records)")
+                                chunk_key = f"temp_training_{sheet_id}_chunk_{current_chunk}_{int(time.time())}"
+                                training_records = next_chunk.to_dict('records')
+                                self.store_temp_training_data(training_records, chunk_key)
+                                
+                                # Get embeddings for descriptions
+                                descriptions = next_chunk['Narrative'].tolist()
+                                
+                                # Run prediction with webhook for this chunk
+                                self.run_prediction(
+                                    "training",
+                                    sheet_id,
+                                    tracking_info['user_id'],
+                                    descriptions,
+                                    webhook_params={
+                                        'training_key': chunk_key,
+                                        'chunk_index': str(current_chunk),
+                                        'total_chunks': str(total_chunks)
+                                    }
+                                )
+                            else:
+                                # All chunks processed, clean up tracking file
+                                self.supabase.storage.from_(self.bucket_name).remove([f"{sheet_id}_chunk_tracking.json"])
+                                logger.info("All chunks processed successfully")
+                                
+                    except Exception as chunk_error:
+                        logger.error(f"Error processing next chunk: {str(chunk_error)}")
+                        raise
+                    
                     return pd.DataFrame()
                     
                 except Exception as e:
@@ -380,6 +649,16 @@ class ClassificationService:
                     raise
             
             # For classification mode or non-chunked training
+            return self._process_classification_response(data, sheet_id)
+            
+        except Exception as e:
+            logger.error(f"Error processing webhook response: {str(e)}")
+            logger.error(f"Data structure: {json.dumps(data, indent=2) if data else 'No data'}")
+            raise
+
+    def _process_classification_response(self, data: Dict[str, Any], sheet_id: str) -> pd.DataFrame:
+        """Process classification response."""
+        try:
             # Load trained data
             trained_data = self._load_training_data(sheet_id)
             if not trained_data:
@@ -391,6 +670,9 @@ class ClassificationService:
             # Validate categories are not just numbers
             if all(cat.replace('-', '').replace('.', '').isdigit() for cat in trained_data['categories']):
                 raise ValueError("Training data categories appear to be numerical values instead of category names")
+            
+            # Get embeddings from response
+            new_embeddings = self.process_embeddings(data)
             
             # Validate embeddings dimensions match
             if new_embeddings.shape[1] != trained_data['embeddings'].shape[1]:
@@ -408,7 +690,6 @@ class ClassificationService:
                 if isinstance(item, dict) and "text" in item:
                     text = item["text"]
                 elif isinstance(item, dict) and "embedding" in item:
-                    # If text is not in output, try to get it from input
                     if "input" in data and "text_batch" in data["input"]:
                         try:
                             texts = json.loads(data["input"]["text_batch"])
@@ -434,8 +715,7 @@ class ClassificationService:
             return results
             
         except Exception as e:
-            logger.error(f"Error processing webhook response: {str(e)}")
-            logger.error(f"Data structure: {json.dumps(data, indent=2) if data else 'No data'}")
+            logger.error(f"Error processing classification response: {str(e)}")
             raise
 
     def process_embeddings(self, data: Dict[str, Any]) -> np.ndarray:
