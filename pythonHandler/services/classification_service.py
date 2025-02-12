@@ -459,16 +459,40 @@ class ClassificationService:
             if all(cat.replace('-', '').replace('.', '').isdigit() for cat in categories):
                 raise ValueError("Categories appear to be numerical values instead of category names")
             
+            # Try to load existing data first
+            existing_data = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+                    response = self.supabase.storage.from_(self.bucket_name).download(
+                        f"{sheet_id}_training.npz"
+                    )
+                    temp_file.write(response)
+                    temp_file.flush()
+                    existing_data = np.load(temp_file.name, allow_pickle=True)
+                    os.unlink(temp_file.name)
+            except Exception:
+                logger.info("No existing training data found, creating new file")
+            
+            if existing_data is not None:
+                # Combine with existing data
+                combined_embeddings = np.vstack([existing_data['embeddings'], embeddings])
+                combined_descriptions = np.concatenate([existing_data['descriptions'], descriptions])
+                combined_categories = np.concatenate([existing_data['categories'], categories])
+            else:
+                combined_embeddings = embeddings
+                combined_descriptions = descriptions
+                combined_categories = categories
+            
             # Create a structured array with all training data
             training_data = {
-                'embeddings': embeddings,
-                'descriptions': descriptions,
-                'categories': categories
+                'embeddings': combined_embeddings,
+                'descriptions': combined_descriptions,
+                'categories': combined_categories
             }
             
             # Log training data for verification
-            logger.info(f"Storing training data with {len(categories)} examples")
-            logger.info(f"Sample categories: {categories[:5]}")
+            logger.info(f"Storing training data with {len(combined_categories)} examples")
+            logger.info(f"Sample categories: {combined_categories[:5]}")
             
             # Save to temporary file
             with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
@@ -485,7 +509,7 @@ class ClassificationService:
             
             # Clean up
             os.unlink(temp_file_path)
-            logger.info(f"Stored training data for {len(descriptions)} examples")
+            logger.info(f"Stored training data for {len(combined_descriptions)} examples")
                 
         except Exception as e:
             logger.error(f"Error storing training data: {str(e)}")
@@ -767,28 +791,21 @@ class ClassificationService:
             if len(embeddings) != len(training_data):
                 raise ValueError(f"Mismatch between embeddings ({len(embeddings)}) and training data ({len(training_data)})")
             
-            # Process in chunks to avoid memory issues
-            CHUNK_SIZE = 500
-            for i in range(0, len(embeddings), CHUNK_SIZE):
-                chunk_end = min(i + CHUNK_SIZE, len(embeddings))
-                embeddings_chunk = embeddings[i:chunk_end]
-                training_data_chunk = training_data[i:chunk_end]
-                
-                # Extract categories from training data chunk
-                categories = [item['Category'] for item in training_data_chunk]
-                descriptions = [item['Narrative'] for item in training_data_chunk]
-                
-                logger.info(f"Processing chunk {i//CHUNK_SIZE + 1}, size: {len(embeddings_chunk)}")
-                
-                # Store training data chunk
-                self._store_training_data(
-                    embeddings=embeddings_chunk,
-                    descriptions=descriptions,
-                    categories=categories,
-                    sheet_id=sheet_id
-                )
+            # Extract categories from training data
+            categories = [item['Category'] for item in training_data]
+            descriptions = [item['Narrative'] for item in training_data]
             
-            logger.info(f"Successfully stored all {len(embeddings)} embeddings in chunks")
+            logger.info(f"Processing {len(embeddings)} embeddings")
+            
+            # Store training data
+            self._store_training_data(
+                embeddings=embeddings,
+                descriptions=descriptions,
+                categories=categories,
+                sheet_id=sheet_id
+            )
+            
+            logger.info(f"Successfully stored embeddings")
             
         except Exception as e:
             logger.error(f"Error storing embeddings: {e}")
