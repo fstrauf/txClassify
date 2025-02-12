@@ -18,9 +18,41 @@ function showClassifyDialog() {
       label { display: block; margin-bottom: 5px; }
       select { width: 100%; padding: 5px; }
       input { width: 100%; padding: 5px; }
-      button { padding: 8px 15px; background: #4285f4; color: white; border: none; border-radius: 3px; cursor: pointer; }
+      button { 
+        padding: 8px 15px; 
+        background: #4285f4; 
+        color: white; 
+        border: none; 
+        border-radius: 3px; 
+        cursor: pointer;
+        position: relative;
+        min-width: 120px;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
       .help-text { font-size: 12px; color: #666; margin-top: 4px; }
       .error { color: red; margin-top: 10px; display: none; }
+      .spinner {
+        display: none;
+        width: 20px;
+        height: 20px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #3498db;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+      @keyframes spin {
+        0% { transform: translateY(-50%) rotate(0deg); }
+        100% { transform: translateY(-50%) rotate(360deg); }
+      }
+      .button-text { display: inline-block; }
+      .processing-text { display: none; }
     </style>
     <div class="form-group">
       <label>Description Column:</label>
@@ -50,13 +82,21 @@ function showClassifyDialog() {
       <div class="help-text">First row of data to classify</div>
     </div>
     <div id="error" class="error"></div>
-    <button onclick="submitForm()">Classify Transactions</button>
+    <button onclick="submitForm()" id="submitBtn">
+      <span class="button-text">Classify Transactions</span>
+      <span class="processing-text">Processing...</span>
+      <div class="spinner"></div>
+    </button>
     <script>
       function submitForm() {
         var descriptionCol = document.getElementById('descriptionCol').value;
         var categoryCol = document.getElementById('categoryCol').value;
         var startRow = document.getElementById('startRow').value;
         var errorDiv = document.getElementById('error');
+        var submitBtn = document.getElementById('submitBtn');
+        var spinner = document.querySelector('.spinner');
+        var buttonText = document.querySelector('.button-text');
+        var processingText = document.querySelector('.processing-text');
         
         // Validate inputs
         if (!descriptionCol || !categoryCol || !startRow) {
@@ -76,6 +116,12 @@ function showClassifyDialog() {
         // Clear any previous errors
         errorDiv.style.display = 'none';
         
+        // Show processing state
+        submitBtn.disabled = true;
+        spinner.style.display = 'block';
+        buttonText.style.display = 'none';
+        processingText.style.display = 'inline-block';
+        
         var config = {
           descriptionCol: descriptionCol,
           categoryCol: categoryCol,
@@ -83,10 +129,17 @@ function showClassifyDialog() {
         };
         
         google.script.run
-          .withSuccessHandler(function() { google.script.host.close(); })
+          .withSuccessHandler(function() { 
+            google.script.host.close(); 
+          })
           .withFailureHandler(function(error) {
             errorDiv.textContent = error.message || 'An error occurred';
             errorDiv.style.display = 'block';
+            // Reset button state
+            submitBtn.disabled = false;
+            spinner.style.display = 'none';
+            buttonText.style.display = 'inline-block';
+            processingText.style.display = 'none';
           })
           .classifyTransactions(config);
       }
@@ -474,6 +527,64 @@ function updateSetting(settingName, value) {
   sheet.getRange(rowIndex, 1, 1, 2).setValues([[settingName, value]]);
 }
 
+// Helper function to manage stats sheet
+function getStatsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var statsSheet = ss.getSheetByName('Stats');
+  
+  // Create Stats sheet if it doesn't exist
+  if (!statsSheet) {
+    statsSheet = ss.insertSheet('Stats');
+    // Add headers
+    statsSheet.getRange('A1:B1').setValues([['Metric', 'Value']]);
+    statsSheet.setFrozenRows(1);
+    
+    // Set column widths
+    statsSheet.setColumnWidth(1, 200);  // Metric name
+    statsSheet.setColumnWidth(2, 300);  // Value
+    
+    // Format headers
+    var headerRange = statsSheet.getRange('A1:B1');
+    headerRange.setBackground('#f3f3f3')
+               .setFontWeight('bold')
+               .setHorizontalAlignment('center');
+               
+    // Add initial metrics
+    statsSheet.getRange('A2:A5').setValues([
+      ['Last Training Time'],
+      ['Training Data Size'],
+      ['Training Sheet'],
+      ['Model Status']
+    ]);
+  }
+  
+  return statsSheet;
+}
+
+// Helper function to update stats
+function updateStats(metric, value) {
+  var sheet = getStatsSheet();
+  var data = sheet.getDataRange().getValues();
+  var rowIndex = -1;
+  
+  // Look for existing metric
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === metric) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+  
+  if (rowIndex === -1) {
+    // Add new metric at the end
+    rowIndex = data.length + 1;
+    sheet.getRange(rowIndex, 1).setValue(metric);
+  }
+  
+  // Update the value
+  sheet.getRange(rowIndex, 2).setValue(value);
+}
+
 function checkTrainingStatus() {
   try {
     var userProperties = PropertiesService.getUserProperties();
@@ -484,7 +595,6 @@ function checkTrainingStatus() {
     if (!predictionId || !triggerId) {
       // Clean up if no prediction ID or trigger ID
       if (triggerId) {
-        // Get all triggers and find the one with matching ID
         var triggers = ScriptApp.getProjectTriggers();
         for (var i = 0; i < triggers.length; i++) {
           if (triggers[i].getUniqueId() === triggerId) {
@@ -499,6 +609,7 @@ function checkTrainingStatus() {
     // Check if we've been running for more than 30 minutes
     if (new Date().getTime() - startTime > 30 * 60 * 1000) {
       updateStatus("Error: Training timed out after 30 minutes");
+      updateStats('Model Status', 'Error: Training timed out');
       // Get all triggers and find the one with matching ID
       var triggers = ScriptApp.getProjectTriggers();
       for (var i = 0; i < triggers.length; i++) {
@@ -522,11 +633,15 @@ function checkTrainingStatus() {
     if (result.status === "completed") {
       updateStatus("Training completed successfully!");
       
-      // Store training completion details
-      var completionTime = new Date().toISOString();
-      updateSetting('Last Training Completion', completionTime);
-      updateSetting('Last Training Size', userProperties.getProperty('TRAINING_SIZE') || 'Unknown');
-      updateSetting('Last Training Sheet', SpreadsheetApp.getActiveSheet().getName());
+      // Update Stats sheet
+      var completionTime = new Date().toLocaleString();
+      var trainingSize = userProperties.getProperty('TRAINING_SIZE') || 'Unknown';
+      var trainingSheet = SpreadsheetApp.getActiveSheet().getName();
+      
+      updateStats('Last Training Time', completionTime);
+      updateStats('Training Data Size', trainingSize + ' transactions');
+      updateStats('Training Sheet', trainingSheet);
+      updateStats('Model Status', 'Ready');
       
       // Clean up
       var triggers = ScriptApp.getProjectTriggers();
@@ -540,6 +655,7 @@ function checkTrainingStatus() {
       return;
     } else if (result.status === "failed") {
       updateStatus("Error: Training failed - " + (result.error || "Unknown error"));
+      updateStats('Model Status', 'Error: Training failed');
       // Clean up
       var triggers = ScriptApp.getProjectTriggers();
       for (var i = 0; i < triggers.length; i++) {
@@ -554,6 +670,7 @@ function checkTrainingStatus() {
     
     // Still processing, update status
     updateStatus("Training in progress... " + (result.message || ""));
+    updateStats('Model Status', 'Training in progress...');
     
   } catch (error) {
     Logger.log("Error checking training status: " + error);
@@ -570,6 +687,7 @@ function checkTrainingStatus() {
     }
     userProperties.deleteAllProperties();
     updateStatus("Error: " + error.toString());
+    updateStats('Model Status', 'Error: ' + error.toString());
   }
 }
 
