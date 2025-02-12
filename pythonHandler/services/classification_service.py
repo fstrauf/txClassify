@@ -108,24 +108,44 @@ class ClassificationService:
             # Convert to string if not already
             text = str(text)
             
-            # Remove common noise patterns
-            patterns_to_remove = [
-                r'\s+\|\s*[\d\.]+$',  # Remove amount at the end (e.g., "| 0.03")
-                r'\s+\|\s*[A-Z0-9\s]+$',  # Remove reference codes
-                r'\d{6}$',  # Remove 6-digit numbers at end
-                r'Card xx\d{4}',  # Remove card numbers
-                r'Value Date: \d{2}/\d{2}/\d{4}',  # Remove value dates
-                r'AUS$',  # Remove country codes at end
-                r'\s+AU$',  # Remove AU at end
-                r'\s+AUS$',  # Remove AUS at end
-                r'\s+NS$',  # Remove NS at end
-                r'\s+CYP$',  # Remove CYP at end
+            # Generic patterns that apply to most bank transactions
+            generic_patterns = [
+                # Common transaction suffixes/metadata
+                r'\s*\d{2,4}[-/]\d{2}[-/]\d{2,4}',  # Dates in various formats
+                r'T\d{2}:\d{2}:\d{2}',  # Timestamps
+                r'\s+\d{1,2}:\d{2}(:\d{2})?',  # Times
+                r'\s*Card\s+[xX*]+\d{4}',  # Card numbers
+                r'\s*\d{6,}',  # Long numbers (reference numbers)
+                r'\s+\([^)]*\)',  # Anything in parentheses
+                
+                # Common business suffixes
+                r'(?i)\s+(?:ltd|limited|pty|inc|llc|corporation)\.?$',
+                
+                # Transaction metadata
+                r'(?i)\s*(?:value date|card ending|ref|reference)\s*:?.*$',
+                r'\s+\|\s*[\d\.]+$',  # Amount at end
+                r'\s+\|\s*[A-Z0-9\s]+$',  # Reference codes
+                
+                # Location/country codes
+                r'\s+(?:AU|AUS|USA|UK|NS|CYP)$'
             ]
             
-            for pattern in patterns_to_remove:
+            # Apply generic patterns
+            for pattern in generic_patterns:
                 text = re.sub(pattern, '', text)
             
-            # Remove extra whitespace
+            # Common payment processor prefixes
+            prefixes_to_remove = [
+                'SQ *', 'TSG *', 'PP *', 'SP *', 'PAYPAL *', 'GOOGLE *', 'APPLE *',
+                'INT\'L *', 'INTERNATIONAL *', 'THE *', 'IPY*'
+            ]
+            
+            # Remove prefixes
+            for prefix in prefixes_to_remove:
+                if text.upper().startswith(prefix.upper()):
+                    text = text[len(prefix):]
+            
+            # Remove extra whitespace and standardize spacing
             text = ' '.join(text.split())
             
             return text.strip()
@@ -143,8 +163,48 @@ class ClassificationService:
             # Remove all numbers
             text = re.sub(r'\d+', '', text)
             
-            # Remove special characters
-            text = re.sub(r'[^\w\s]', '', text)
+            # Keep alphanumeric, spaces, and ampersand
+            text = re.sub(r'[^\w\s&]', '', text)
+            
+            # Generic business type patterns
+            business_types = {
+                # Food and Dining
+                r'\b(?:cafe|coffee|restaurant|dining|takeaway|takeout|food)\b': 'food',
+                
+                # Retail
+                r'\b(?:shop|store|market|supermarket)\b': 'store',
+                
+                # Transportation
+                r'\b(?:taxi|uber|lyft|transport|transit|train|bus)\b': 'transport',
+                
+                # Fuel/Gas
+                r'\b(?:fuel|petrol|gas station|service station)\b': 'fuel',
+                
+                # Healthcare
+                r'\b(?:pharmacy|chemist|medical|doctor|health)\b': 'healthcare',
+                
+                # Utilities
+                r'\b(?:electric|water|gas|utility|utilities)\b': 'utility',
+                
+                # Entertainment
+                r'\b(?:cinema|movie|theatre|entertainment)\b': 'entertainment',
+                
+                # Financial
+                r'\b(?:bank|transfer|payment|direct debit|credit)\b': 'financial'
+            }
+            
+            # Apply business type normalization
+            for pattern, replacement in business_types.items():
+                text = re.sub(pattern, replacement, text)
+            
+            # Remove common non-descriptive words
+            common_words = {'the', 'and', 'or', 'ltd', 'limited', 'pty', 'inc', 
+                          'corporation', 'international', 'services', 'company',
+                          'group', 'holdings', 'enterprises', 'solutions'}
+            
+            words = text.split()
+            words = [w for w in words if w not in common_words]
+            text = ' '.join(words)
             
             # Remove extra whitespace
             text = ' '.join(text.split())
