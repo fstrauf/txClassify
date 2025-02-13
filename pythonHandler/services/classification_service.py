@@ -565,82 +565,13 @@ class ClassificationService:
                     # Store embeddings for this chunk
                     self.store_embeddings(new_embeddings, training_data, sheet_id)
                     
-                    # Clean up temporary data for this chunk
-                    self.cleanup_temp_training_data(chunk_params['training_key'])
-                    
-                    # Process next chunk if available
-                    try:
-                        # Load chunk tracking information
-                        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
-                            response = self.supabase.storage.from_(self.bucket_name).download(
-                                f"{sheet_id}_chunk_tracking.json"
-                            )
-                            temp_file.write(response)
-                            temp_file.flush()
-                            
-                            with open(temp_file.name, 'r') as f:
-                                tracking_info = json.load(f)
-                            
-                            os.unlink(temp_file.name)
-                            
-                            current_chunk = tracking_info['current_chunk']
-                            total_chunks = tracking_info['total_chunks']
-                            
-                            if current_chunk < total_chunks:
-                                # Process next chunk
-                                chunk_size = tracking_info['chunk_size']
-                                remaining_data = pd.DataFrame(tracking_info['remaining_chunks'])
-                                next_chunk = remaining_data[:chunk_size]
-                                remaining_chunks = remaining_data[chunk_size:].to_dict('records')
-                                
-                                # Update tracking information
-                                tracking_info.update({
-                                    'current_chunk': current_chunk + 1,
-                                    'remaining_chunks': remaining_chunks
-                                })
-                                
-                                # Store updated tracking information
-                                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-                                    json.dump(tracking_info, f)
-                                    temp_path = f.name
-                                    
-                                with open(temp_path, 'rb') as f:
-                                    self.supabase.storage.from_(self.bucket_name).upload(
-                                        f"{sheet_id}_chunk_tracking.json",
-                                        f,
-                                        file_options={"x-upsert": "true"}
-                                    )
-                                os.unlink(temp_path)
-                                
-                                # Process next chunk
-                                logger.info(f"Processing chunk {current_chunk + 1}/{total_chunks} ({len(next_chunk)} records)")
-                                chunk_key = f"temp_training_{sheet_id}_chunk_{current_chunk}_{int(time.time())}"
-                                training_records = next_chunk.to_dict('records')
-                                self.store_temp_training_data(training_records, chunk_key)
-                                
-                                # Get embeddings for descriptions
-                                descriptions = next_chunk['Narrative'].tolist()
-                                
-                                # Run prediction with webhook for this chunk
-                                self.run_prediction(
-                                    "training",
-                                    sheet_id,
-                                    tracking_info['user_id'],
-                                    descriptions,
-                                    webhook_params={
-                                        'training_key': chunk_key,
-                                        'chunk_index': str(current_chunk),
-                                        'total_chunks': str(total_chunks)
-                                    }
-                                )
-                            else:
-                                # All chunks processed, clean up tracking file
-                                self.supabase.storage.from_(self.bucket_name).remove([f"{sheet_id}_chunk_tracking.json"])
-                                logger.info("All chunks processed successfully")
-                                
-                    except Exception as chunk_error:
-                        logger.error(f"Error processing next chunk: {str(chunk_error)}")
-                        raise
+                    # Clean up temporary data for this chunk with chunk tracking
+                    self.cleanup_temp_training_data(
+                        chunk_params['training_key'],
+                        sheet_id,
+                        chunk_params['chunk_index'],
+                        chunk_params['total_chunks']
+                    )
                     
                     return pd.DataFrame()
                     
@@ -1044,21 +975,43 @@ class ClassificationService:
                 total = int(total_chunks)
                 
                 # Mark this chunk as processed
-                all_processed = self._mark_chunk_processed(sheet_id, chunk_idx, total)
-                
-                if not all_processed:
-                    logger.info(f"Not cleaning up temp data yet - waiting for all chunks to complete")
-                    return
-                
-                logger.info(f"All {total} chunks processed, proceeding with cleanup")
-                
-                # Clean up the processed chunks tracking
                 try:
+                    # Get current processed chunks
+                    response = self.supabase.table("processed_chunks").select("*").eq("sheet_id", sheet_id).execute()
+                    record = response.data[0] if response.data else None
+                    
+                    if not record:
+                        # Create new record
+                        processed = [chunk_idx]
+                        self.supabase.table("processed_chunks").insert({
+                            "sheet_id": sheet_id,
+                            "processed_chunks": processed,
+                            "total_chunks": total
+                        }).execute()
+                    else:
+                        # Update existing record
+                        processed = record.get("processed_chunks", [])
+                        if chunk_idx not in processed:
+                            processed.append(chunk_idx)
+                            self.supabase.table("processed_chunks").update({
+                                "processed_chunks": processed
+                            }).eq("sheet_id", sheet_id).execute()
+                    
+                    # Only cleanup if all chunks are processed
+                    if len(processed) < total:
+                        logger.info(f"Not cleaning up temp data yet - {len(processed)}/{total} chunks processed")
+                        return
+                    
+                    logger.info(f"All {total} chunks processed, proceeding with cleanup")
+                    
+                    # Clean up the processed chunks tracking
                     self.supabase.table("processed_chunks").delete().eq("sheet_id", sheet_id).execute()
+                    
                 except Exception as e:
-                    logger.warning(f"Error cleaning up processed chunks tracking: {e}")
+                    logger.warning(f"Error tracking processed chunks: {e}")
+                    return
             
-            # Proceed with cleanup
+            # Proceed with cleanup only if we have no chunk tracking or all chunks are processed
             self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
             logger.info(f"Cleaned up temporary training data for key: {training_key}")
             
