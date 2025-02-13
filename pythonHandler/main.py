@@ -199,6 +199,11 @@ def train_model():
         if not data or 'transactions' not in data:
             return jsonify({"error": "Missing transactions data"}), 400
             
+        # Get user ID from request data
+        user_id = data.get('userId')
+        if not user_id:
+            return jsonify({"error": "Missing userId in request"}), 400
+            
         # Convert transactions to DataFrame and validate
         df = pd.DataFrame(data['transactions'])
         required_columns = ['Narrative', 'Category']
@@ -217,11 +222,11 @@ def train_model():
         )
         
         # Get embeddings from Replicate
-        sheet_id = f"sheet_{request.user_id}"
+        sheet_id = f"sheet_{user_id}"
         prediction = classifier.run_prediction(
             "training",
             sheet_id,
-            request.user_id,
+            user_id,
             df['Narrative'].tolist()
         )
         
@@ -251,6 +256,8 @@ def train_model():
         
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
+        if 'user_id' in locals():
+            update_process_status(f"Error: {str(e)}", "training", user_id)
         return jsonify({"error": str(e)}), 500
 
 @app.route('/train/webhook', methods=['POST'])
