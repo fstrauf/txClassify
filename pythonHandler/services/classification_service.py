@@ -12,6 +12,7 @@ from supabase import create_client, Client
 import re
 import time
 from urllib.parse import parse_qs, urlparse
+import gc
 
 logger = logging.getLogger(__name__)
 
@@ -40,62 +41,18 @@ class ClassificationService:
             if len(valid_data) == 0:
                 raise ValueError("No valid training data after cleaning")
 
-            # Process in chunks
-            CHUNK_SIZE = 500
-            chunks = [valid_data[i:i + CHUNK_SIZE] for i in range(0, len(valid_data), CHUNK_SIZE)]
-            total_chunks = len(chunks)
+            # Get embeddings for all descriptions at once
+            descriptions = valid_data['Narrative'].tolist()
+            prediction = self.run_prediction(
+                "training",
+                sheet_id,
+                user_id,
+                descriptions,
+                webhook_params={'sheet_id': sheet_id}
+            )
             
-            logger.info(f"Processing {len(valid_data)} records in {total_chunks} chunks")
-            
-            # Initialize or clear chunk tracking
-            try:
-                self.supabase.table("processed_chunks").delete().eq("sheet_id", sheet_id).execute()
-            except Exception as e:
-                logger.warning(f"Error clearing chunk tracking: {e}")
-            
-            # Process chunks sequentially with retries
-            for chunk_index, chunk in enumerate(chunks):
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        logger.info(f"Processing chunk {chunk_index + 1}/{total_chunks} (attempt {attempt + 1})")
-                        
-                        # Store chunk data
-                        chunk_key = f"temp_training_{sheet_id}_chunk_{chunk_index}_{int(time.time())}"
-                        training_records = chunk.to_dict('records')
-                        self._store_chunk_with_retry(training_records, chunk_key)
-                        
-                        # Get embeddings
-                        descriptions = chunk['Narrative'].tolist()
-                        prediction = self.run_prediction(
-                            "training",
-                            sheet_id,
-                            user_id,
-                            descriptions,
-                            webhook_params={
-                                'training_key': chunk_key,
-                                'chunk_index': str(chunk_index),
-                                'total_chunks': str(total_chunks)
-                            }
-                        )
-                        
-                        # Wait for chunk processing to complete
-                        self._wait_for_chunk_completion(prediction.id, sheet_id, chunk_index)
-                        
-                        # Verify chunk was processed
-                        if not self._verify_chunk_processed(sheet_id, chunk_index):
-                            raise ValueError(f"Chunk {chunk_index} processing could not be verified")
-                        
-                        break  # Success, move to next chunk
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing chunk {chunk_index} (attempt {attempt + 1}): {str(e)}")
-                        if attempt == max_retries - 1:
-                            raise ValueError(f"Failed to process chunk {chunk_index} after {max_retries} attempts")
-                        time.sleep(2 ** attempt)  # Exponential backoff
-            
-            logger.info("All chunks processed successfully")
-            return None
+            logger.info("Training request sent successfully")
+            return prediction
             
         except Exception as e:
             logger.error(f"Error in training: {str(e)}")
@@ -542,59 +499,47 @@ class ClassificationService:
         try:
             logger.info("Processing webhook response")
             
-            # Get chunk information from webhook URL
-            webhook_url = data.get('webhook', '')
-            chunk_params = {}
-            if webhook_url:
-                parsed = urlparse(webhook_url)
-                query_params = parse_qs(parsed.query)
-                chunk_params = {
-                    'training_key': query_params.get('training_key', [None])[0],
-                    'chunk_index': query_params.get('chunk_index', [None])[0],
-                    'total_chunks': query_params.get('total_chunks', [None])[0]
-                }
-            
-            # Validate webhook data
-            if not data or 'output' not in data:
-                raise ValueError("Invalid webhook data: missing 'output' field")
-            
             # Get embeddings from response
             new_embeddings = self.process_embeddings(data)
             logger.info(f"Processed embeddings shape: {new_embeddings.shape}")
             
-            # Handle training mode
-            if all(chunk_params.values()):
+            # Get original descriptions from the webhook response
+            descriptions = []
+            if 'input' in data and 'text_batch' in data['input']:
                 try:
-                    chunk_index = int(chunk_params['chunk_index'])
-                    
-                    # Get training data for this chunk
-                    training_data = self.get_temp_training_data(chunk_params['training_key'])
-                    
-                    # Store embeddings
-                    self.store_embeddings(new_embeddings, training_data, sheet_id)
-                    
-                    # Mark chunk as processed
-                    self.supabase.table("processed_chunks").insert({
-                        "sheet_id": sheet_id,
-                        "chunk_index": chunk_index,
-                        "processed_at": datetime.now().isoformat()
-                    }).execute()
-                    
-                    # Clean up temporary data for this chunk
-                    try:
-                        self.supabase.storage.from_(self.bucket_name).remove([f"{chunk_params['training_key']}.json"])
-                        logger.info(f"Cleaned up temporary data for chunk {chunk_index}")
-                    except Exception as e:
-                        logger.warning(f"Error cleaning up temporary data: {e}")
-                    
-                    return pd.DataFrame()
-                    
-                except Exception as e:
-                    logger.error(f"Error processing training chunk: {str(e)}")
-                    raise
+                    descriptions = json.loads(data['input']['text_batch'])
+                except json.JSONDecodeError:
+                    logger.warning("Could not parse text_batch from input")
             
-            # Handle classification mode
-            return self._process_classification_response(data, sheet_id)
+            if not descriptions:
+                logger.warning("No descriptions found in webhook data")
+                descriptions = [""] * len(new_embeddings)
+            
+            # Store the embeddings with descriptions and categories
+            training_data = {
+                'embeddings': new_embeddings,
+                'descriptions': np.array(descriptions),
+                'categories': np.array([""] * len(descriptions))  # Will be filled by the training webhook
+            }
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+                np.savez_compressed(temp_file, **training_data)
+                temp_file_path = temp_file.name
+            
+            # Upload to Supabase
+            with open(temp_file_path, 'rb') as f:
+                self.supabase.storage.from_(self.bucket_name).upload(
+                    f"{sheet_id}_training.npz",
+                    f,
+                    file_options={"x-upsert": "true"}
+                )
+            
+            # Clean up
+            os.unlink(temp_file_path)
+            logger.info(f"Stored training data with {len(descriptions)} examples")
+            
+            return pd.DataFrame()
             
         except Exception as e:
             logger.error(f"Error processing webhook response: {str(e)}")
@@ -698,11 +643,31 @@ class ClassificationService:
             except Exception:
                 logger.info("No existing training data found, creating new file")
             
+            # Process in smaller batches to manage memory
+            BATCH_SIZE = 1000
             if existing_data is not None:
-                # Combine with existing data
-                combined_embeddings = np.vstack([existing_data['embeddings'], embeddings])
-                combined_descriptions = np.concatenate([existing_data['descriptions'], descriptions])
-                combined_categories = np.concatenate([existing_data['categories'], categories])
+                # Initialize combined arrays
+                combined_embeddings = existing_data['embeddings']
+                combined_descriptions = existing_data['descriptions']
+                combined_categories = existing_data['categories']
+                
+                # Add new data in batches
+                for i in range(0, len(embeddings), BATCH_SIZE):
+                    batch_end = min(i + BATCH_SIZE, len(embeddings))
+                    combined_embeddings = np.vstack([
+                        combined_embeddings, 
+                        embeddings[i:batch_end]
+                    ])
+                    combined_descriptions = np.concatenate([
+                        combined_descriptions, 
+                        descriptions[i:batch_end]
+                    ])
+                    combined_categories = np.concatenate([
+                        combined_categories, 
+                        categories[i:batch_end]
+                    ])
+                    # Force garbage collection after each batch
+                    gc.collect()
             else:
                 combined_embeddings = embeddings
                 combined_descriptions = descriptions
@@ -719,12 +684,12 @@ class ClassificationService:
             logger.info(f"Storing training data with {len(combined_categories)} examples")
             logger.info(f"Sample categories: {combined_categories[:5]}")
             
-            # Save to temporary file
+            # Save to temporary file in chunks
             with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
                 np.savez_compressed(temp_file, **training_data)
                 temp_file_path = temp_file.name
             
-            # Upload to Supabase
+            # Upload to Supabase in chunks
             with open(temp_file_path, 'rb') as f:
                 self.supabase.storage.from_(self.bucket_name).upload(
                     f"{sheet_id}_training.npz",
@@ -1029,21 +994,36 @@ class ClassificationService:
             if len(embeddings) != len(training_data):
                 raise ValueError(f"Mismatch between embeddings ({len(embeddings)}) and training data ({len(training_data)})")
             
-            # Extract categories from training data
-            categories = [item['Category'] for item in training_data]
-            descriptions = [item['Narrative'] for item in training_data]
+            # Process in batches to manage memory
+            BATCH_SIZE = 500
+            total_batches = (len(embeddings) + BATCH_SIZE - 1) // BATCH_SIZE
             
-            logger.info(f"Processing {len(embeddings)} embeddings")
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * BATCH_SIZE
+                end_idx = min((batch_idx + 1) * BATCH_SIZE, len(embeddings))
+                
+                # Extract batch data
+                batch_embeddings = embeddings[start_idx:end_idx]
+                batch_training_data = training_data[start_idx:end_idx]
+                
+                # Extract categories from training data
+                categories = [item['Category'] for item in batch_training_data]
+                descriptions = [item['Narrative'] for item in batch_training_data]
+                
+                logger.info(f"Processing batch {batch_idx + 1}/{total_batches} ({len(batch_embeddings)} embeddings)")
+                
+                # Store training data for this batch
+                self._store_training_data(
+                    embeddings=batch_embeddings,
+                    descriptions=descriptions,
+                    categories=categories,
+                    sheet_id=sheet_id
+                )
+                
+                # Force garbage collection after each batch
+                gc.collect()
             
-            # Store training data
-            self._store_training_data(
-                embeddings=embeddings,
-                descriptions=descriptions,
-                categories=categories,
-                sheet_id=sheet_id
-            )
-            
-            logger.info(f"Successfully stored embeddings")
+            logger.info(f"Successfully stored all embeddings in {total_batches} batches")
             
         except Exception as e:
             logger.error(f"Error storing embeddings: {e}")

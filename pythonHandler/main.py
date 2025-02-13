@@ -235,15 +235,14 @@ def train_model():
 @app.route('/train/webhook', methods=['POST'])
 def training_webhook():
     try:
-        # Get training key from request args
-        training_key = request.args.get('training_key')
+        # Get sheet ID from request args
         sheet_id = request.args.get('sheetId')
         user_id = request.args.get('userId')
         
-        logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id} with key {training_key}")
+        logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id}")
         
-        if not training_key:
-            raise ValueError("No training key provided in webhook URL")
+        if not sheet_id:
+            raise ValueError("No sheet ID provided in webhook URL")
             
         # Parse the webhook data
         data = request.get_json()
@@ -268,24 +267,16 @@ def training_webhook():
             backend_api=request.host_url.rstrip('/')
         )
         
-        # Get the training data
-        training_data = classifier.get_temp_training_data(training_key)
-        logger.info("Sample of training data in webhook:")
-        logger.info(f"First few records: {json.dumps(training_data[:2], indent=2)}")
-        
-        # Store embeddings with categories
-        classifier.store_embeddings(embeddings_array, training_data, sheet_id)
-        
-        # Only clean up temporary data after successful processing
-        classifier.cleanup_temp_training_data(training_key)
+        # Process webhook response (this will store the embeddings)
+        classifier.process_webhook_response(data, sheet_id)
         
         return jsonify({"status": "success", "message": "Training data processed successfully"})
         
     except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
-        logger.error(f"Request args: {request.args}")
-        logger.error(f"Request data: {request.get_json()}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        logger.error(f"Error processing webhook: {str(e)}")
+        if user_id:
+            update_process_status(f"Error: {str(e)}", "training", user_id)
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/process_transactions", methods=["POST"])
 def process_transactions():
