@@ -315,18 +315,20 @@ def training_webhook():
         
         # Get training data from stored file
         try:
-            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
-                response = classifier.supabase.storage.from_(classifier.bucket_name).download(
-                    f"{sheet_id}_training.json"
-                )
-                temp_file.write(response.encode() if isinstance(response, str) else response)
-                temp_file.flush()
-                temp_file_path = temp_file.name
+            # Download training data
+            response = classifier.supabase.storage.from_(classifier.bucket_name).download(
+                f"{sheet_id}_training.json"
+            )
+            
+            # Handle response based on type
+            if isinstance(response, str):
+                training_data = json.loads(response)
+            else:
+                # If it's bytes, decode it first
+                training_data = json.loads(response.decode('utf-8'))
                 
-                with open(temp_file_path, 'r') as f:
-                    training_data = json.load(f)
-                    descriptions = training_data.get('descriptions', [])
-                    categories = training_data.get('categories', [])
+            descriptions = training_data.get('descriptions', [])
+            categories = training_data.get('categories', [])
                     
             if not descriptions or not categories:
                 raise ValueError("No training data found in stored file")
