@@ -190,7 +190,7 @@ def classify_webhook():
             "error": str(e)
         }), 500
 
-@app.route('/train', methods=['POST'])
+@app.route("/train", methods=['POST'])
 def train_model():
     """Endpoint to train the model with new data"""
     try:
@@ -227,23 +227,27 @@ def train_model():
         # Get embeddings from Replicate
         sheet_id = f"sheet_{user_id}"
         
-        # Store categories for later use
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
-                json.dump({
-                    'categories': df['Category'].tolist()
-                }, temp_file, ensure_ascii=False)
-                temp_file_path = temp_file.name
+        # Store categories in a single file
+        training_data = {
+            'descriptions': df['Narrative'].tolist(),
+            'categories': df['Category'].tolist()
+        }
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+            json.dump(training_data, temp_file, ensure_ascii=False)
+            temp_file_path = temp_file.name
             
+        try:
             # Upload to Supabase
             with open(temp_file_path, 'rb') as f:
                 classifier.supabase.storage.from_(classifier.bucket_name).upload(
-                    f"{sheet_id}_categories.json",
+                    f"{sheet_id}_training.json",
                     f,
                     file_options={"x-upsert": "true"}
                 )
                 
-            # Start prediction only after categories are successfully stored
+            # Start prediction only after training data is stored
             prediction = classifier.run_prediction(
                 "training",
                 sheet_id,
@@ -257,14 +261,10 @@ def train_model():
                 "prediction_id": prediction.id
             })
             
-        except Exception as e:
-            logger.error(f"Error storing categories: {str(e)}")
-            raise
-            
         finally:
             if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-        
+                
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
         if 'user_id' in locals():
@@ -306,22 +306,6 @@ def training_webhook():
         embeddings_array = np.array(embeddings)
         logger.info(f"Processed embeddings shape: {embeddings_array.shape}")
         
-        # Get descriptions from input
-        descriptions = []
-        if 'input' in data and 'text_batch' in data['input']:
-            try:
-                descriptions = json.loads(data['input']['text_batch'])
-            except json.JSONDecodeError as e:
-                logger.error(f"Error parsing text_batch: {e}")
-                logger.error(f"Raw text_batch: {data['input']['text_batch']}")
-                raise ValueError("Could not parse text_batch from input")
-        
-        if not descriptions:
-            raise ValueError("No descriptions found in input data")
-            
-        if len(descriptions) != len(embeddings):
-            raise ValueError(f"Mismatch between descriptions ({len(descriptions)}) and embeddings ({len(embeddings)})")
-            
         # Initialize service
         classifier = ClassificationService(
             supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
@@ -329,26 +313,26 @@ def training_webhook():
             backend_api=request.host_url.rstrip('/')
         )
         
-        # Get categories from stored file
-        categories = None
+        # Get training data from stored file
         try:
             with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
                 response = classifier.supabase.storage.from_(classifier.bucket_name).download(
-                    f"{sheet_id}_categories.json"
+                    f"{sheet_id}_training.json"
                 )
                 temp_file.write(response.encode() if isinstance(response, str) else response)
                 temp_file.flush()
                 temp_file_path = temp_file.name
                 
                 with open(temp_file_path, 'r') as f:
-                    categories_data = json.load(f)
-                    categories = categories_data.get('categories')
+                    training_data = json.load(f)
+                    descriptions = training_data.get('descriptions', [])
+                    categories = training_data.get('categories', [])
                     
-            if not categories:
-                raise ValueError("No categories found in stored data")
+            if not descriptions or not categories:
+                raise ValueError("No training data found in stored file")
                 
-            if len(categories) != len(embeddings):
-                raise ValueError(f"Mismatch between categories ({len(categories)}) and embeddings ({len(embeddings)})")
+            if len(descriptions) != len(embeddings):
+                raise ValueError(f"Mismatch between descriptions ({len(descriptions)}) and embeddings ({len(embeddings)})")
                 
             # Create training data structure
             training_data = {
@@ -370,19 +354,19 @@ def training_webhook():
                     file_options={"x-upsert": "true"}
                 )
                 
-            # Clean up categories file only after successful upload
+            # Clean up training data file
             try:
                 classifier.supabase.storage.from_(classifier.bucket_name).remove([
-                    f"{sheet_id}_categories.json"
+                    f"{sheet_id}_training.json"
                 ])
             except Exception as e:
-                logger.warning(f"Failed to clean up categories file: {e}")
+                logger.warning(f"Failed to clean up training data file: {e}")
             
             logger.info(f"Successfully stored training data with {len(descriptions)} examples")
             return jsonify({"status": "success", "message": "Training data processed successfully"})
             
         except Exception as e:
-            logger.error(f"Error processing categories and storing training data: {str(e)}")
+            logger.error(f"Error processing training data: {str(e)}")
             raise
             
     except Exception as e:
