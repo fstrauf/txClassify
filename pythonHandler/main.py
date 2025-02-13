@@ -11,6 +11,7 @@ from functools import wraps
 import replicate
 import numpy as np
 from datetime import datetime
+import tempfile
 
 from services.transaction_service import TransactionService
 from services.classification_service import ClassificationService
@@ -190,24 +191,23 @@ def classify_webhook():
         }), 500
 
 @app.route('/train', methods=['POST'])
-@require_api_key
 def train_model():
     """Endpoint to train the model with new data"""
     try:
         # Get request data
         data = request.get_json()
         if not data or 'transactions' not in data:
-            return jsonify({
-                "error": "Missing transactions data"
-            }), 400
+            return jsonify({"error": "Missing transactions data"}), 400
             
-        # Convert transactions to DataFrame
+        # Convert transactions to DataFrame and validate
         df = pd.DataFrame(data['transactions'])
         required_columns = ['Narrative', 'Category']
         if not all(col in df.columns for col in required_columns):
-            return jsonify({
-                "error": f"Missing required columns: {required_columns}"
-            }), 400
+            return jsonify({"error": f"Missing required columns: {required_columns}"}), 400
+        
+        # Clean data
+        df = df.dropna(subset=['Narrative', 'Category'])
+        df = df.drop_duplicates(subset=['Narrative'])
         
         # Initialize classification service
         classifier = ClassificationService(
@@ -216,10 +216,33 @@ def train_model():
             backend_api=request.host_url.rstrip('/')
         )
         
-        # Train model and wait for completion
-        prediction = classifier.train(df, f"sheet_{request.user_id}", request.user_id)
+        # Get embeddings from Replicate
+        sheet_id = f"sheet_{request.user_id}"
+        prediction = classifier.run_prediction(
+            "training",
+            sheet_id,
+            request.user_id,
+            df['Narrative'].tolist()
+        )
         
-        # Return prediction ID and status
+        # Store categories for later use
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+            json.dump({
+                'categories': df['Category'].tolist()
+            }, temp_file)
+            temp_file_path = temp_file.name
+            
+        try:
+            with open(temp_file_path, 'rb') as f:
+                classifier.supabase.storage.from_(classifier.bucket_name).upload(
+                    f"{sheet_id}_categories.json",
+                    f,
+                    file_options={"x-upsert": "true"}
+                )
+        finally:
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+        
         return jsonify({
             "status": "processing",
             "message": "Training started",
@@ -228,12 +251,11 @@ def train_model():
         
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/train/webhook', methods=['POST'])
 def training_webhook():
+    """Handle training webhook from Replicate."""
     try:
         # Get sheet ID from request args
         sheet_id = request.args.get('sheetId')
@@ -246,12 +268,12 @@ def training_webhook():
             
         # Parse the webhook data
         data = request.get_json()
-        if not data:
-            raise ValueError("No data received in webhook")
+        if not data or 'output' not in data:
+            raise ValueError("No output data in webhook response")
             
         # Get embeddings from the prediction output
         embeddings = []
-        if 'output' in data and isinstance(data['output'], list):
+        if isinstance(data['output'], list):
             embeddings = [item['embedding'] for item in data['output'] if 'embedding' in item]
         
         if not embeddings:
@@ -260,16 +282,76 @@ def training_webhook():
         embeddings_array = np.array(embeddings)
         logger.info(f"Processed embeddings shape: {embeddings_array.shape}")
         
-        # Initialize classification service
+        # Get descriptions from input
+        descriptions = []
+        if 'input' in data and 'text_batch' in data['input']:
+            try:
+                descriptions = json.loads(data['input']['text_batch'])
+            except json.JSONDecodeError:
+                raise ValueError("Could not parse text_batch from input")
+        
+        if not descriptions or len(descriptions) != len(embeddings):
+            raise ValueError("Mismatch between descriptions and embeddings")
+            
+        # Get categories from stored file
         classifier = ClassificationService(
             supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
             supabase_key=os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
             backend_api=request.host_url.rstrip('/')
         )
         
-        # Process webhook response (this will store the embeddings)
-        classifier.process_webhook_response(data, sheet_id)
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
+                response = classifier.supabase.storage.from_(classifier.bucket_name).download(
+                    f"{sheet_id}_categories.json"
+                )
+                temp_file.write(response)
+                temp_file.flush()
+                
+                with open(temp_file.name, 'r') as f:
+                    categories_data = json.load(f)
+                    categories = categories_data['categories']
+        finally:
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
         
+        if len(categories) != len(embeddings):
+            raise ValueError("Mismatch between categories and embeddings")
+            
+        # Create training data structure
+        training_data = {
+            'embeddings': embeddings_array,
+            'descriptions': np.array(descriptions),
+            'categories': np.array(categories)
+        }
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+            np.savez_compressed(temp_file, **training_data)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Upload to Supabase
+            with open(temp_file_path, 'rb') as f:
+                classifier.supabase.storage.from_(classifier.bucket_name).upload(
+                    f"{sheet_id}_training.npz",
+                    f,
+                    file_options={"x-upsert": "true"}
+                )
+        finally:
+            # Clean up temp files
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+            
+            # Clean up categories file
+            try:
+                classifier.supabase.storage.from_(classifier.bucket_name).remove([
+                    f"{sheet_id}_categories.json"
+                ])
+            except Exception as e:
+                logger.warning(f"Failed to clean up categories file: {e}")
+        
+        logger.info(f"Stored training data with {len(descriptions)} examples")
         return jsonify({"status": "success", "message": "Training data processed successfully"})
         
     except Exception as e:
