@@ -445,8 +445,14 @@ class ClassificationService:
     def _clean_text_for_embedding(self, text: str) -> str:
         """Clean text before sending to embedding model."""
         try:
-            # Convert to string and strip
-            text = str(text).strip()
+            # Handle Unicode escapes first
+            if isinstance(text, str):
+                text = text.encode('utf-8').decode('unicode-escape')
+            else:
+                text = str(text)
+
+            # Strip whitespace
+            text = text.strip()
             
             # Remove reference numbers and codes after |
             if '|' in text:
@@ -469,11 +475,15 @@ class ClassificationService:
             if len(text) < 2:
                 return ""
             
+            # Ensure text is properly encoded for output
+            text = text.encode('utf-8', errors='ignore').decode('utf-8')
+            
             return text
             
         except Exception as e:
             logger.warning(f"Error cleaning text '{text}': {e}")
-            return text
+            # Return original text if cleaning fails
+            return text if isinstance(text, str) else str(text)
 
     def run_prediction(
         self, 
