@@ -1065,6 +1065,10 @@ function trainModel(config) {
     
     updateStatus("Processing " + transactions.length + " transactions...");
     
+    // Get API key to use as userId
+    var apiKey = serviceConfig.apiKey;
+    var userId = apiKey.substring(0, 8);  // Use first 8 chars as user ID
+    
     // Call training endpoint
     var options = {
       method: 'post',
@@ -1072,7 +1076,10 @@ function trainModel(config) {
       headers: {
         'X-API-Key': serviceConfig.apiKey
       },
-      payload: JSON.stringify({ transactions: transactions }),
+      payload: JSON.stringify({ 
+        transactions: transactions,
+        userId: userId  // Include userId in the request
+      }),
       muteHttpExceptions: true
     };
     
