@@ -12,6 +12,7 @@ import replicate
 import numpy as np
 from datetime import datetime
 import tempfile
+import time
 
 from services.transaction_service import TransactionService
 from services.classification_service import ClassificationService
@@ -204,6 +205,10 @@ def train_model():
         if not user_id:
             return jsonify({"error": "Missing userId in request"}), 400
             
+        # Validate data size
+        if len(data['transactions']) > 10000:  # Set reasonable limit
+            return jsonify({"error": "Too many transactions. Maximum allowed is 10,000"}), 400
+            
         # Convert transactions to DataFrame and validate
         df = pd.DataFrame(data['transactions'])
         required_columns = ['Narrative', 'Category']
@@ -214,8 +219,17 @@ def train_model():
         df = df.dropna(subset=['Narrative', 'Category'])
         df = df.drop_duplicates(subset=['Narrative'])
         
+        # Validate data quality
         if len(df) == 0:
             return jsonify({"error": "No valid transactions after cleaning"}), 400
+            
+        if len(df) < 10:  # Minimum required for meaningful training
+            return jsonify({"error": "At least 10 valid transactions required for training"}), 400
+            
+        # Validate text lengths
+        max_text_length = 1000  # Set reasonable limit
+        if df['Narrative'].str.len().max() > max_text_length:
+            return jsonify({"error": f"Transaction descriptions must be less than {max_text_length} characters"}), 400
             
         # Initialize classification service
         classifier = ClassificationService(
@@ -230,24 +244,25 @@ def train_model():
         # Store categories in a single file
         training_data = {
             'descriptions': df['Narrative'].tolist(),
-            'categories': df['Category'].tolist()
+            'categories': df['Category'].tolist(),
+            'timestamp': datetime.now().isoformat(),
+            'count': len(df)
         }
         
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as temp_file:
-            json.dump(training_data, temp_file, ensure_ascii=False)
-            temp_file_path = temp_file.name
-            
+        # Convert to JSON bytes with size check
+        json_data = json.dumps(training_data, ensure_ascii=False).encode('utf-8')
+        if len(json_data) > 10 * 1024 * 1024:  # 10MB limit
+            return jsonify({"error": "Training data too large"}), 400
+        
         try:
-            # Upload to Supabase
-            with open(temp_file_path, 'rb') as f:
-                classifier.supabase.storage.from_(classifier.bucket_name).upload(
-                    f"{sheet_id}_training.json",
-                    f,
-                    file_options={"x-upsert": "true"}
-                )
+            # Upload directly to Supabase without temporary file
+            classifier.supabase.storage.from_(classifier.bucket_name).upload(
+                f"{sheet_id}_training.json",
+                json_data,
+                file_options={"x-upsert": "true", "contentType": "application/json"}
+            )
                 
-            # Start prediction only after training data is stored
+            # Start prediction with timeout
             prediction = classifier.run_prediction(
                 "training",
                 sheet_id,
@@ -255,15 +270,28 @@ def train_model():
                 df['Narrative'].tolist()
             )
             
+            # Store metadata for monitoring
+            try:
+                services["classification"].supabase.table("training_metadata").upsert({
+                    "sheet_id": sheet_id,
+                    "user_id": user_id,
+                    "prediction_id": prediction.id,
+                    "transaction_count": len(df),
+                    "started_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.warning(f"Failed to store training metadata: {e}")
+            
             return jsonify({
                 "status": "processing",
                 "message": "Training started",
-                "prediction_id": prediction.id
+                "prediction_id": prediction.id,
+                "transaction_count": len(df)
             })
             
-        finally:
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
+        except Exception as e:
+            logger.error(f"Error storing training data: {str(e)}")
+            raise
                 
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
@@ -275,6 +303,8 @@ def train_model():
 def training_webhook():
     """Handle training webhook from Replicate."""
     temp_file_path = None
+    start_time = datetime.now()
+    
     try:
         # Get sheet ID from request args
         sheet_id = request.args.get('sheetId')
@@ -294,10 +324,16 @@ def training_webhook():
             logger.error(f"Webhook data structure: {json.dumps(data, indent=2)}")
             raise ValueError("No output data in webhook response")
             
-        # Get embeddings from the prediction output
+        # Get embeddings from the prediction output with validation
         embeddings = []
         if isinstance(data['output'], list):
             embeddings = [item['embedding'] for item in data['output'] if 'embedding' in item]
+            
+            # Validate embedding dimensions
+            if embeddings:
+                first_embedding = embeddings[0]
+                if not all(len(emb) == len(first_embedding) for emb in embeddings):
+                    raise ValueError("Inconsistent embedding dimensions")
         
         if not embeddings:
             logger.error(f"Output structure: {json.dumps(data['output'], indent=2)}")
@@ -313,69 +349,121 @@ def training_webhook():
             backend_api=request.host_url.rstrip('/')
         )
         
-        # Get training data from stored file
-        try:
-            # Download training data
-            response = classifier.supabase.storage.from_(classifier.bucket_name).download(
-                f"{sheet_id}_training.json"
-            )
-            
-            # Handle response based on type
-            if isinstance(response, str):
-                training_data = json.loads(response)
-            else:
-                # If it's bytes, decode it first
-                training_data = json.loads(response.decode('utf-8'))
-                
-            descriptions = training_data.get('descriptions', [])
-            categories = training_data.get('categories', [])
-                    
-            if not descriptions or not categories:
-                raise ValueError("No training data found in stored file")
-                
-            if len(descriptions) != len(embeddings):
-                raise ValueError(f"Mismatch between descriptions ({len(descriptions)}) and embeddings ({len(embeddings)})")
-                
-            # Create training data structure
-            training_data = {
-                'embeddings': embeddings_array,
-                'descriptions': np.array(descriptions),
-                'categories': np.array(categories)
-            }
-            
-            # Save to temporary file
-            with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
-                np.savez_compressed(temp_file, **training_data)
-                temp_file_path = temp_file.name
-            
-            # Upload to Supabase
-            with open(temp_file_path, 'rb') as f:
-                classifier.supabase.storage.from_(classifier.bucket_name).upload(
-                    f"{sheet_id}_training.npz",
-                    f,
-                    file_options={"x-upsert": "true"}
+        # Get training data from stored file with retry
+        max_retries = 3
+        retry_delay = 1
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Download training data
+                response = classifier.supabase.storage.from_(classifier.bucket_name).download(
+                    f"{sheet_id}_training.json"
                 )
                 
-            # Clean up training data file
-            try:
-                classifier.supabase.storage.from_(classifier.bucket_name).remove([
-                    f"{sheet_id}_training.json"
-                ])
+                # Ensure response is bytes and decode
+                if isinstance(response, str):
+                    response = response.encode('utf-8')
+                training_data = json.loads(response.decode('utf-8'))
+                
+                descriptions = training_data.get('descriptions', [])
+                categories = training_data.get('categories', [])
+                
+                if not descriptions or not categories:
+                    raise ValueError("No training data found in stored file")
+                    
+                if len(descriptions) != len(embeddings):
+                    raise ValueError(f"Mismatch between descriptions ({len(descriptions)}) and embeddings ({len(embeddings)})")
+                
+                break
             except Exception as e:
-                logger.warning(f"Failed to clean up training data file: {e}")
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.warning(f"Retry {attempt + 1}/{max_retries} failed: {e}")
+                    time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+                else:
+                    raise ValueError(f"Failed to retrieve training data after {max_retries} attempts: {str(last_error)}")
+                
+        # Create training data structure with metadata
+        training_data = {
+            'embeddings': embeddings_array,
+            'descriptions': np.array(descriptions),
+            'categories': np.array(categories),
+            'metadata': {
+                'created_at': datetime.now().isoformat(),
+                'embedding_dimensions': embeddings_array.shape[1],
+                'sample_count': len(descriptions)
+            }
+        }
+        
+        # Save to temporary file with size check
+        with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
+            np.savez_compressed(temp_file, **training_data)
+            temp_file_path = temp_file.name
             
-            logger.info(f"Successfully stored training data with {len(descriptions)} examples")
-            return jsonify({"status": "success", "message": "Training data processed successfully"})
-            
+            # Check file size
+            file_size = os.path.getsize(temp_file_path)
+            if file_size > 50 * 1024 * 1024:  # 50MB limit
+                raise ValueError("Training data file too large")
+        
+        # Upload to Supabase with retry
+        for attempt in range(max_retries):
+            try:
+                with open(temp_file_path, 'rb') as f:
+                    classifier.supabase.storage.from_(classifier.bucket_name).upload(
+                        f"{sheet_id}_training.npz",
+                        f.read(),
+                        file_options={"x-upsert": "true"}
+                    )
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise ValueError(f"Failed to upload training data after {max_retries} attempts: {str(e)}")
+                time.sleep(retry_delay * (2 ** attempt))
+                
+        # Clean up training data file
+        try:
+            classifier.supabase.storage.from_(classifier.bucket_name).remove([
+                f"{sheet_id}_training.json"
+            ])
         except Exception as e:
-            logger.error(f"Error processing training data: {str(e)}")
-            raise
+            logger.warning(f"Failed to clean up training data file: {e}")
+        
+        # Update metadata
+        try:
+            processing_time = (datetime.now() - start_time).total_seconds()
+            services["classification"].supabase.table("training_metadata").update({
+                "completed_at": datetime.now().isoformat(),
+                "processing_time": processing_time,
+                "embedding_dimensions": embeddings_array.shape[1],
+                "status": "completed"
+            }).eq("sheet_id", sheet_id).execute()
+        except Exception as e:
+            logger.warning(f"Failed to update training metadata: {e}")
+        
+        logger.info(f"Successfully stored training data with {len(descriptions)} examples")
+        return jsonify({
+            "status": "success", 
+            "message": "Training data processed successfully",
+            "processing_time": processing_time,
+            "sample_count": len(descriptions)
+        })
             
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error processing webhook: {error_msg}")
         if user_id:
             update_process_status(f"Error: {error_msg}", "training", user_id)
+            
+        # Update error in metadata
+        try:
+            services["classification"].supabase.table("training_metadata").update({
+                "error": error_msg,
+                "status": "failed"
+            }).eq("sheet_id", sheet_id).execute()
+        except Exception as metadata_error:
+            logger.warning(f"Failed to update error in metadata: {metadata_error}")
+            
         return jsonify({"error": error_msg}), 500
         
     finally:

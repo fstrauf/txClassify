@@ -454,6 +454,29 @@ class ClassificationService:
         try:
             logger.info(f"Running prediction for {len(texts)} texts in {api_mode} mode")
             
+            # Validate input size
+            if len(texts) > 10000:
+                raise ValueError("Too many texts. Maximum allowed is 10,000")
+                
+            # Validate text lengths
+            max_length = 1000
+            long_texts = [t for t in texts if len(str(t)) > max_length]
+            if long_texts:
+                raise ValueError(f"Found {len(long_texts)} texts longer than {max_length} characters")
+            
+            # Clean and validate texts
+            cleaned_texts = []
+            for text in texts:
+                if not isinstance(text, str):
+                    text = str(text)
+                text = text.strip()
+                if not text:
+                    continue
+                cleaned_texts.append(text)
+            
+            if not cleaned_texts:
+                raise ValueError("No valid texts after cleaning")
+
             model = replicate.models.get("replicate/all-mpnet-base-v2")
             version = model.versions.get(
                 "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
@@ -471,21 +494,24 @@ class ClassificationService:
                     
             logger.info(f"Using webhook endpoint: {webhook}")
 
-            # Create prediction with webhook
-            prediction = replicate.predictions.create(
-                version=version,
-                input={
-                    "text_batch": json.dumps(texts),
-                    "webhook": webhook,  # Add webhook URL to input as well
-                    "webhook_url": webhook  # Keep for backward compatibility
-                },
-                webhook=webhook,
-                webhook_events_filter=["completed", "output", "logs"],  # Use valid event types
-            )
+            # Create prediction with webhook and timeout
+            try:
+                prediction = replicate.predictions.create(
+                    version=version,
+                    input={
+                        "text_batch": json.dumps(cleaned_texts),
+                        "webhook": webhook,
+                        "webhook_url": webhook
+                    },
+                    webhook=webhook,
+                    webhook_events_filter=["completed", "output", "logs"],
+                )
+            except Exception as e:
+                raise ValueError(f"Failed to create prediction: {str(e)}")
             
             logger.info(f"Started {api_mode} with prediction ID: {prediction.id}")
             
-            # Verify webhook delivery for this prediction
+            # Start async verification of webhook delivery
             self.verify_webhook_delivery(prediction.id)
             
             return prediction
@@ -629,77 +655,87 @@ class ClassificationService:
             if all(cat.replace('-', '').replace('.', '').isdigit() for cat in categories):
                 raise ValueError("Categories appear to be numerical values instead of category names")
             
-            # Try to load existing data first
-            existing_data = None
-            try:
-                with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
-                    response = self.supabase.storage.from_(self.bucket_name).download(
-                        f"{sheet_id}_training.npz"
-                    )
-                    temp_file.write(response)
-                    temp_file.flush()
-                    existing_data = np.load(temp_file.name, allow_pickle=True)
-                    os.unlink(temp_file.name)
-            except Exception:
-                logger.info("No existing training data found, creating new file")
-            
             # Process in smaller batches to manage memory
-            BATCH_SIZE = 1000
-            if existing_data is not None:
-                # Initialize combined arrays
-                combined_embeddings = existing_data['embeddings']
-                combined_descriptions = existing_data['descriptions']
-                combined_categories = existing_data['categories']
-                
-                # Add new data in batches
-                for i in range(0, len(embeddings), BATCH_SIZE):
-                    batch_end = min(i + BATCH_SIZE, len(embeddings))
-                    combined_embeddings = np.vstack([
-                        combined_embeddings, 
-                        embeddings[i:batch_end]
-                    ])
-                    combined_descriptions = np.concatenate([
-                        combined_descriptions, 
-                        descriptions[i:batch_end]
-                    ])
-                    combined_categories = np.concatenate([
-                        combined_categories, 
-                        categories[i:batch_end]
-                    ])
-                    # Force garbage collection after each batch
-                    gc.collect()
-            else:
-                combined_embeddings = embeddings
-                combined_descriptions = descriptions
-                combined_categories = categories
+            BATCH_SIZE = 500
+            total_batches = (len(embeddings) + BATCH_SIZE - 1) // BATCH_SIZE
             
-            # Create a structured array with all training data
-            training_data = {
-                'embeddings': combined_embeddings,
-                'descriptions': combined_descriptions,
-                'categories': combined_categories
+            combined_data = {
+                'embeddings': [],
+                'descriptions': [],
+                'categories': []
             }
             
-            # Log training data for verification
-            logger.info(f"Storing training data with {len(combined_categories)} examples")
-            logger.info(f"Sample categories: {combined_categories[:5]}")
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * BATCH_SIZE
+                end_idx = min((batch_idx + 1) * BATCH_SIZE, len(embeddings))
+                
+                # Process batch
+                batch_embeddings = embeddings[start_idx:end_idx]
+                batch_descriptions = descriptions[start_idx:end_idx]
+                batch_categories = categories[start_idx:end_idx]
+                
+                # Validate batch data
+                if len(batch_embeddings) != len(batch_descriptions) or len(batch_embeddings) != len(batch_categories):
+                    raise ValueError(f"Data length mismatch in batch {batch_idx + 1}")
+                
+                # Add to combined data
+                combined_data['embeddings'].extend(batch_embeddings)
+                combined_data['descriptions'].extend(batch_descriptions)
+                combined_data['categories'].extend(batch_categories)
+                
+                # Force garbage collection after each batch
+                gc.collect()
             
-            # Save to temporary file in chunks
+            # Convert lists to numpy arrays
+            combined_data['embeddings'] = np.array(combined_data['embeddings'])
+            combined_data['descriptions'] = np.array(combined_data['descriptions'])
+            combined_data['categories'] = np.array(combined_data['categories'])
+            
+            # Add metadata
+            combined_data['metadata'] = {
+                'created_at': datetime.now().isoformat(),
+                'embedding_dimensions': embeddings.shape[1],
+                'sample_count': len(descriptions),
+                'batch_size': BATCH_SIZE,
+                'total_batches': total_batches
+            }
+            
+            # Save to temporary file with size check
             with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
-                np.savez_compressed(temp_file, **training_data)
+                np.savez_compressed(temp_file, **combined_data)
                 temp_file_path = temp_file.name
+                
+                # Check file size
+                file_size = os.path.getsize(temp_file_path)
+                if file_size > 50 * 1024 * 1024:  # 50MB limit
+                    os.unlink(temp_file_path)
+                    raise ValueError("Training data file too large")
             
-            # Upload to Supabase in chunks
-            with open(temp_file_path, 'rb') as f:
-                self.supabase.storage.from_(self.bucket_name).upload(
-                    f"{sheet_id}_training.npz",
-                    f,
-                    file_options={"x-upsert": "true"}
-                )
-            
-            # Clean up
-            os.unlink(temp_file_path)
-            logger.info(f"Stored training data for {len(combined_descriptions)} examples")
+            try:
+                # Upload to Supabase with retry
+                max_retries = 3
+                retry_delay = 1
+                
+                for attempt in range(max_retries):
+                    try:
+                        with open(temp_file_path, 'rb') as f:
+                            self.supabase.storage.from_(self.bucket_name).upload(
+                                f"{sheet_id}_training.npz",
+                                f.read(),
+                                file_options={"x-upsert": "true"}
+                            )
+                        break
+                    except Exception as e:
+                        if attempt == max_retries - 1:
+                            raise
+                        time.sleep(retry_delay * (2 ** attempt))
+                
+                logger.info(f"Successfully stored {len(descriptions)} training examples")
+                
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
                 
         except Exception as e:
             logger.error(f"Error storing training data: {str(e)}")
