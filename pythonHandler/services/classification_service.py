@@ -442,6 +442,39 @@ class ClassificationService:
             logger.error(f"Error verifying webhook delivery: {str(e)}")
             return False
 
+    def _clean_text_for_embedding(self, text: str) -> str:
+        """Clean text before sending to embedding model."""
+        try:
+            # Convert to string and strip
+            text = str(text).strip()
+            
+            # Remove reference numbers and codes after |
+            if '|' in text:
+                text = text.split('|')[0].strip()
+            
+            # Remove common suffixes with numbers
+            text = re.sub(r'\s+\d+.*$', '', text)
+            
+            # Remove special location/branch indicators
+            text = re.sub(r'\s+(?:Br|G|De|A)\s+\d+.*$', '', text)
+            
+            # Remove dates and times
+            text = re.sub(r'\d{4}-\d{2}-\d{2}T.*Z', '', text)
+            text = re.sub(r'\d{1,2}:\d{2}(?::\d{2})?', '', text)
+            
+            # Normalize spaces and remove multiple spaces
+            text = ' '.join(text.split())
+            
+            # Remove very short texts
+            if len(text) < 2:
+                return ""
+            
+            return text
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning text '{text}': {e}")
+            return text
+
     def run_prediction(
         self, 
         api_mode: str,
@@ -454,28 +487,24 @@ class ClassificationService:
         try:
             logger.info(f"Running prediction for {len(texts)} texts in {api_mode} mode")
             
-            # Validate input size
-            if len(texts) > 10000:
-                raise ValueError("Too many texts. Maximum allowed is 10,000")
-                
-            # Validate text lengths
-            max_length = 1000
-            long_texts = [t for t in texts if len(str(t)) > max_length]
-            if long_texts:
-                raise ValueError(f"Found {len(long_texts)} texts longer than {max_length} characters")
-            
             # Clean and validate texts
             cleaned_texts = []
+            seen_texts = set()  # Track unique cleaned texts
+            
             for text in texts:
-                if not isinstance(text, str):
-                    text = str(text)
-                text = text.strip()
-                if not text:
+                cleaned = self._clean_text_for_embedding(text)
+                if not cleaned:
                     continue
-                cleaned_texts.append(text)
+                
+                # Only add if we haven't seen this cleaned version before
+                if cleaned not in seen_texts:
+                    cleaned_texts.append(cleaned)
+                    seen_texts.add(cleaned)
             
             if not cleaned_texts:
                 raise ValueError("No valid texts after cleaning")
+            
+            logger.info(f"Cleaned and deduplicated {len(texts)} texts to {len(cleaned_texts)} unique texts")
 
             model = replicate.models.get("replicate/all-mpnet-base-v2")
             version = model.versions.get(
@@ -501,19 +530,13 @@ class ClassificationService:
                     input={
                         "text_batch": json.dumps(cleaned_texts),
                         "webhook": webhook,
-                        "webhook_url": webhook
-                    },
-                    webhook=webhook,
-                    webhook_events_filter=["completed", "output", "logs"],
+                        "webhook_events_filter": ["completed"]
+                    }
                 )
             except Exception as e:
                 raise ValueError(f"Failed to create prediction: {str(e)}")
             
             logger.info(f"Started {api_mode} with prediction ID: {prediction.id}")
-            
-            # Start async verification of webhook delivery
-            self.verify_webhook_delivery(prediction.id)
-            
             return prediction
             
         except Exception as e:
