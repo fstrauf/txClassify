@@ -548,6 +548,29 @@ class ClassificationService:
                     'total_chunks': query_params.get('total_chunks', [None])[0]
                 }
             
+            # Check if this webhook has already been processed
+            if all(chunk_params.values()):
+                try:
+                    response = self.supabase.table("processed_webhooks").select("*").eq(
+                        "prediction_id", data.get('id')
+                    ).eq(
+                        "chunk_index", chunk_params['chunk_index']
+                    ).execute()
+                    
+                    if response.data:
+                        logger.info(f"Webhook already processed for prediction {data.get('id')} chunk {chunk_params['chunk_index']}")
+                        return pd.DataFrame()
+                    
+                    # Mark webhook as processed
+                    self.supabase.table("processed_webhooks").insert({
+                        "prediction_id": data.get('id'),
+                        "chunk_index": chunk_params['chunk_index'],
+                        "processed_at": datetime.now().isoformat()
+                    }).execute()
+                    
+                except Exception as e:
+                    logger.warning(f"Error checking webhook processing status: {e}")
+            
             # Validate webhook data
             if not data or 'output' not in data:
                 raise ValueError("Invalid webhook data: missing 'output' field")
@@ -559,8 +582,14 @@ class ClassificationService:
             # For training mode with chunks
             if all(chunk_params.values()):
                 try:
-                    # Load training data for this chunk
-                    training_data = self.get_temp_training_data(chunk_params['training_key'])
+                    # Check if the chunk data still exists
+                    try:
+                        training_data = self.get_temp_training_data(chunk_params['training_key'])
+                    except Exception as e:
+                        if "Object not found" in str(e):
+                            logger.info(f"Chunk {chunk_params['chunk_index']} already processed, skipping")
+                            return pd.DataFrame()
+                        raise
                     
                     # Store embeddings for this chunk
                     self.store_embeddings(new_embeddings, training_data, sheet_id)
@@ -974,19 +1003,24 @@ class ClassificationService:
                 chunk_idx = int(chunk_index)
                 total = int(total_chunks)
                 
-                # Mark this chunk as processed
+                # Check if this chunk has already been processed
                 try:
-                    # Get current processed chunks
                     response = self.supabase.table("processed_chunks").select("*").eq("sheet_id", sheet_id).execute()
                     record = response.data[0] if response.data else None
                     
+                    if record and chunk_idx in record.get("processed_chunks", []):
+                        logger.info(f"Chunk {chunk_idx} already processed, skipping cleanup")
+                        return
+                    
+                    # Mark this chunk as processed
                     if not record:
                         # Create new record
                         processed = [chunk_idx]
                         self.supabase.table("processed_chunks").insert({
                             "sheet_id": sheet_id,
                             "processed_chunks": processed,
-                            "total_chunks": total
+                            "total_chunks": total,
+                            "last_updated": datetime.now().isoformat()
                         }).execute()
                     else:
                         # Update existing record
@@ -994,7 +1028,8 @@ class ClassificationService:
                         if chunk_idx not in processed:
                             processed.append(chunk_idx)
                             self.supabase.table("processed_chunks").update({
-                                "processed_chunks": processed
+                                "processed_chunks": processed,
+                                "last_updated": datetime.now().isoformat()
                             }).eq("sheet_id", sheet_id).execute()
                     
                     # Only cleanup if all chunks are processed
@@ -1007,13 +1042,27 @@ class ClassificationService:
                     # Clean up the processed chunks tracking
                     self.supabase.table("processed_chunks").delete().eq("sheet_id", sheet_id).execute()
                     
+                    # Clean up processed webhooks for this sheet
+                    try:
+                        self.supabase.table("processed_webhooks").delete().eq("sheet_id", sheet_id).execute()
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up processed webhooks: {e}")
+                    
                 except Exception as e:
                     logger.warning(f"Error tracking processed chunks: {e}")
                     return
             
-            # Proceed with cleanup only if we have no chunk tracking or all chunks are processed
-            self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
-            logger.info(f"Cleaned up temporary training data for key: {training_key}")
+            # Check if the file still exists before attempting to delete
+            try:
+                self.supabase.storage.from_(self.bucket_name).download(f"{training_key}.json")
+                # If we get here, the file exists, so we can delete it
+                self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
+                logger.info(f"Cleaned up temporary training data for key: {training_key}")
+            except Exception as e:
+                if "Object not found" in str(e):
+                    logger.info(f"Temporary data {training_key} already cleaned up")
+                else:
+                    logger.warning(f"Error checking/cleaning temporary data: {e}")
             
         except Exception as e:
             logger.warning(f"Failed to clean up temporary training data: {e}")
