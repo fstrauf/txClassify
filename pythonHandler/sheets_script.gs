@@ -652,7 +652,12 @@ function checkTrainingStatus() {
         updateStats('Last Prediction ID', result.prediction_id);
       }
       if (result.created_at) {
-        updateStats('Process Start Time', result.created_at);
+        // Handle created_at whether it's a string or needs formatting
+        var createdAt = result.created_at;
+        if (createdAt instanceof Date) {
+          createdAt = createdAt.toISOString();
+        }
+        updateStats('Process Start Time', createdAt);
       }
       
       if (result.status === "completed") {
