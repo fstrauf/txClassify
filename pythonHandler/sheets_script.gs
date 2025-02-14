@@ -593,31 +593,17 @@ function checkTrainingStatus() {
     var startTime = parseInt(userProperties.getProperty('START_TIME'));
     
     if (!predictionId || !triggerId) {
-      // Clean up if no prediction ID or trigger ID
-      if (triggerId) {
-        var triggers = ScriptApp.getProjectTriggers();
-        for (var i = 0; i < triggers.length; i++) {
-          if (triggers[i].getUniqueId() === triggerId) {
-            ScriptApp.deleteTrigger(triggers[i]);
-            break;
-          }
-        }
-      }
+      Logger.log("Missing predictionId or triggerId - cleaning up");
+      cleanupTrigger(triggerId);
       return;
     }
     
-    // Check if we've been running for more than 30 minutes
-    if (new Date().getTime() - startTime > 30 * 60 * 1000) {
-      updateStatus("Error: Training timed out after 30 minutes");
+    // Check if we've been running for more than 60 minutes
+    var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
+    if (minutesElapsed > 60) {
+      updateStatus("Error: Training timed out after 60 minutes");
       updateStats('Model Status', 'Error: Training timed out');
-      // Get all triggers and find the one with matching ID
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
+      cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
     }
@@ -628,7 +614,28 @@ function checkTrainingStatus() {
       muteHttpExceptions: true
     });
     
-    var result = JSON.parse(response.getContentText());
+    var responseText = response.getContentText();
+    Logger.log("Raw response: " + responseText);
+    
+    // Check for empty response
+    if (!responseText || responseText.trim() === '') {
+      updateStatus("Error: Empty response from server");
+      return;
+    }
+    
+    var result;
+    try {
+      result = JSON.parse(responseText);
+    } catch (parseError) {
+      Logger.log("JSON parse error: " + parseError);
+      updateStatus("Error parsing server response: " + parseError.toString());
+      return;
+    }
+    
+    if (!result) {
+      updateStatus("Error: Invalid response from server");
+      return;
+    }
     
     if (result.status === "completed") {
       updateStatus("Training completed successfully!");
@@ -643,51 +650,43 @@ function checkTrainingStatus() {
       updateStats('Training Sheet', trainingSheet);
       updateStats('Model Status', 'Ready');
       
-      // Clean up
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
+      cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
+      
     } else if (result.status === "failed") {
-      updateStatus("Error: Training failed - " + (result.error || "Unknown error"));
+      var errorMessage = result.error || "Unknown error";
+      updateStatus("Error: Training failed - " + errorMessage);
       updateStats('Model Status', 'Error: Training failed');
-      // Clean up
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
+      cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
     }
     
-    // Still processing, update status
-    updateStatus("Training in progress... " + (result.message || ""));
+    // Still processing, update status with time elapsed
+    updateStatus(`Training in progress... (${minutesElapsed} minutes elapsed) ` + (result.message || ""));
     updateStats('Model Status', 'Training in progress...');
     
   } catch (error) {
     Logger.log("Error checking training status: " + error);
-    // Clean up on error
-    var triggerId = userProperties.getProperty('TRIGGER_ID');
-    if (triggerId) {
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
-    }
+    Logger.log("Error stack: " + error.stack);
+    cleanupTrigger(triggerId);
     userProperties.deleteAllProperties();
     updateStatus("Error: " + error.toString());
     updateStats('Model Status', 'Error: ' + error.toString());
+  }
+}
+
+// Helper function to clean up triggers
+function cleanupTrigger(triggerId) {
+  if (triggerId) {
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+      if (triggers[i].getUniqueId() === triggerId) {
+        ScriptApp.deleteTrigger(triggers[i]);
+        break;
+      }
+    }
   }
 }
 

@@ -13,6 +13,7 @@ import numpy as np
 from datetime import datetime
 import tempfile
 import time
+import traceback
 
 from services.transaction_service import TransactionService
 from services.classification_service import ClassificationService
@@ -269,6 +270,7 @@ def training_webhook():
         user_id = request.args.get('userId')
         
         logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id}")
+        logger.info(f"Request data: {json.dumps(request.get_json(), indent=2)}")
         
         if not sheet_id:
             raise ValueError("No sheet ID provided in webhook URL")
@@ -276,6 +278,9 @@ def training_webhook():
         # Parse the webhook data
         data = request.get_json()
         if not data:
+            logger.error("No data received in webhook")
+            logger.error(f"Request headers: {dict(request.headers)}")
+            logger.error(f"Request args: {dict(request.args)}")
             raise ValueError("No data received in webhook")
             
         if 'output' not in data:
@@ -286,6 +291,11 @@ def training_webhook():
         embeddings = []
         if isinstance(data['output'], list):
             embeddings = [item['embedding'] for item in data['output'] if 'embedding' in item]
+            
+            # Log embedding information
+            logger.info(f"Found {len(embeddings)} embeddings")
+            if embeddings:
+                logger.info(f"First embedding dimension: {len(embeddings[0])}")
             
             # Validate embedding dimensions
             if embeddings:
@@ -303,6 +313,8 @@ def training_webhook():
         # Get descriptions and categories from webhook params
         descriptions = request.args.get('descriptions', '').split(',')
         categories = request.args.get('categories', '').split(',')
+        
+        logger.info(f"Received {len(descriptions)} descriptions and {len(categories)} categories")
         
         if not descriptions or not categories:
             raise ValueError("Missing descriptions or categories in webhook params")
@@ -329,6 +341,8 @@ def training_webhook():
             
             # Check file size
             file_size = os.path.getsize(temp_file_path)
+            logger.info(f"Training data file size: {file_size / 1024 / 1024:.2f} MB")
+            
             if file_size > 50 * 1024 * 1024:  # 50MB limit
                 raise ValueError("Training data file too large")
             
@@ -350,14 +364,16 @@ def training_webhook():
                             f.read(),
                             file_options={"x-upsert": "true"}
                         )
+                    logger.info(f"Successfully uploaded training data on attempt {attempt + 1}")
                     break
                 except Exception as e:
                     if attempt == max_retries - 1:
                         raise ValueError(f"Failed to upload training data after {max_retries} attempts: {str(e)}")
+                    logger.warning(f"Upload attempt {attempt + 1} failed: {str(e)}")
                     time.sleep(retry_delay * (2 ** attempt))
         
         processing_time = (datetime.now() - start_time).total_seconds()
-        logger.info(f"Successfully stored training data with {len(descriptions)} examples")
+        logger.info(f"Successfully stored training data with {len(descriptions)} examples in {processing_time:.2f} seconds")
         return jsonify({
             "status": "success", 
             "message": "Training data processed successfully",
@@ -368,6 +384,7 @@ def training_webhook():
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error processing webhook: {error_msg}")
+        logger.error(f"Stack trace: {traceback.format_exc()}")
         if user_id:
             update_process_status(f"Error: {error_msg}", "training", user_id)
         return jsonify({"error": error_msg}), 500
@@ -377,6 +394,7 @@ def training_webhook():
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.unlink(temp_file_path)
+                logger.info("Cleaned up temporary file")
             except Exception as e:
                 logger.warning(f"Failed to clean up temporary file: {e}")
 
