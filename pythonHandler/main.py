@@ -263,7 +263,7 @@ def training_webhook():
     """Handle training webhook from Replicate."""
     temp_file_path = None
     start_time = datetime.now()
-    logger.info(f"Received webhook at {start_time}")
+    logger.info(f"Received webhook at {start_time.isoformat()}")
     
     try:
         sheet_id = request.args.get('sheetId')
