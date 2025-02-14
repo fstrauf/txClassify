@@ -623,11 +623,33 @@ def check_status(prediction_id):
                 prediction = replicate.predictions.get(prediction_id)
                 logger.info(f"Prediction status: {prediction.status}")
                 
+                # Handle timestamps safely
+                created_at = prediction.created_at
+                if isinstance(created_at, str):
+                    created_at_str = created_at
+                else:
+                    created_at_str = created_at.isoformat()
+                
+                completed_at = getattr(prediction, 'completed_at', None)
+                completed_at_str = completed_at.isoformat() if completed_at and not isinstance(completed_at, str) else completed_at
+                
+                # Calculate elapsed time safely
+                try:
+                    if isinstance(created_at, str):
+                        from datetime import datetime
+                        created_timestamp = datetime.fromisoformat(created_at.replace('Z', '+00:00')).timestamp()
+                    else:
+                        created_timestamp = created_at.timestamp()
+                    elapsed_time = time.time() - created_timestamp
+                except Exception as e:
+                    logger.warning(f"Error calculating elapsed time: {e}")
+                    elapsed_time = 0
+                
                 status_response = {
                     "prediction_id": prediction_id,
                     "status": prediction.status,
-                    "created_at": prediction.created_at.isoformat(),
-                    "elapsed_time": time.time() - prediction.created_at.timestamp(),
+                    "created_at": created_at_str,
+                    "elapsed_time": elapsed_time,
                     "logs": prediction.logs
                 }
                 
@@ -635,7 +657,7 @@ def check_status(prediction_id):
                     status_response.update({
                         "status": "processing",
                         "message": "Webhook processing in progress...",
-                        "prediction_completed_at": prediction.completed_at.isoformat()
+                        "prediction_completed_at": completed_at_str
                     })
                 elif prediction.status == "failed":
                     status_response.update({
