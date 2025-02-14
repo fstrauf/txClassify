@@ -263,19 +263,18 @@ def training_webhook():
     """Handle training webhook from Replicate."""
     temp_file_path = None
     start_time = datetime.now()
+    logger.info(f"Received webhook at {start_time}")
     
     try:
-        # Get sheet ID from request args
         sheet_id = request.args.get('sheetId')
         user_id = request.args.get('userId')
         
-        logger.info(f"Received training webhook for sheet {sheet_id} and user {user_id}")
-        logger.info(f"Request data: {json.dumps(request.get_json(), indent=2)}")
+        logger.info(f"Processing webhook for sheet {sheet_id} and user {user_id}")
         
         if not sheet_id:
             raise ValueError("No sheet ID provided in webhook URL")
             
-        # Parse the webhook data
+        # Parse the webhook data with logging
         data = request.get_json()
         if not data:
             logger.error("No data received in webhook")
@@ -283,25 +282,22 @@ def training_webhook():
             logger.error(f"Request args: {dict(request.args)}")
             raise ValueError("No data received in webhook")
             
+        logger.info(f"Webhook data size: {len(str(data))} bytes")
+        
         if 'output' not in data:
             logger.error(f"Webhook data structure: {json.dumps(data, indent=2)}")
             raise ValueError("No output data in webhook response")
             
-        # Get embeddings from the prediction output with validation
+        # Get embeddings with validation and logging
         embeddings = []
         if isinstance(data['output'], list):
             embeddings = [item['embedding'] for item in data['output'] if 'embedding' in item]
-            
-            # Log embedding information
             logger.info(f"Found {len(embeddings)} embeddings")
             if embeddings:
                 logger.info(f"First embedding dimension: {len(embeddings[0])}")
             
-            # Validate embedding dimensions
-            if embeddings:
-                first_embedding = embeddings[0]
-                if not all(len(emb) == len(first_embedding) for emb in embeddings):
-                    raise ValueError("Inconsistent embedding dimensions")
+            if not all(len(emb) == len(embeddings[0]) for emb in embeddings):
+                raise ValueError("Inconsistent embedding dimensions")
         
         if not embeddings:
             logger.error(f"Output structure: {json.dumps(data['output'], indent=2)}")
@@ -310,7 +306,7 @@ def training_webhook():
         embeddings_array = np.array(embeddings)
         logger.info(f"Processed embeddings shape: {embeddings_array.shape}")
         
-        # Get descriptions and categories from webhook params
+        # Get descriptions and categories with logging
         descriptions = request.args.get('descriptions', '').split(',')
         categories = request.args.get('categories', '').split(',')
         
@@ -330,55 +326,64 @@ def training_webhook():
             'metadata': {
                 'created_at': datetime.now().isoformat(),
                 'embedding_dimensions': embeddings_array.shape[1],
-                'sample_count': len(descriptions)
+                'sample_count': len(descriptions),
+                'processing_time': (datetime.now() - start_time).total_seconds()
             }
         }
         
-        # Save to NPZ file and upload to Supabase
+        logger.info(f"Training data prepared in {training_data['metadata']['processing_time']:.2f} seconds")
+        
+        # Save to NPZ file with logging
         with tempfile.NamedTemporaryFile(suffix='.npz', delete=False) as temp_file:
             np.savez_compressed(temp_file, **training_data)
             temp_file_path = temp_file.name
             
-            # Check file size
             file_size = os.path.getsize(temp_file_path)
             logger.info(f"Training data file size: {file_size / 1024 / 1024:.2f} MB")
             
             if file_size > 50 * 1024 * 1024:  # 50MB limit
                 raise ValueError("Training data file too large")
             
-            # Initialize service
+            # Upload to Supabase with retry and logging
             classifier = ClassificationService(
                 supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
                 supabase_key=os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
                 backend_api=request.host_url.rstrip('/')
             )
             
-            # Upload to Supabase with retry
             max_retries = 3
             retry_delay = 1
+            upload_success = False
+            
             for attempt in range(max_retries):
                 try:
+                    logger.info(f"Upload attempt {attempt + 1}/{max_retries}")
                     with open(temp_file_path, 'rb') as f:
                         classifier.supabase.storage.from_(classifier.bucket_name).upload(
                             f"{sheet_id}_training.npz",
                             f.read(),
                             file_options={"x-upsert": "true"}
                         )
+                    upload_success = True
                     logger.info(f"Successfully uploaded training data on attempt {attempt + 1}")
                     break
                 except Exception as e:
-                    if attempt == max_retries - 1:
-                        raise ValueError(f"Failed to upload training data after {max_retries} attempts: {str(e)}")
                     logger.warning(f"Upload attempt {attempt + 1} failed: {str(e)}")
-                    time.sleep(retry_delay * (2 ** attempt))
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay * (2 ** attempt))
+            
+            if not upload_success:
+                raise ValueError(f"Failed to upload training data after {max_retries} attempts")
         
         processing_time = (datetime.now() - start_time).total_seconds()
-        logger.info(f"Successfully stored training data with {len(descriptions)} examples in {processing_time:.2f} seconds")
+        logger.info(f"Total webhook processing time: {processing_time:.2f} seconds")
+        
         return jsonify({
-            "status": "success", 
+            "status": "success",
             "message": "Training data processed successfully",
             "processing_time": processing_time,
-            "sample_count": len(descriptions)
+            "sample_count": len(descriptions),
+            "file_size_mb": file_size / 1024 / 1024
         })
             
     except Exception as e:
@@ -390,7 +395,7 @@ def training_webhook():
         return jsonify({"error": error_msg}), 500
         
     finally:
-        # Clean up any temporary files
+        # Clean up temporary files
         if temp_file_path and os.path.exists(temp_file_path):
             try:
                 os.unlink(temp_file_path)
@@ -594,49 +599,77 @@ def handle_training_webhook():
 def check_status(prediction_id):
     """Check status of a prediction"""
     try:
-        # Get prediction from Replicate
-        prediction = replicate.predictions.get(prediction_id)
-        
-        # Get webhook results from memory or storage
-        webhook_results = {}
+        # First check if we have webhook results
+        webhook_results = None
         try:
-            # Try to get webhook results from Supabase
             response = services["classification"].supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
             if response.data:
                 webhook_results = response.data[0].get("results", {})
+                logger.info(f"Found webhook results for prediction {prediction_id}")
+                return jsonify({
+                    "status": "completed",
+                    "result": webhook_results,
+                    "completion_time": response.data[0].get("created_at")
+                })
         except Exception as e:
             logger.warning(f"Failed to get webhook results: {e}")
         
-        # Return appropriate status
-        if prediction.status == "succeeded":
-            if webhook_results:
-                # If we have webhook results, return those
-                return jsonify({
-                    "status": "completed",
-                    "result": webhook_results
-                })
-            else:
-                # If no webhook results yet, still processing
-                return jsonify({
-                    "status": "processing",
-                    "message": "Webhook processing in progress..."
-                })
-        elif prediction.status == "failed":
-            return jsonify({
-                "status": "failed",
-                "error": prediction.error
-            })
-        else:
-            return jsonify({
-                "status": "processing",
-                "message": f"Operation in progress... ({prediction.status})"
-            })
+        # If no webhook results, check Replicate status with retries
+        max_retries = 3
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                prediction = replicate.predictions.get(prediction_id)
+                logger.info(f"Prediction status: {prediction.status}")
+                
+                status_response = {
+                    "prediction_id": prediction_id,
+                    "status": prediction.status,
+                    "created_at": prediction.created_at.isoformat(),
+                    "elapsed_time": time.time() - prediction.created_at.timestamp(),
+                    "logs": prediction.logs
+                }
+                
+                if prediction.status == "succeeded":
+                    status_response.update({
+                        "status": "processing",
+                        "message": "Webhook processing in progress...",
+                        "prediction_completed_at": prediction.completed_at.isoformat()
+                    })
+                elif prediction.status == "failed":
+                    status_response.update({
+                        "status": "failed",
+                        "error": prediction.error
+                    })
+                else:
+                    status_response.update({
+                        "message": f"Prediction in progress... ({prediction.status})"
+                    })
+                
+                return jsonify(status_response)
+                
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.warning(f"Replicate API attempt {attempt + 1} failed: {e}")
+                    time.sleep(1 * (2 ** attempt))
+                else:
+                    if webhook_results:
+                        # If we can't get prediction status but have webhook results, we're done
+                        return jsonify({
+                            "status": "completed",
+                            "result": webhook_results
+                        })
+                    else:
+                        raise
             
     except Exception as e:
-        logger.error(f"Error checking prediction status: {str(e)}")
+        logger.error(f"Error checking status: {str(e)}")
         return jsonify({
             "status": "failed",
-            "error": str(e)
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
         }), 500
 
 if __name__ == "__main__":

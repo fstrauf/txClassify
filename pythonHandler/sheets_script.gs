@@ -598,7 +598,6 @@ function checkTrainingStatus() {
       return;
     }
     
-    // Check if we've been running for more than 60 minutes
     var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
     if (minutesElapsed > 60) {
       updateStatus("Error: Training timed out after 60 minutes");
@@ -619,53 +618,61 @@ function checkTrainingStatus() {
     
     // Check for empty response
     if (!responseText || responseText.trim() === '') {
-      updateStatus("Error: Empty response from server");
+      updateStatus(`Training in progress... (${minutesElapsed} min) - Waiting for response`);
       return;
     }
     
-    var result;
     try {
-      result = JSON.parse(responseText);
+      var result = JSON.parse(responseText);
+      
+      // Enhanced status reporting
+      var statusMessage = `Training in progress... (${minutesElapsed} min)`;
+      
+      // Add detailed status information
+      if (result.status) {
+        statusMessage += ` - ${result.status}`;
+      }
+      if (result.message) {
+        statusMessage += `\n${result.message}`;
+      }
+      if (result.logs) {
+        statusMessage += `\nLogs: ${result.logs}`;
+      }
+      if (result.error) {
+        statusMessage += `\nError: ${result.error}`;
+      }
+      if (result.elapsed_time) {
+        statusMessage += `\nProcessing time: ${Math.floor(result.elapsed_time)} seconds`;
+      }
+      
+      updateStatus(statusMessage);
+      
+      // Update Stats sheet with additional metrics
+      if (result.prediction_id) {
+        updateStats('Last Prediction ID', result.prediction_id);
+      }
+      if (result.created_at) {
+        updateStats('Process Start Time', result.created_at);
+      }
+      
+      if (result.status === "completed") {
+        var completionTime = new Date().toLocaleString();
+        updateStats('Last Training Time', completionTime);
+        updateStats('Model Status', 'Ready');
+        updateStatus("Training completed successfully!");
+        cleanupTrigger(triggerId);
+        userProperties.deleteAllProperties();
+      } else if (result.status === "failed") {
+        updateStats('Model Status', 'Error: Training failed');
+        updateStatus(`Error: Training failed - ${result.error || "Unknown error"}`);
+        cleanupTrigger(triggerId);
+        userProperties.deleteAllProperties();
+      }
+      
     } catch (parseError) {
-      Logger.log("JSON parse error: " + parseError);
-      updateStatus("Error parsing server response: " + parseError.toString());
-      return;
+      Logger.log("Error parsing response: " + parseError);
+      updateStatus(`Training in progress... (${minutesElapsed} min) - Invalid response`);
     }
-    
-    if (!result) {
-      updateStatus("Error: Invalid response from server");
-      return;
-    }
-    
-    if (result.status === "completed") {
-      updateStatus("Training completed successfully!");
-      
-      // Update Stats sheet
-      var completionTime = new Date().toLocaleString();
-      var trainingSize = userProperties.getProperty('TRAINING_SIZE') || 'Unknown';
-      var trainingSheet = SpreadsheetApp.getActiveSheet().getName();
-      
-      updateStats('Last Training Time', completionTime);
-      updateStats('Training Data Size', trainingSize + ' transactions');
-      updateStats('Training Sheet', trainingSheet);
-      updateStats('Model Status', 'Ready');
-      
-      cleanupTrigger(triggerId);
-      userProperties.deleteAllProperties();
-      return;
-      
-    } else if (result.status === "failed") {
-      var errorMessage = result.error || "Unknown error";
-      updateStatus("Error: Training failed - " + errorMessage);
-      updateStats('Model Status', 'Error: Training failed');
-      cleanupTrigger(triggerId);
-      userProperties.deleteAllProperties();
-      return;
-    }
-    
-    // Still processing, update status with time elapsed
-    updateStatus(`Training in progress... (${minutesElapsed} minutes elapsed) ` + (result.message || ""));
-    updateStats('Model Status', 'Training in progress...');
     
   } catch (error) {
     Logger.log("Error checking training status: " + error);
