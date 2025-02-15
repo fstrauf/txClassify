@@ -624,6 +624,7 @@ function checkTrainingStatus() {
     
     try {
       var result = JSON.parse(responseText);
+      Logger.log("Parsed result: " + JSON.stringify(result));
       
       // Enhanced status reporting
       var statusMessage = `Training in progress... (${minutesElapsed} min)`;
@@ -660,13 +661,25 @@ function checkTrainingStatus() {
         updateStats('Process Start Time', createdAt);
       }
       
-      if (result.status === "completed") {
-        var completionTime = new Date().toLocaleString();
-        updateStats('Last Training Time', completionTime);
-        updateStats('Model Status', 'Ready');
-        updateStatus("Training completed successfully!");
-        cleanupTrigger(triggerId);
-        userProperties.deleteAllProperties();
+      // Check for completion
+      if (result.status === "succeeded") {
+        // Check if we have webhook results
+        if (result.result) {
+          var completionTime = new Date().toLocaleString();
+          updateStats('Last Training Time', completionTime);
+          updateStats('Model Status', 'Ready');
+          updateStatus("Training completed successfully!");
+          cleanupTrigger(triggerId);
+          userProperties.deleteAllProperties();
+        } else {
+          // Still waiting for webhook processing
+          statusMessage = `Training completed, processing results... (${minutesElapsed} min)`;
+          if (result.elapsed_time) {
+            statusMessage += `\nProcessing time: ${Math.floor(result.elapsed_time)} seconds`;
+          }
+          updateStatus(statusMessage);
+          updateStats('Model Status', 'Processing Results');
+        }
       } else if (result.status === "failed") {
         updateStats('Model Status', 'Error: Training failed');
         updateStatus(`Error: Training failed - ${result.error || "Unknown error"}`);
