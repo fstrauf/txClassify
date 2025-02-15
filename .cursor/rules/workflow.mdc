@@ -1,0 +1,20 @@
+---
+description: 
+globs: 
+---
+
+# Simple Workflow of the Python Algo
+
+
+Training:
+1. Get training data from Google Sheets
+2. Process and clean the data
+3. Get embeddings via Replicate
+4. Store embeddings in Supabase
+5. Update status
+
+Classification:
+1. Get new transactions from Google Sheets
+2. Get embeddings for new transactions
+3. Compare with stored embeddings
+4. Write results back to sheets
