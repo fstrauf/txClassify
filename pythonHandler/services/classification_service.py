@@ -58,39 +58,6 @@ class ClassificationService:
             logger.error(f"Error in training: {str(e)}")
             raise
 
-    def _wait_for_chunk_completion(self, prediction_id: str, sheet_id: str, chunk_index: int, 
-                                 timeout: int = 300, check_interval: int = 5) -> None:
-        """Wait for a chunk to be processed with timeout."""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            # Check prediction status
-            prediction = replicate.predictions.get(prediction_id)
-            if prediction.status == "failed":
-                raise ValueError(f"Prediction failed for chunk {chunk_index}")
-                
-            # Check if chunk was processed
-            if self._verify_chunk_processed(sheet_id, chunk_index):
-                return
-                
-            time.sleep(check_interval)
-            
-        raise TimeoutError(f"Timeout waiting for chunk {chunk_index} to complete")
-
-    def _verify_chunk_processed(self, sheet_id: str, chunk_index: int) -> bool:
-        """Verify that a chunk was processed successfully."""
-        try:
-            response = self.supabase.table("processed_chunks").select("*").eq(
-                "sheet_id", sheet_id
-            ).eq(
-                "chunk_index", chunk_index
-            ).execute()
-            
-            return bool(response.data)
-            
-        except Exception as e:
-            logger.warning(f"Error verifying chunk processing: {e}")
-            return False
-
     def _preprocess_training_data(self, training_data: pd.DataFrame) -> pd.DataFrame:
         """Preprocess training data with robust error handling."""
         try:
@@ -144,30 +111,6 @@ class ClassificationService:
             logger.error(f"Error in preprocessing: {str(e)}")
             raise
 
-    def _store_chunk_with_retry(self, training_records: list, chunk_key: str, max_retries: int = 3) -> None:
-        """Store chunk data with retries and validation."""
-        last_error = None
-        for attempt in range(max_retries):
-            try:
-                # Store the data
-                stored_key = self.store_temp_training_data(training_records, chunk_key)
-                
-                # Verify the data was stored correctly
-                retrieved_data = self.get_temp_training_data(stored_key)
-                if len(retrieved_data) != len(training_records):
-                    raise ValueError("Data verification failed: size mismatch")
-                
-                logger.info(f"Successfully stored and verified chunk data (attempt {attempt + 1})")
-                return
-                
-            except Exception as e:
-                last_error = e
-                logger.warning(f"Chunk storage attempt {attempt + 1} failed: {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
-        
-        raise Exception(f"Failed to store chunk after {max_retries} attempts: {str(last_error)}")
-
     def _save_training_state(self, state: dict) -> None:
         """Save training state to Supabase with retries."""
         max_retries = 3
@@ -215,62 +158,6 @@ class ClassificationService:
                 if attempt == max_retries - 1:
                     return None
                 time.sleep(2 ** attempt)
-
-    def _resume_training(self, state: dict) -> Any:
-        """Resume training from saved state."""
-        try:
-            logger.info(f"Resuming training from chunk {state['current_chunk']}/{state['total_chunks']}")
-            
-            # Verify the last chunk was processed correctly
-            if state.get('last_processed_chunk_key'):
-                try:
-                    self.get_temp_training_data(state['last_processed_chunk_key'])
-                except Exception:
-                    logger.warning("Last chunk data not found, rolling back one chunk")
-                    state['current_chunk'] -= 1
-            
-            # Process next chunk
-            if state['current_chunk'] < state['total_chunks']:
-                remaining_data = pd.DataFrame(state['remaining_chunks'])
-                next_chunk = remaining_data[:state['chunk_size']]
-                
-                # Update state
-                state['remaining_chunks'] = remaining_data[state['chunk_size']:].to_dict('records')
-                
-                # Process chunk
-                chunk_key = f"temp_training_{state['sheet_id']}_chunk_{state['current_chunk']}_{int(time.time())}"
-                training_records = next_chunk.to_dict('records')
-                
-                self._store_chunk_with_retry(training_records, chunk_key)
-                
-                # Run prediction
-                prediction = self.run_prediction(
-                    "training",
-                    state['sheet_id'],
-                    state['user_id'],
-                    next_chunk['Narrative'].tolist(),
-                    webhook_params={
-                        'training_key': chunk_key,
-                        'chunk_index': str(state['current_chunk']),
-                        'total_chunks': str(state['total_chunks'])
-                    }
-                )
-                
-                # Update state
-                state['current_chunk'] += 1
-                state['last_processed_chunk_key'] = chunk_key
-                state['last_prediction_id'] = prediction.id
-                self._save_training_state(state)
-                
-                return prediction
-                
-            else:
-                logger.info("All chunks already processed")
-                return None
-            
-        except Exception as e:
-            logger.error(f"Error resuming training: {str(e)}")
-            raise
 
     def _clean_description(self, text: str) -> str:
         """Clean transaction description."""
@@ -692,49 +579,16 @@ class ClassificationService:
             if all(cat.replace('-', '').replace('.', '').isdigit() for cat in categories):
                 raise ValueError("Categories appear to be numerical values instead of category names")
             
-            # Process in smaller batches to manage memory
-            BATCH_SIZE = 500
-            total_batches = (len(embeddings) + BATCH_SIZE - 1) // BATCH_SIZE
-            
+            # Create combined data structure
             combined_data = {
-                'embeddings': [],
-                'descriptions': [],
-                'categories': []
-            }
-            
-            for batch_idx in range(total_batches):
-                start_idx = batch_idx * BATCH_SIZE
-                end_idx = min((batch_idx + 1) * BATCH_SIZE, len(embeddings))
-                
-                # Process batch
-                batch_embeddings = embeddings[start_idx:end_idx]
-                batch_descriptions = descriptions[start_idx:end_idx]
-                batch_categories = categories[start_idx:end_idx]
-                
-                # Validate batch data
-                if len(batch_embeddings) != len(batch_descriptions) or len(batch_embeddings) != len(batch_categories):
-                    raise ValueError(f"Data length mismatch in batch {batch_idx + 1}")
-                
-                # Add to combined data
-                combined_data['embeddings'].extend(batch_embeddings)
-                combined_data['descriptions'].extend(batch_descriptions)
-                combined_data['categories'].extend(batch_categories)
-                
-                # Force garbage collection after each batch
-                gc.collect()
-            
-            # Convert lists to numpy arrays
-            combined_data['embeddings'] = np.array(combined_data['embeddings'])
-            combined_data['descriptions'] = np.array(combined_data['descriptions'])
-            combined_data['categories'] = np.array(combined_data['categories'])
-            
-            # Add metadata
-            combined_data['metadata'] = {
-                'created_at': datetime.now().isoformat(),
-                'embedding_dimensions': embeddings.shape[1],
-                'sample_count': len(descriptions),
-                'batch_size': BATCH_SIZE,
-                'total_batches': total_batches
+                'embeddings': np.array(embeddings),
+                'descriptions': np.array(descriptions),
+                'categories': np.array(categories),
+                'metadata': {
+                    'created_at': datetime.now().isoformat(),
+                    'embedding_dimensions': embeddings.shape[1],
+                    'sample_count': len(descriptions)
+                }
             }
             
             # Save to temporary file with size check
@@ -1018,30 +872,9 @@ class ClassificationService:
             logger.error(f"Error retrieving temp training data: {e}")
             raise
 
-    def cleanup_temp_training_data(self, training_key: str, sheet_id: str = None, chunk_index: str = None, total_chunks: str = None) -> None:
+    def cleanup_temp_training_data(self, training_key: str) -> None:
         """Clean up temporary training data from Supabase Storage."""
         try:
-            # If we have chunk information, verify all chunks are processed before cleanup
-            if sheet_id and chunk_index is not None and total_chunks is not None:
-                try:
-                    response = self.supabase.table("processed_chunks").select("*").eq(
-                        "sheet_id", sheet_id
-                    ).execute()
-                    
-                    processed_chunks = [r.get("chunk_index") for r in response.data]
-                    total = int(total_chunks)
-                    
-                    if len(processed_chunks) < total:
-                        logger.info(f"Not cleaning up temp data yet - {len(processed_chunks)}/{total} chunks processed")
-                        return
-                    
-                    logger.info(f"All {total} chunks processed, proceeding with cleanup")
-                    
-                except Exception as e:
-                    logger.warning(f"Error checking processed chunks: {e}")
-                    # If we can't verify chunk status, don't clean up
-                    return
-            
             # Double check if the file exists before attempting to delete
             try:
                 # Try to download the file first to verify it exists
@@ -1067,77 +900,20 @@ class ClassificationService:
             if len(embeddings) != len(training_data):
                 raise ValueError(f"Mismatch between embeddings ({len(embeddings)}) and training data ({len(training_data)})")
             
-            # Process in batches to manage memory
-            BATCH_SIZE = 500
-            total_batches = (len(embeddings) + BATCH_SIZE - 1) // BATCH_SIZE
+            # Extract categories and descriptions
+            categories = [item['Category'] for item in training_data]
+            descriptions = [item['Narrative'] for item in training_data]
             
-            for batch_idx in range(total_batches):
-                start_idx = batch_idx * BATCH_SIZE
-                end_idx = min((batch_idx + 1) * BATCH_SIZE, len(embeddings))
-                
-                # Extract batch data
-                batch_embeddings = embeddings[start_idx:end_idx]
-                batch_training_data = training_data[start_idx:end_idx]
-                
-                # Extract categories from training data
-                categories = [item['Category'] for item in batch_training_data]
-                descriptions = [item['Narrative'] for item in batch_training_data]
-                
-                logger.info(f"Processing batch {batch_idx + 1}/{total_batches} ({len(batch_embeddings)} embeddings)")
-                
-                # Store training data for this batch
-                self._store_training_data(
-                    embeddings=batch_embeddings,
-                    descriptions=descriptions,
-                    categories=categories,
-                    sheet_id=sheet_id
-                )
-                
-                # Force garbage collection after each batch
-                gc.collect()
+            # Store training data
+            self._store_training_data(
+                embeddings=embeddings,
+                descriptions=descriptions,
+                categories=categories,
+                sheet_id=sheet_id
+            )
             
-            logger.info(f"Successfully stored all embeddings in {total_batches} batches")
+            logger.info(f"Successfully stored all embeddings")
             
         except Exception as e:
             logger.error(f"Error storing embeddings: {e}")
-            raise
-
-    def _get_processed_chunks_key(self, sheet_id: str) -> str:
-        """Get the key for storing processed chunks information."""
-        return f"{sheet_id}_processed_chunks"
-
-    def _mark_chunk_processed(self, sheet_id: str, chunk_index: int, total_chunks: int) -> bool:
-        """Mark a chunk as processed and check if all chunks are done."""
-        try:
-            key = self._get_processed_chunks_key(sheet_id)
-            
-            # Get current processed chunks
-            try:
-                response = self.supabase.table("processed_chunks").select("*").eq("sheet_id", sheet_id).execute()
-                record = response.data[0] if response.data else None
-            except Exception:
-                record = None
-            
-            if not record:
-                # Create new record
-                processed = [chunk_index]
-                self.supabase.table("processed_chunks").insert({
-                    "sheet_id": sheet_id,
-                    "processed_chunks": processed,
-                    "total_chunks": total_chunks
-                }).execute()
-            else:
-                # Update existing record
-                processed = record.get("processed_chunks", [])
-                if chunk_index not in processed:
-                    processed.append(chunk_index)
-                    self.supabase.table("processed_chunks").update({
-                        "processed_chunks": processed
-                    }).eq("sheet_id", sheet_id).execute()
-            
-            # Check if all chunks are processed
-            return len(processed) == total_chunks
-            
-        except Exception as e:
-            logger.error(f"Error marking chunk as processed: {e}")
-            return False 
+            raise 

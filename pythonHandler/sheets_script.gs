@@ -649,7 +649,7 @@ function checkTrainingStatus() {
       updateStatus(statusMessage);
       
       // Update Stats sheet with additional metrics
-      if (result.prediction_id) {
+    if (result.prediction_id) {
         updateStats('Last Prediction ID', result.prediction_id);
       }
       if (result.created_at) {
@@ -671,7 +671,7 @@ function checkTrainingStatus() {
           updateStatus("Training completed successfully!");
           cleanupTrigger(triggerId);
           userProperties.deleteAllProperties();
-        } else {
+      } else {
           // Still waiting for webhook processing
           statusMessage = `Training completed, processing results... (${minutesElapsed} min)`;
           if (result.elapsed_time) {
@@ -1098,21 +1098,57 @@ function trainModel(config) {
       method: 'post',
       contentType: 'application/json',
       headers: {
-        'X-API-Key': serviceConfig.apiKey
+        'X-API-Key': serviceConfig.apiKey,
+        'Accept': 'application/json'
       },
       payload: JSON.stringify({ 
         transactions: transactions,
-        userId: userId  // Include userId in the request
+        userId: userId
       }),
       muteHttpExceptions: true
     };
     
     var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/train', options);
-    var result = JSON.parse(response.getContentText());
+    var responseCode = response.getResponseCode();
+    var responseText = response.getContentText();
     
-    if (response.getResponseCode() !== 200) {
-      updateStatus("Error: Training failed");
-      throw new Error('Training error: ' + response.getContentText());
+    // Log raw response for debugging
+    Logger.log("Response code: " + responseCode);
+    Logger.log("Response text: " + responseText);
+    
+    // Validate response
+    if (responseCode !== 200) {
+      var errorMessage = "Training failed with status " + responseCode;
+      try {
+        var errorJson = JSON.parse(responseText);
+        if (errorJson.error) {
+          errorMessage += ": " + errorJson.error;
+        }
+      } catch (e) {
+        // If response is not JSON, extract error message from text
+        if (responseText.includes("<!DOCTYPE")) {
+          errorMessage += ": Server error occurred";
+        } else {
+          errorMessage += ": " + responseText;
+        }
+      }
+      updateStatus("Error: " + errorMessage);
+      throw new Error(errorMessage);
+    }
+    
+    // Parse response carefully
+    var result;
+    try {
+      result = JSON.parse(responseText);
+    } catch (e) {
+      updateStatus("Error: Invalid response format");
+      throw new Error("Failed to parse server response: " + e.toString());
+    }
+    
+    // Validate result structure
+    if (!result || typeof result !== 'object') {
+      updateStatus("Error: Invalid response structure");
+      throw new Error("Invalid response structure from server");
     }
     
     // Check if we got a prediction ID
@@ -1134,12 +1170,16 @@ function trainModel(config) {
         'TRAINING_SIZE': transactions.length.toString()
       });
       
+      // Log stored properties for debugging
+      Logger.log("Stored properties:");
+      Logger.log(JSON.stringify(userProperties.getProperties()));
+      
       ui.alert('Training has started! The sheet will update automatically when training is complete.\n\nYou can close this window.');
       return;
+    } else {
+      updateStatus("Error: No prediction ID received");
+      throw new Error("No prediction ID received from server");
     }
-    
-    updateStatus("Training completed successfully!");
-    ui.alert('Training completed successfully!\n\nProcessed: ' + transactions.length + ' transactions');
     
   } catch (error) {
     Logger.log("Training error: " + error.toString());
