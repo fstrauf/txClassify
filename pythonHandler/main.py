@@ -50,13 +50,29 @@ def update_process_status(status_text: str, mode: str, user_id: str) -> None:
         logger.error(f"Error updating process status: {e}")
 
 def clean_text(text: str) -> str:
-    """Clean transaction description text."""
-    text = re.sub(
-        r"[^\w\s]|https?://\S+|www\.\S+|https?:/\S+|[^\x00-\x7F]+|\d+|\b\w{1,2}\b|xx|Value Date|Card|AUS|USA|USD|PTY|LTD|Tap and Pay|TAP AND PAY",
-        "",
-        str(text).strip()
-    )
-    text = re.sub(r"\s+", " ", text)
+    """Clean transaction description text while preserving business names."""
+    # Convert to string and strip whitespace
+    text = str(text).strip()
+    
+    # Remove only transaction-specific metadata
+    patterns = [
+        r'\s*\d{2,4}[-/]\d{2}[-/]\d{2,4}',  # Dates
+        r'\s*\d{2}:\d{2}(?::\d{2})?',  # Times
+        r'\s*Card\s+[xX*]+\d{4}',  # Card numbers
+        r'\s*\|\s*[\d\.]+$',  # Amount at end
+        r'\s*\|\s*[A-Z0-9\s]+$',  # Reference codes
+        r'\s+(?:Value Date|Card ending|ref|reference)\s*:?.*$',  # Transaction metadata
+        r'(?i)\s+(?:AUS|USA|UK|NS|CYP)$',  # Country codes at end
+        r'\s+\([^)]*\)$',  # Anything in parentheses at the end
+    ]
+    
+    # Apply patterns one by one
+    for pattern in patterns:
+        text = re.sub(pattern, '', text)
+    
+    # Remove extra whitespace
+    text = ' '.join(text.split())
+    
     return text.strip()
 
 def get_spreadsheet_data(sheet_id: str, range_name: str) -> list:

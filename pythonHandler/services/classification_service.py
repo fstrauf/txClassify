@@ -160,49 +160,28 @@ class ClassificationService:
                 time.sleep(2 ** attempt)
 
     def _clean_description(self, text: str) -> str:
-        """Clean transaction description."""
+        """Clean transaction description while preserving business names."""
         try:
-            # Convert to string if not already
-            text = str(text)
+            # Convert to string and strip whitespace
+            text = str(text).strip()
             
-            # Generic patterns that apply to most bank transactions
-            generic_patterns = [
-                # Common transaction suffixes/metadata
-                r'\s*\d{2,4}[-/]\d{2}[-/]\d{2,4}',  # Dates in various formats
-                r'T\d{2}:\d{2}:\d{2}',  # Timestamps
-                r'\s+\d{1,2}:\d{2}(:\d{2})?',  # Times
+            # Remove only transaction-specific metadata
+            patterns = [
+                r'\s*\d{2,4}[-/]\d{2}[-/]\d{2,4}',  # Dates
+                r'\s*\d{2}:\d{2}(?::\d{2})?',  # Times
                 r'\s*Card\s+[xX*]+\d{4}',  # Card numbers
-                r'\s*\d{6,}',  # Long numbers (reference numbers)
-                r'\s+\([^)]*\)',  # Anything in parentheses
-                
-                # Common business suffixes
-                r'(?i)\s+(?:ltd|limited|pty|inc|llc|corporation)\.?$',
-                
-                # Transaction metadata
-                r'(?i)\s*(?:value date|card ending|ref|reference)\s*:?.*$',
-                r'\s+\|\s*[\d\.]+$',  # Amount at end
-                r'\s+\|\s*[A-Z0-9\s]+$',  # Reference codes
-                
-                # Location/country codes
-                r'\s+(?:AU|AUS|USA|UK|NS|CYP)$'
+                r'\s*\|\s*[\d\.]+$',  # Amount at end
+                r'\s*\|\s*[A-Z0-9\s]+$',  # Reference codes
+                r'\s+(?:Value Date|Card ending|ref|reference)\s*:?.*$',  # Transaction metadata
+                r'(?i)\s+(?:AUS|USA|UK|NS|CYP)$',  # Country codes at end
+                r'\s+\([^)]*\)$',  # Anything in parentheses at the end
             ]
             
-            # Apply generic patterns
-            for pattern in generic_patterns:
+            # Apply patterns one by one
+            for pattern in patterns:
                 text = re.sub(pattern, '', text)
             
-            # Common payment processor prefixes
-            prefixes_to_remove = [
-                'SQ *', 'TSG *', 'PP *', 'SP *', 'PAYPAL *', 'GOOGLE *', 'APPLE *',
-                'INT\'L *', 'INTERNATIONAL *', 'THE *', 'IPY*'
-            ]
-            
-            # Remove prefixes
-            for prefix in prefixes_to_remove:
-                if text.upper().startswith(prefix.upper()):
-                    text = text[len(prefix):]
-            
-            # Remove extra whitespace and standardize spacing
+            # Remove extra whitespace
             text = ' '.join(text.split())
             
             return text.strip()
