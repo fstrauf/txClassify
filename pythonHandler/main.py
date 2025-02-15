@@ -234,69 +234,48 @@ def train_model():
     """Train the model with new data."""
     try:
         data = request.get_json()
-        sheet_id = data.get("expenseSheetId")
+        
+        # Extract data from request
+        transactions = data.get("transactions")
         user_id = data.get("userId")
-        config = get_user_config(user_id)
-
-        if not all([sheet_id, user_id, config]):
-            error_msg = "Missing required parameters"
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
-
-        # Get sheet configuration
-        sheet_range = f"{config['trainingTab']}!{config['columnRange']}"
         
-        # Fetch training data
-        status_msg = "Fetching training data"
-        update_process_status(status_msg, "training", user_id)
-        update_sheet_log(sheet_id, "INFO", status_msg)
-        sheet_data = get_spreadsheet_data(sheet_id, sheet_range)
-        
-        if not sheet_data or len(sheet_data) < 2:  # Need header + at least one row
-            error_msg = "No training data found"
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
-        
-        # Process data
-        df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0])
-        if 'description' not in df.columns or 'category' not in df.columns:
-            error_msg = "Missing required columns: description and category"
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
+        if not transactions or not user_id:
+            return jsonify({"error": "Missing required parameters: transactions and userId"}), 400
+            
+        # Get sheet ID from first transaction
+        sheet_id = data.get("expenseSheetId")
+        if not sheet_id:
+            return jsonify({"error": "Missing expenseSheetId"}), 400
 
-        df["description"] = df["description"].apply(clean_text)
+        # Process transactions
+        df = pd.DataFrame(transactions)
+        
+        # Validate required columns
+        if 'Narrative' not in df.columns or 'Category' not in df.columns:
+            return jsonify({"error": "Missing required columns: Narrative and Category"}), 400
+
+        # Clean descriptions
+        df["description"] = df["Narrative"].apply(clean_text)
         df = df.drop_duplicates(subset=["description"])
         
         if len(df) < 10:  # Minimum required for meaningful training
-            error_msg = "At least 10 valid transactions required for training"
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
+            return jsonify({"error": "At least 10 valid transactions required for training"}), 400
         
         # Store training data index
-        status_msg = f"Processing {len(df)} training examples"
-        update_sheet_log(sheet_id, "INFO", status_msg)
         df["item_id"] = range(len(df))
-        store_embeddings("txclassify", f"{sheet_id}_index.npy", df[["item_id", "category", "description"]].to_records())
+        store_embeddings("txclassify", f"{sheet_id}_index.npy", df[["item_id", "Category", "description"]].to_records())
         
         # Run prediction
-        status_msg = "Getting embeddings"
-        update_process_status(status_msg, "training", user_id)
-        update_sheet_log(sheet_id, "INFO", status_msg)
         prediction = run_prediction("train", sheet_id, user_id, df["description"].tolist())
         
-        update_sheet_log(sheet_id, "INFO", "Training started", f"Prediction ID: {prediction.id}")
         return jsonify({
             "status": "processing",
             "prediction_id": prediction.id
         })
 
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error in train_model: {error_msg}")
-        update_process_status(f"Error: {error_msg}", "training", user_id)
-        if sheet_id:
-            update_sheet_log(sheet_id, "ERROR", f"Training failed: {error_msg}")
-        return jsonify({"error": error_msg}), 500
+        logger.error(f"Error in train_model: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/train/webhook", methods=["POST"])
 def training_webhook():
@@ -307,10 +286,7 @@ def training_webhook():
         user_id = request.args.get("userId")
         
         if not all([data, sheet_id, user_id]):
-            error_msg = "Missing required parameters"
-            if sheet_id:
-                update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
+            return jsonify({"error": "Missing required parameters"}), 400
 
         # Process embeddings
         embeddings = np.array([item["embedding"] for item in data["output"]])
@@ -318,19 +294,19 @@ def training_webhook():
         # Store embeddings
         store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
         
-        status_msg = "Training completed successfully"
+        # Update status
         update_process_status("completed", "training", user_id)
-        update_sheet_log(sheet_id, "SUCCESS", status_msg)
-        return jsonify({"status": "success"})
+        
+        return jsonify({
+            "status": "success",
+            "message": "Training completed successfully"
+        })
 
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error in training webhook: {error_msg}")
+        logger.error(f"Error in training webhook: {e}")
         if user_id:
-            update_process_status(f"Error: {error_msg}", "training", user_id)
-        if sheet_id:
-            update_sheet_log(sheet_id, "ERROR", f"Training webhook failed: {error_msg}")
-        return jsonify({"error": error_msg}), 500
+            update_process_status(f"Error: {str(e)}", "training", user_id)
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/classify", methods=["POST"])
 def classify_transactions():
