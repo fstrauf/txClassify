@@ -18,3 +18,10 @@ Classification:
 2. Get embeddings for new transactions
 3. Compare with stored embeddings
 4. Write results back to sheets
+
+
+# Infrastructure
+All of this runs on the lowest tiers, so it can happen that they are temporarily paused or need time to wake up.
+1. DB runs on Supabase
+2. Replicate handles the embeddings model
+3. Render is where the python service is deployed.

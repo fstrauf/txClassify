@@ -591,6 +591,8 @@ function checkTrainingStatus() {
     var predictionId = userProperties.getProperty('PREDICTION_ID');
     var triggerId = userProperties.getProperty('TRIGGER_ID');
     var startTime = parseInt(userProperties.getProperty('START_TIME'));
+    var retryCount = parseInt(userProperties.getProperty('RETRY_COUNT') || '0');
+    var maxRetries = 5;  // Maximum number of consecutive failed attempts
     
     if (!predictionId || !triggerId) {
       Logger.log("Missing predictionId or triggerId - cleaning up");
@@ -599,8 +601,8 @@ function checkTrainingStatus() {
     }
     
     var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
-    if (minutesElapsed > 60) {
-      updateStatus("Error: Training timed out after 60 minutes");
+    if (minutesElapsed > 30) {  // 30 minutes timeout
+      updateStatus("Error: Training timed out after 30 minutes");
       updateStats('Model Status', 'Error: Training timed out');
       cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
@@ -608,62 +610,73 @@ function checkTrainingStatus() {
     }
     
     var config = getServiceConfig();
-    var response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, {
-      headers: { 'X-API-Key': config.apiKey },
-      muteHttpExceptions: true
-    });
+    
+    // Add retry logic for fetch
+    var maxFetchRetries = 3;
+    var response = null;
+    var fetchError = null;
+    
+    for (var i = 0; i < maxFetchRetries; i++) {
+      try {
+        response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, {
+          headers: { 'X-API-Key': config.apiKey },
+          muteHttpExceptions: true,
+          validateHttpsCertificates: true,
+          followRedirects: true,
+          timeout: 30  // 30 seconds timeout
+        });
+        fetchError = null;
+        break;
+      } catch (e) {
+        fetchError = e;
+        if (i < maxFetchRetries - 1) {
+          Utilities.sleep(1000 * (i + 1));  // Exponential backoff
+        }
+      }
+    }
+    
+    if (fetchError) {
+      retryCount++;
+      userProperties.setProperty('RETRY_COUNT', retryCount.toString());
+      
+      if (retryCount >= maxRetries) {
+        updateStatus("Error: Service unavailable after multiple retries. Please try again later.");
+        updateStats('Model Status', 'Error: Service unavailable');
+        cleanupTrigger(triggerId);
+        userProperties.deleteAllProperties();
+        return;
+      }
+      
+      var backoffMinutes = Math.min(retryCount, 5);  // Cap at 5 minutes
+      updateStatus(`Service temporarily unavailable. Retrying in ${backoffMinutes} minute(s)... (Attempt ${retryCount}/${maxRetries})`);
+      return;
+    }
+    
+    // Reset retry count on successful fetch
+    if (retryCount > 0) {
+      userProperties.setProperty('RETRY_COUNT', '0');
+    }
     
     var responseText = response.getContentText();
-    Logger.log("Raw response: " + responseText);
-    
-    // Check for empty response
     if (!responseText || responseText.trim() === '') {
-      updateStatus(`Training in progress... (${minutesElapsed} min) - Waiting for response`);
+      updateStatus(`Training in progress... (${minutesElapsed} min)`);
       return;
     }
     
     try {
       var result = JSON.parse(responseText);
-      Logger.log("Parsed result: " + JSON.stringify(result));
-      
-      // Enhanced status reporting
       var statusMessage = `Training in progress... (${minutesElapsed} min)`;
       
-      // Add detailed status information
       if (result.status) {
         statusMessage += ` - ${result.status}`;
       }
       if (result.message) {
         statusMessage += `\n${result.message}`;
       }
-      if (result.logs) {
-        statusMessage += `\nLogs: ${result.logs}`;
-      }
-      if (result.error) {
-        statusMessage += `\nError: ${result.error}`;
-      }
-      if (result.elapsed_time) {
-        statusMessage += `\nProcessing time: ${Math.floor(result.elapsed_time)} seconds`;
-      }
       
       updateStatus(statusMessage);
       
-      // Update Stats sheet with additional metrics
-    if (result.prediction_id) {
-        updateStats('Last Prediction ID', result.prediction_id);
-      }
-      if (result.created_at) {
-        // Handle created_at whether it's a string or needs formatting
-        var createdAt = result.created_at;
-        if (createdAt instanceof Date) {
-          createdAt = createdAt.toISOString();
-        }
-        updateStats('Process Start Time', createdAt);
-      }
-      
-      // Check for completion
       if (result.status === "succeeded") {
-        // Check if we have webhook results
         if (result.result) {
           var completionTime = new Date().toLocaleString();
           updateStats('Last Training Time', completionTime);
@@ -671,12 +684,8 @@ function checkTrainingStatus() {
           updateStatus("Training completed successfully!");
           cleanupTrigger(triggerId);
           userProperties.deleteAllProperties();
-      } else {
-          // Still waiting for webhook processing
+        } else {
           statusMessage = `Training completed, processing results... (${minutesElapsed} min)`;
-          if (result.elapsed_time) {
-            statusMessage += `\nProcessing time: ${Math.floor(result.elapsed_time)} seconds`;
-          }
           updateStatus(statusMessage);
           updateStats('Model Status', 'Processing Results');
         }
@@ -689,7 +698,7 @@ function checkTrainingStatus() {
       
     } catch (parseError) {
       Logger.log("Error parsing response: " + parseError);
-      updateStatus(`Training in progress... (${minutesElapsed} min) - Invalid response`);
+      updateStatus(`Training in progress... (${minutesElapsed} min) - Waiting for response`);
     }
     
   } catch (error) {
@@ -1103,7 +1112,8 @@ function trainModel(config) {
       },
       payload: JSON.stringify({ 
         transactions: transactions,
-        userId: userId
+        userId: userId,
+        expenseSheetId: sheet.getParent().getId()  // Add sheet ID to payload
       }),
       muteHttpExceptions: true
     };
