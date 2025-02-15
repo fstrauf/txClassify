@@ -91,10 +91,39 @@ def root():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for Render"""
-    return jsonify({
-        "status": "healthy",
-        "version": "1.0.0"
-    })
+    try:
+        # Verify database connection
+        services["classification"].supabase.table("webhook_results").select("count").limit(1).execute()
+        
+        return jsonify({
+            "status": "healthy",
+            "version": "1.0.0",
+            "timestamp": datetime.now().isoformat(),
+            "server": "txclassify"
+        })
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+@app.route('/webhook-health', methods=['GET'])
+def webhook_health():
+    """Health check endpoint specifically for webhooks"""
+    try:
+        return jsonify({
+            "status": "ready",
+            "service": "txclassify-webhook",
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Webhook health check failed: {e}")
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
 
 @app.route('/classify', methods=['POST'])
 @require_api_key
@@ -233,23 +262,71 @@ def train_model():
         # Get embeddings from Replicate
         sheet_id = f"sheet_{user_id}"
         
-        # Start prediction
-        prediction = classifier.run_prediction(
-            "training",
-            sheet_id,
-            user_id,
-            df['Narrative'].tolist(),
-            webhook_params={
-                'descriptions': df['Narrative'].tolist(),
-                'categories': df['Category'].tolist()
+        # Split data into smaller chunks if too large
+        CHUNK_SIZE = 1000  # Process 1000 transactions at a time
+        narratives = df['Narrative'].tolist()
+        categories = df['Category'].tolist()
+        total_chunks = (len(narratives) + CHUNK_SIZE - 1) // CHUNK_SIZE
+        
+        if total_chunks > 1:
+            logger.info(f"Splitting {len(narratives)} transactions into {total_chunks} chunks")
+            
+            # Process first chunk
+            chunk_start = 0
+            chunk_end = min(CHUNK_SIZE, len(narratives))
+            chunk_narratives = narratives[chunk_start:chunk_end]
+            chunk_categories = categories[chunk_start:chunk_end]
+            
+            # Store chunk information
+            chunk_info = {
+                'total_chunks': total_chunks,
+                'current_chunk': 1,
+                'remaining_narratives': narratives[chunk_end:],
+                'remaining_categories': categories[chunk_end:]
             }
-        )
+            
+            # Store chunk info in Supabase
+            try:
+                classifier.supabase.table("training_chunks").upsert({
+                    "sheet_id": sheet_id,
+                    "chunk_info": chunk_info,
+                    "created_at": datetime.now().isoformat()
+                }).execute()
+            except Exception as e:
+                logger.warning(f"Failed to store chunk info: {e}")
+            
+            # Start prediction for first chunk
+            prediction = classifier.run_prediction(
+                "training",
+                sheet_id,
+                user_id,
+                chunk_narratives,
+                webhook_params={
+                    'descriptions': chunk_narratives,
+                    'categories': chunk_categories,
+                    'chunk_index': '1',
+                    'total_chunks': str(total_chunks)
+                }
+            )
+        else:
+            # Process all data at once if small enough
+            prediction = classifier.run_prediction(
+                "training",
+                sheet_id,
+                user_id,
+                narratives,
+                webhook_params={
+                    'descriptions': narratives,
+                    'categories': categories
+                }
+            )
         
         return jsonify({
             "status": "processing",
             "message": "Training started",
             "prediction_id": prediction.id,
-            "transaction_count": len(df)
+            "transaction_count": len(df),
+            "total_chunks": total_chunks if total_chunks > 1 else 1
         })
             
     except Exception as e:
@@ -268,8 +345,11 @@ def training_webhook():
     try:
         sheet_id = request.args.get('sheetId')
         user_id = request.args.get('userId')
+        chunk_index = request.args.get('chunk_index')
+        total_chunks = request.args.get('total_chunks')
         
         logger.info(f"Processing webhook for sheet {sheet_id} and user {user_id}")
+        logger.info(f"Chunk info: {chunk_index}/{total_chunks}" if chunk_index and total_chunks else "Processing all data")
         
         if not sheet_id:
             raise ValueError("No sheet ID provided in webhook URL")
@@ -306,6 +386,70 @@ def training_webhook():
         embeddings_array = np.array(embeddings)
         logger.info(f"Processed embeddings shape: {embeddings_array.shape}")
         
+        # Initialize classification service for potential next chunk
+        classifier = ClassificationService(
+            supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
+            supabase_key=os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+            backend_api=request.host_url.rstrip('/')
+        )
+        
+        # Check if we need to process more chunks
+        if chunk_index and total_chunks and int(chunk_index) < int(total_chunks):
+            try:
+                # Get chunk info from Supabase
+                response = classifier.supabase.table("training_chunks").select("*").eq("sheet_id", sheet_id).execute()
+                if response.data:
+                    chunk_info = response.data[0].get("chunk_info", {})
+                    current_chunk = int(chunk_index)
+                    
+                    # Get next chunk of data
+                    CHUNK_SIZE = 1000
+                    remaining_narratives = chunk_info.get('remaining_narratives', [])
+                    remaining_categories = chunk_info.get('remaining_categories', [])
+                    
+                    chunk_start = 0
+                    chunk_end = min(CHUNK_SIZE, len(remaining_narratives))
+                    chunk_narratives = remaining_narratives[chunk_start:chunk_end]
+                    chunk_categories = remaining_categories[chunk_start:chunk_end]
+                    
+                    # Update chunk info
+                    new_chunk_info = {
+                        'total_chunks': int(total_chunks),
+                        'current_chunk': current_chunk + 1,
+                        'remaining_narratives': remaining_narratives[chunk_end:],
+                        'remaining_categories': remaining_categories[chunk_end:]
+                    }
+                    
+                    # Store updated chunk info
+                    classifier.supabase.table("training_chunks").upsert({
+                        "sheet_id": sheet_id,
+                        "chunk_info": new_chunk_info,
+                        "created_at": datetime.now().isoformat()
+                    }).execute()
+                    
+                    # Start next chunk
+                    logger.info(f"Starting chunk {current_chunk + 1}/{total_chunks}")
+                    prediction = classifier.run_prediction(
+                        "training",
+                        sheet_id,
+                        user_id,
+                        chunk_narratives,
+                        webhook_params={
+                            'descriptions': chunk_narratives,
+                            'categories': chunk_categories,
+                            'chunk_index': str(current_chunk + 1),
+                            'total_chunks': total_chunks
+                        }
+                    )
+                    
+                    logger.info(f"Next chunk prediction started: {prediction.id}")
+                    
+            except Exception as e:
+                logger.error(f"Error processing next chunk: {e}")
+                logger.error(traceback.format_exc())
+                raise
+        
+        # Process current chunk results
         # Get descriptions and categories with logging
         descriptions = request.args.get('descriptions', '').split(',')
         categories = request.args.get('categories', '').split(',')
@@ -327,7 +471,8 @@ def training_webhook():
                 'created_at': datetime.now().isoformat(),
                 'embedding_dimensions': embeddings_array.shape[1],
                 'sample_count': len(descriptions),
-                'processing_time': (datetime.now() - start_time).total_seconds()
+                'processing_time': (datetime.now() - start_time).total_seconds(),
+                'chunk_info': f"{chunk_index}/{total_chunks}" if chunk_index and total_chunks else "complete"
             }
         }
         
@@ -345,12 +490,6 @@ def training_webhook():
                 raise ValueError("Training data file too large")
             
             # Upload to Supabase with retry and logging
-            classifier = ClassificationService(
-                supabase_url=os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
-                supabase_key=os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
-                backend_api=request.host_url.rstrip('/')
-            )
-            
             max_retries = 3
             retry_delay = 1
             upload_success = False
@@ -360,7 +499,7 @@ def training_webhook():
                     logger.info(f"Upload attempt {attempt + 1}/{max_retries}")
                     with open(temp_file_path, 'rb') as f:
                         classifier.supabase.storage.from_(classifier.bucket_name).upload(
-                            f"{sheet_id}_training.npz",
+                            f"{sheet_id}_training{'_chunk_' + chunk_index if chunk_index else ''}.npz",
                             f.read(),
                             file_options={"x-upsert": "true"}
                         )
@@ -378,12 +517,19 @@ def training_webhook():
         processing_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"Total webhook processing time: {processing_time:.2f} seconds")
         
+        # Only update completion status if this is the last chunk
+        if not chunk_index or int(chunk_index) == int(total_chunks):
+            update_process_status("completed", "training", user_id)
+        else:
+            update_process_status(f"Processing chunk {chunk_index}/{total_chunks}", "training", user_id)
+        
         return jsonify({
             "status": "success",
             "message": "Training data processed successfully",
             "processing_time": processing_time,
             "sample_count": len(descriptions),
-            "file_size_mb": file_size / 1024 / 1024
+            "file_size_mb": file_size / 1024 / 1024,
+            "chunk_info": f"{chunk_index}/{total_chunks}" if chunk_index and total_chunks else "complete"
         })
             
     except Exception as e:

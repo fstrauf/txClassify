@@ -521,7 +521,7 @@ class ClassificationService:
                 "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
             )
 
-            # Create webhook URL - ensure no double slashes
+            # Create webhook URL with retry configuration
             base_url = self.backend_api.rstrip('/')
             webhook_endpoint = f"train/webhook" if api_mode == "training" else "classify/webhook"
             webhook = f"{base_url}/{webhook_endpoint}?sheetId={sheet_id}&userId={user_id}"
@@ -530,6 +530,9 @@ class ClassificationService:
             if webhook_params:
                 for key, value in webhook_params.items():
                     webhook += f"&{key}={value}"
+            
+            # Add retry configuration
+            webhook += "&retry_count=3&retry_delay=10"
                     
             logger.info(f"Using webhook endpoint: {webhook}")
 
@@ -540,7 +543,8 @@ class ClassificationService:
                     input={
                         "text_batch": json.dumps(cleaned_texts),
                         "webhook": webhook,
-                        "webhook_events_filter": ["completed"]
+                        "webhook_events_filter": ["completed"],
+                        "webhook_retries": 3  # Add retry configuration
                     }
                 )
             except Exception as e:
