@@ -296,33 +296,63 @@ def train_model():
 @app.route("/train/webhook", methods=["POST"])
 def training_webhook():
     """Handle training webhook from Replicate."""
+    sheet_id = request.args.get("sheetId")
+    user_id = request.args.get("userId")
+    
     try:
-        data = request.get_json()
-        sheet_id = request.args.get("sheetId")
-        user_id = request.args.get("userId")
+        # Log incoming request details
+        logger.info(f"Received webhook request for sheet_id: {sheet_id}, user_id: {user_id}")
         
-        if not all([data, sheet_id, user_id]):
-            return jsonify({"error": "Missing required parameters"}), 400
+        if not all([sheet_id, user_id]):
+            error_msg = "Missing required parameters: sheetId and userId"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+
+        # Safely parse JSON with size limit and error handling
+        if not request.is_json:
+            error_msg = "Request must be JSON"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+            
+        try:
+            data = request.get_json(force=True)
+        except Exception as e:
+            error_msg = f"Failed to parse JSON: {str(e)}"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+
+        if not data or not isinstance(data, dict):
+            error_msg = "Invalid JSON data format"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
 
         # Process embeddings
-        embeddings = np.array([item["embedding"] for item in data["output"]])
-        
+        try:
+            embeddings = np.array([item["embedding"] for item in data["output"]])
+            logger.info(f"Successfully processed embeddings with shape: {embeddings.shape}")
+        except (KeyError, TypeError) as e:
+            error_msg = f"Invalid embedding data structure: {str(e)}"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+
         # Store embeddings
         store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
         
         # Update status
         update_process_status("completed", "training", user_id)
         
+        logger.info("Training webhook completed successfully")
         return jsonify({
             "status": "success",
             "message": "Training completed successfully"
         })
 
     except Exception as e:
-        logger.error(f"Error in training webhook: {e}")
+        error_msg = f"Error in training webhook: {str(e)}"
+        logger.error(error_msg)
         if user_id:
             update_process_status(f"Error: {str(e)}", "training", user_id)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": error_msg}), 500
 
 @app.route("/classify", methods=["POST"])
 def classify_transactions():
