@@ -298,7 +298,6 @@ def training_webhook():
     """Handle training webhook from Replicate."""
     sheet_id = request.args.get("sheetId")
     user_id = request.args.get("userId")
-    prediction_id = request.args.get("prediction_id")  # Add prediction_id from query params
     
     try:
         # Log incoming request details
@@ -306,6 +305,22 @@ def training_webhook():
         
         if not all([sheet_id, user_id]):
             error_msg = "Missing required parameters: sheetId and userId"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+
+        # Get prediction_id from request headers or body
+        prediction_id = None
+        if 'X-Replicate-Prediction-Id' in request.headers:
+            prediction_id = request.headers.get('X-Replicate-Prediction-Id')
+        elif request.is_json:
+            try:
+                data = request.get_json(force=True)
+                prediction_id = data.get('id')
+            except Exception as e:
+                logger.warning(f"Error parsing request JSON for prediction ID: {e}")
+
+        if not prediction_id:
+            error_msg = "Missing prediction ID"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
@@ -318,7 +333,7 @@ def training_webhook():
         except Exception as e:
             logger.warning(f"Error checking webhook results: {e}")
 
-        # Safely parse JSON with size limit
+        # Safely parse JSON
         if not request.is_json:
             error_msg = "Request must be JSON"
             logger.error(error_msg)
@@ -336,26 +351,33 @@ def training_webhook():
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
-        # Process embeddings
+        # Process embeddings with memory management
         try:
-            embeddings = np.array([item["embedding"] for item in data["output"]])
+            embeddings = np.array([item["embedding"] for item in data["output"]], dtype=np.float32)
             logger.info(f"Successfully processed embeddings with shape: {embeddings.shape}")
+            
+            # Store embeddings
+            store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
+            
+            # Clear memory
+            del embeddings
+            import gc
+            gc.collect()
+            
         except (KeyError, TypeError) as e:
             error_msg = f"Invalid embedding data structure: {str(e)}"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
-
-        # Store embeddings
-        store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
         
-        # Store webhook result with prediction_id
+        # Store webhook result
         try:
-            supabase.table("webhook_results").insert({
+            result = {
                 "prediction_id": prediction_id,
                 "user_id": user_id,
                 "status": "completed",
-                "processed_at": datetime.now().isoformat()
-            }).execute()
+                "created_at": datetime.now().isoformat()  # Use created_at instead of processed_at
+            }
+            supabase.table("webhook_results").insert(result).execute()
         except Exception as e:
             logger.warning(f"Error storing webhook result: {e}")
         
