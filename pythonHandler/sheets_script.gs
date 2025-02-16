@@ -754,6 +754,12 @@ function classifyTransactions(config) {
     updateStatus("Starting classification...");
     var serviceConfig = getServiceConfig();
     
+    // Log service configuration
+    Logger.log("Service configuration:");
+    Logger.log("- URL: " + serviceConfig.serviceUrl);
+    Logger.log("- API Key: " + serviceConfig.apiKey);
+    Logger.log("- Generated User ID: " + serviceConfig.apiKey.substring(0, 8));
+    
     // Store the original sheet name
     var originalSheetName = sheet.getName();
     Logger.log("Original sheet name: " + originalSheetName);
