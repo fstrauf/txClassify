@@ -786,7 +786,11 @@ function classifyTransactions(config) {
       headers: {
         'X-API-Key': serviceConfig.apiKey
       },
-      payload: JSON.stringify({ transactions: transactions }),
+      payload: JSON.stringify({ 
+        transactions: transactions,
+        userId: serviceConfig.apiKey.substring(0, 8),  // Use first 8 chars of API key as user ID
+        spreadsheetId: sheet.getParent().getId()
+      }),
       muteHttpExceptions: true
     };
     
