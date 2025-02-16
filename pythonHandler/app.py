@@ -53,6 +53,15 @@ def classify_transactions():
                 "error": "Missing transactions data"
             }), 400
             
+        # Get required parameters
+        user_id = data.get('userId')
+        sheet_id = data.get('spreadsheetId')
+        
+        if not user_id or not sheet_id:
+            return jsonify({
+                "error": "Missing required parameters: userId and spreadsheetId"
+            }), 400
+            
         # Convert transactions to DataFrame
         df = pd.DataFrame(data['transactions'])
         if 'Narrative' not in df.columns:
@@ -68,8 +77,8 @@ def classify_transactions():
         )
         
         # Run classification
-        prediction = classifier.classify(df, "sheet_default", "user_default")
-        results = classifier.process_webhook_response(prediction, "sheet_default")
+        prediction = classifier.classify(df, sheet_id, user_id)
+        results = classifier.process_webhook_response(prediction, sheet_id)
         
         # Convert results to list of dictionaries
         results_list = results.to_dict('records')
