@@ -777,7 +777,8 @@ function classifyTransactions(config) {
     var transactions = descriptions
       .filter(row => row[0] && row[0].toString().trim() !== '')
       .map(row => ({
-        Narrative: row[0]
+        Narrative: row[0],
+        description: row[0]  // Add description field as it's expected by the backend
       }));
     
     if (transactions.length === 0) {
@@ -798,8 +799,12 @@ function classifyTransactions(config) {
       },
       payload: JSON.stringify({ 
         transactions: transactions,
-        userId: serviceConfig.userId,  // Use consistent userId from config
-        spreadsheetId: sheet.getParent().getId()
+        userId: serviceConfig.userId,
+        spreadsheetId: sheet.getParent().getId(),
+        sheetName: originalSheetName,  // Add sheet name for configuration
+        descriptionColumn: config.descriptionCol,  // Add column configuration
+        categoryColumn: config.categoryCol,
+        startRow: config.startRow
       }),
       muteHttpExceptions: true
     };
@@ -832,7 +837,8 @@ function classifyTransactions(config) {
         'ORIGINAL_SHEET_NAME': originalSheetName,
         'CONFIG': JSON.stringify({
           categoryCol: config.categoryCol,
-          startRow: config.startRow
+          startRow: config.startRow,
+          descriptionCol: config.descriptionCol
         })
       };
       
