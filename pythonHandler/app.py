@@ -55,7 +55,8 @@ def classify_transactions():
             
         # Get required parameters
         user_id = data.get('userId')
-        sheet_id = data.get('spreadsheetId')
+        # Support both parameter names for backward compatibility
+        sheet_id = data.get('spreadsheetId') or data.get('expenseSheetId')
         
         if not user_id or not sheet_id:
             return jsonify({
@@ -78,12 +79,12 @@ def classify_transactions():
         
         # Run classification
         prediction = classifier.classify(df, sheet_id, user_id)
-        results = classifier.process_webhook_response(prediction, sheet_id)
         
-        # Convert results to list of dictionaries
-        results_list = results.to_dict('records')
-        
-        return jsonify(results_list)
+        # Return prediction ID for status tracking
+        return jsonify({
+            "status": "processing",
+            "prediction_id": prediction.id
+        })
         
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
