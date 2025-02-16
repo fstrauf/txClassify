@@ -235,7 +235,7 @@ def train_model():
         }), 500
 
 def get_user_config(user_id: str) -> dict:
-    """Get user configuration from Supabase."""
+    """Get user configuration from Supabase using API key-based user ID."""
     try:
         logger.info(f"Looking up user configuration for userId: {user_id}")
         
@@ -246,31 +246,41 @@ def get_user_config(user_id: str) -> dict:
         )
         
         # Query user configuration
-        response = supabase.table("account").select("*").eq("userId", user_id).execute()
-        
-        if response.data:
-            logger.info(f"Found configuration for user {user_id}")
-            return response.data[0]
+        logger.info("Querying Supabase for user configuration...")
+        try:
+            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            logger.info(f"Query response: {response.data}")
+            
+            if response.data:
+                logger.info(f"Found existing configuration for user {user_id}")
+                return response.data[0]
+        except Exception as e:
+            logger.error(f"Error querying user configuration: {str(e)}")
             
         # If no configuration exists, create a default one
-        logger.info(f"No configuration found for user {user_id}, creating default")
+        logger.info(f"No configuration found, creating default for user {user_id}")
         default_config = {
             "userId": user_id,
-            "categorisationTab": "new_dump",  # Default sheet name
-            "columnRange": "A:Z",  # Full range
-            "categoryColumn": "E"  # Default category column
+            "categorisationTab": "new_dump",
+            "columnRange": "A:Z",
+            "categoryColumn": "E"
         }
         
         # Insert default configuration
-        insert_response = supabase.table("account").insert(default_config).execute()
-        if insert_response.data:
-            logger.info(f"Created default configuration for user {user_id}")
-            return default_config
+        try:
+            insert_response = supabase.table("account").insert(default_config).execute()
+            if insert_response and insert_response.data:
+                logger.info(f"Created default configuration for user {user_id}")
+                return default_config
+            else:
+                logger.error("Insert response was empty")
+                raise Exception("Failed to create default configuration - empty response")
+        except Exception as insert_error:
+            logger.error(f"Error creating default configuration: {str(insert_error)}")
+            raise Exception(f"Failed to create default configuration: {str(insert_error)}")
             
-        raise Exception("Failed to create default configuration")
-        
     except Exception as e:
-        logger.error(f"Error in get_user_config for user {user_id}: {str(e)}")
+        logger.error(f"Error in get_user_config: {str(e)}")
         raise Exception(f"User configuration error: {str(e)}")
 
 if __name__ == '__main__':

@@ -351,7 +351,11 @@ function getServiceConfig() {
     throw new Error('Service not configured. Please use "Setup Service" first.');
   }
   
-  return { serviceUrl, apiKey };
+  return { 
+    serviceUrl, 
+    apiKey,
+    userId: apiKey.substring(0, 8)  // Consistently use first 8 chars as user ID
+  };
 }
 
 // Helper function to update status in sheet
@@ -434,7 +438,7 @@ function updateStatus(message, additionalDetails = '') {
     logSheet.deleteRows(102, lastRow - 101);
   }
   
-  // Make sure the log is visible
+  // Make sure the Log sheet is visible
   logSheet.autoResizeColumns(1, 4);
   
   // Show the Log sheet if it's hidden
@@ -618,8 +622,8 @@ function checkTrainingStatus() {
     
     for (var i = 0; i < maxFetchRetries; i++) {
       try {
-        var options = {
-          headers: { 
+    var options = {
+      headers: {
             'X-API-Key': config.apiKey,
             'Accept': 'application/json',
             'Connection': 'keep-alive'
@@ -706,7 +710,7 @@ function checkTrainingStatus() {
       if (result.status === "completed") {
         updateStats('Last Training Time', new Date().toLocaleString());
         updateStats('Model Status', 'Ready');
-        updateStatus("Training completed successfully!");
+    updateStatus("Training completed successfully!");
         cleanupTrigger(triggerId);
         userProperties.deleteAllProperties();
       } else if (result.status === "failed") {
@@ -758,7 +762,7 @@ function classifyTransactions(config) {
     Logger.log("Service configuration:");
     Logger.log("- URL: " + serviceConfig.serviceUrl);
     Logger.log("- API Key: " + serviceConfig.apiKey);
-    Logger.log("- Generated User ID: " + serviceConfig.apiKey.substring(0, 8));
+    Logger.log("- User ID: " + serviceConfig.userId);
     
     // Store the original sheet name
     var originalSheetName = sheet.getName();
@@ -794,8 +798,8 @@ function classifyTransactions(config) {
       },
       payload: JSON.stringify({ 
         transactions: transactions,
-        userId: serviceConfig.apiKey.substring(0, 8),  // Use first 8 chars of API key as user ID
-        spreadsheetId: sheet.getParent().getId()  // Use consistent parameter name
+        userId: serviceConfig.userId,  // Use consistent userId from config
+        spreadsheetId: sheet.getParent().getId()
       }),
       muteHttpExceptions: true
     };
@@ -1125,14 +1129,10 @@ function trainModel(config) {
     
     updateStatus("Processing " + transactions.length + " transactions...");
     
-    // Get API key to use as userId
-    var apiKey = serviceConfig.apiKey;
-    var userId = apiKey.substring(0, 8);  // Use first 8 chars as user ID
-    
     // Prepare the payload
     var payload = JSON.stringify({ 
       transactions: transactions,
-      userId: userId,
+      userId: serviceConfig.userId,  // Use consistent userId from config
       expenseSheetId: sheet.getParent().getId()
     });
     
