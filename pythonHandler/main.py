@@ -13,6 +13,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import re
 import logging
+import gc
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -308,19 +309,39 @@ def training_webhook():
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
-        # Get prediction_id from request headers or body
+        # Get prediction_id from multiple sources with logging
         prediction_id = None
+        prediction_source = None
+        
+        # 1. Try Replicate header (most reliable)
         if 'X-Replicate-Prediction-Id' in request.headers:
             prediction_id = request.headers.get('X-Replicate-Prediction-Id')
+            prediction_source = "Replicate header"
+            
+        # 2. Try custom header (backup)
+        elif 'Prediction-Id' in request.headers:
+            prediction_id = request.headers.get('Prediction-Id')
+            prediction_source = "Custom header"
+            
+        # 3. Try query parameters
+        elif request.args.get('prediction_id'):
+            prediction_id = request.args.get('prediction_id')
+            prediction_source = "Query parameter"
+            
+        # 4. Try JSON body as last resort
         elif request.is_json:
             try:
                 data = request.get_json(force=True)
-                prediction_id = data.get('id')
+                if data.get('id'):
+                    prediction_id = data.get('id')
+                    prediction_source = "JSON body"
             except Exception as e:
                 logger.warning(f"Error parsing request JSON for prediction ID: {e}")
 
-        if not prediction_id:
-            error_msg = "Missing prediction ID"
+        if prediction_id:
+            logger.info(f"Found prediction_id: {prediction_id} from {prediction_source}")
+        else:
+            error_msg = "Missing prediction ID - not found in headers, query params, or body"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
@@ -333,7 +354,7 @@ def training_webhook():
         except Exception as e:
             logger.warning(f"Error checking webhook results: {e}")
 
-        # Safely parse JSON
+        # Parse and validate JSON data
         if not request.is_json:
             error_msg = "Request must be JSON"
             logger.error(error_msg)
@@ -351,7 +372,7 @@ def training_webhook():
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
-        # Process embeddings with memory management
+        # Process embeddings
         try:
             embeddings = np.array([item["embedding"] for item in data["output"]], dtype=np.float32)
             logger.info(f"Successfully processed embeddings with shape: {embeddings.shape}")
@@ -361,7 +382,6 @@ def training_webhook():
             
             # Clear memory
             del embeddings
-            import gc
             gc.collect()
             
         except (KeyError, TypeError) as e:
@@ -369,15 +389,16 @@ def training_webhook():
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
         
-        # Store webhook result
+        # Store webhook result with minimal data
         try:
             result = {
                 "prediction_id": prediction_id,
                 "user_id": user_id,
-                "status": "completed",
-                "created_at": datetime.now().isoformat()  # Use created_at instead of processed_at
+                "completed_at": datetime.now().isoformat(),
+                "success": True
             }
             supabase.table("webhook_results").insert(result).execute()
+            logger.info(f"Stored webhook result for prediction_id: {prediction_id}")
         except Exception as e:
             logger.warning(f"Error storing webhook result: {e}")
         
