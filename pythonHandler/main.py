@@ -102,8 +102,8 @@ def run_prediction(mode: str, sheet_id: str, user_id: str, descriptions: list) -
             "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
         )
 
-        # Create webhook URL
-        webhook = f"{BACKEND_API}/{mode}/webhook?sheetId={sheet_id}&userId={user_id}"
+        # Create webhook URL with consistent parameter names
+        webhook = f"{BACKEND_API}/{mode}/webhook?spreadsheetId={sheet_id}&userId={user_id}"
         
         prediction = replicate.predictions.create(
             version=version,
@@ -297,7 +297,7 @@ def train_model():
 @app.route("/train/webhook", methods=["POST"])
 def training_webhook():
     """Handle training webhook from Replicate."""
-    sheet_id = request.args.get("sheetId")
+    sheet_id = request.args.get("spreadsheetId")
     user_id = request.args.get("userId")
     
     try:
@@ -305,7 +305,7 @@ def training_webhook():
         logger.info(f"Received webhook request for sheet_id: {sheet_id}, user_id: {user_id}")
         
         if not all([sheet_id, user_id]):
-            error_msg = "Missing required parameters: sheetId and userId"
+            error_msg = "Missing required parameters: spreadsheetId and userId"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
@@ -494,7 +494,7 @@ def classify_webhook():
     """Handle classification webhook from Replicate."""
     try:
         data = request.get_json()
-        sheet_id = request.args.get("sheetId")
+        sheet_id = request.args.get("spreadsheetId")
         user_id = request.args.get("userId")
         config = get_user_config(user_id)
 
