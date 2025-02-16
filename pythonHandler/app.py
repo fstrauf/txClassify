@@ -66,19 +66,17 @@ def classify_transactions():
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
             
-        # Get user configuration with detailed logging
-        config = get_user_config(user_id)
-        if not config:
-            error_msg = f"User configuration not found for userId: {user_id}"
-            logger.error(error_msg)
+        # Get user configuration with error handling
+        try:
+            config = get_user_config(user_id)
+            logger.info(f"Retrieved configuration for user {user_id}")
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Error getting user configuration: {error_msg}")
             return jsonify({
-                "error": error_msg,
-                "details": "Please ensure the user is properly set up in the system"
+                "error": "User configuration not found",
+                "details": error_msg
             }), 400
-
-        # Log successful parameter validation
-        logger.info(f"Parameters validated - userId: {user_id}, spreadsheetId: {sheet_id}")
-        logger.info(f"Using configuration: {config}")
 
         # Get and validate required parameters
         if 'transactions' not in data:
@@ -241,40 +239,39 @@ def get_user_config(user_id: str) -> dict:
     try:
         logger.info(f"Looking up user configuration for userId: {user_id}")
         
-        # Verify Supabase connection
-        try:
-            # Test connection with a simple query
-            test = supabase.table("account").select("count").execute()
-            logger.info("Supabase connection verified")
-        except Exception as e:
-            logger.error(f"Supabase connection error: {e}")
-            return {}
-
+        # Initialize Supabase client
+        supabase = create_client(
+            supabase_url,
+            supabase_key
+        )
+        
         # Query user configuration
         response = supabase.table("account").select("*").eq("userId", user_id).execute()
         
         if response.data:
-            logger.info(f"Found configuration for user {user_id}: {response.data[0]}")
+            logger.info(f"Found configuration for user {user_id}")
             return response.data[0]
-        else:
-            logger.error(f"No configuration found for user {user_id}")
-            # Create default configuration
-            try:
-                default_config = {
-                    "userId": user_id,
-                    "categorisationTab": "Expense-Detail",  # Default sheet name
-                    "columnRange": "A:Z",  # Full range
-                    "categoryColumn": "E"  # Default category column
-                }
-                logger.info(f"Creating default configuration for user {user_id}: {default_config}")
-                supabase.table("account").insert(default_config).execute()
-                return default_config
-            except Exception as e:
-                logger.error(f"Error creating default configuration: {e}")
-                return {}
+            
+        # If no configuration exists, create a default one
+        logger.info(f"No configuration found for user {user_id}, creating default")
+        default_config = {
+            "userId": user_id,
+            "categorisationTab": "new_dump",  # Default sheet name
+            "columnRange": "A:Z",  # Full range
+            "categoryColumn": "E"  # Default category column
+        }
+        
+        # Insert default configuration
+        insert_response = supabase.table("account").insert(default_config).execute()
+        if insert_response.data:
+            logger.info(f"Created default configuration for user {user_id}")
+            return default_config
+            
+        raise Exception("Failed to create default configuration")
+        
     except Exception as e:
-        logger.error(f"Error fetching user config: {e}")
-        return {}
+        logger.error(f"Error in get_user_config for user {user_id}: {str(e)}")
+        raise Exception(f"User configuration error: {str(e)}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
