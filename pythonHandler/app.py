@@ -66,18 +66,14 @@ def classify_transactions():
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
             
-        # Get user configuration with error handling
-        try:
-            config = get_user_config(user_id)
-            logger.info(f"Retrieved configuration for user {user_id}")
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error getting user configuration: {error_msg}")
-            return jsonify({
-                "error": "User configuration not found",
-                "details": error_msg
-            }), 400
-
+        # Get sheet configuration from request
+        sheet_name = data.get("sheetName", "new_dump")
+        description_col = data.get("descriptionColumn", "C")
+        category_col = data.get("categoryColumn", "E")
+        start_row = data.get("startRow", "2")
+        
+        logger.info(f"Sheet configuration - name: {sheet_name}, description: {description_col}, category: {category_col}, start: {start_row}")
+        
         # Get and validate required parameters
         if 'transactions' not in data:
             return jsonify({"error": "Missing transactions data"}), 400
@@ -95,8 +91,12 @@ def classify_transactions():
             logger.error(f"Error converting transactions to DataFrame: {str(e)}")
             return jsonify({"error": "Invalid transaction data format"}), 400
             
-        if 'Narrative' not in df.columns:
-            return jsonify({"error": "Missing 'Narrative' column in transactions"}), 400
+        if 'Narrative' not in df.columns and 'description' not in df.columns:
+            return jsonify({"error": "Missing 'Narrative' or 'description' column in transactions"}), 400
+            
+        # Use description field if Narrative is not present
+        if 'description' in df.columns and 'Narrative' not in df.columns:
+            df['Narrative'] = df['description']
             
         # Validate narratives
         df['Narrative'] = df['Narrative'].astype(str).str.strip()
@@ -134,7 +134,13 @@ def classify_transactions():
             return jsonify({
                 "status": "processing",
                 "prediction_id": prediction.id,
-                "transaction_count": len(df)
+                "transaction_count": len(df),
+                "sheet_config": {
+                    "sheetName": sheet_name,
+                    "descriptionColumn": description_col,
+                    "categoryColumn": category_col,
+                    "startRow": start_row
+                }
             })
             
         except Exception as e:
