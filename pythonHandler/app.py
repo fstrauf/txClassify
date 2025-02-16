@@ -139,47 +139,84 @@ def train_model():
     try:
         # Get request data
         data = request.get_json()
-        if not data or 'transactions' not in data:
-            return jsonify({
-                "error": "Missing transactions data"
-            }), 400
+        if not data:
+            return jsonify({"error": "Missing request data"}), 400
             
-        # Convert transactions to DataFrame
-        df = pd.DataFrame(data['transactions'])
+        if not isinstance(data, dict):
+            return jsonify({"error": "Invalid request format - expected JSON object"}), 400
+            
+        if 'transactions' not in data:
+            return jsonify({"error": "Missing transactions data"}), 400
+            
+        # Get and validate required parameters
+        user_id = data.get('userId')
+        if not user_id or not isinstance(user_id, str) or len(user_id.strip()) == 0:
+            return jsonify({"error": "Invalid or missing userId"}), 400
+            
+        # Support both parameter names for backward compatibility
+        sheet_id = data.get('spreadsheetId') or data.get('expenseSheetId')
+        if not sheet_id or not isinstance(sheet_id, str) or len(sheet_id.strip()) == 0:
+            return jsonify({"error": "Invalid or missing spreadsheetId"}), 400
+            
+        # Convert transactions to DataFrame with error handling
+        try:
+            df = pd.DataFrame(data['transactions'])
+        except Exception as e:
+            logger.error(f"Error converting transactions to DataFrame: {str(e)}")
+            return jsonify({"error": "Invalid transaction data format"}), 400
+            
+        # Validate required columns
         required_columns = ['Narrative', 'Category']
         if not all(col in df.columns for col in required_columns):
             return jsonify({
                 "error": f"Missing required columns: {required_columns}"
             }), 400
+            
+        # Validate data quality
+        df['Narrative'] = df['Narrative'].astype(str).str.strip()
+        df['Category'] = df['Category'].astype(str).str.strip()
         
+        if df['Narrative'].empty or df['Narrative'].isna().any():
+            return jsonify({"error": "Invalid or empty narratives found"}), 400
+            
+        if df['Category'].empty or df['Category'].isna().any():
+            return jsonify({"error": "Invalid or empty categories found"}), 400
+            
         # Initialize classification service
-        classifier = ClassificationService(
-            supabase_url=supabase_url,
-            supabase_key=supabase_key,
-            backend_api=request.host_url.rstrip('/')
-        )
-        
+        try:
+            classifier = ClassificationService(
+                supabase_url=supabase_url,
+                supabase_key=supabase_key,
+                backend_api=request.host_url.rstrip('/')
+            )
+        except Exception as e:
+            logger.error(f"Error initializing classification service: {str(e)}")
+            return jsonify({"error": "Service initialization failed"}), 500
+            
         # Train model
-        training_response = classifier.train(df, "sheet_default", "user_default")
-        
-        # Process and store embeddings
-        classifier.process_embeddings(training_response)
-        classifier._store_training_data(
-            training_response['embeddings'],
-            df['Narrative'].tolist(),
-            df['Category'].tolist(),
-            "sheet_default"
-        )
-        
-        return jsonify({
-            "status": "success",
-            "message": "Model trained successfully"
-        })
-        
+        try:
+            training_response = classifier.train(df, sheet_id, user_id)
+            if not training_response or not training_response.id:
+                raise ValueError("Invalid training response")
+                
+            # Log successful request
+            logger.info(f"Successfully started training with {len(df)} transactions. Prediction ID: {training_response.id}")
+            
+            return jsonify({
+                "status": "processing",
+                "prediction_id": training_response.id,
+                "transaction_count": len(df)
+            })
+            
+        except Exception as e:
+            logger.error(f"Training failed: {str(e)}")
+            return jsonify({"error": f"Training failed: {str(e)}"}), 500
+            
     except Exception as e:
-        logger.error(f"Error processing request: {str(e)}")
+        logger.error(f"Unexpected error in train_model: {str(e)}")
         return jsonify({
-            "error": str(e)
+            "error": "Internal server error",
+            "details": str(e)
         }), 500
 
 if __name__ == '__main__':
