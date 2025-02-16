@@ -298,6 +298,7 @@ def training_webhook():
     """Handle training webhook from Replicate."""
     sheet_id = request.args.get("sheetId")
     user_id = request.args.get("userId")
+    prediction_id = request.args.get("prediction_id")  # Add prediction_id from query params
     
     try:
         # Log incoming request details
@@ -310,22 +311,20 @@ def training_webhook():
 
         # Check if we've already processed this webhook
         try:
-            webhook_results = supabase.table("webhook_results").select("*").eq("sheet_id", sheet_id).execute()
+            webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
             if webhook_results.data:
-                logger.info(f"Webhook already processed for sheet_id: {sheet_id}")
+                logger.info(f"Webhook already processed for prediction_id: {prediction_id}")
                 return jsonify({"status": "success", "message": "Already processed"}), 200
         except Exception as e:
             logger.warning(f"Error checking webhook results: {e}")
 
-        # Safely parse JSON with size limit and error handling
+        # Safely parse JSON with size limit
         if not request.is_json:
             error_msg = "Request must be JSON"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
             
         try:
-            # Use a higher max content length for large embeddings
-            request.max_content_length = 50 * 1024 * 1024  # 50MB limit
             data = request.get_json(force=True)
         except Exception as e:
             error_msg = f"Failed to parse JSON: {str(e)}"
@@ -349,10 +348,10 @@ def training_webhook():
         # Store embeddings
         store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
         
-        # Store webhook result
+        # Store webhook result with prediction_id
         try:
             supabase.table("webhook_results").insert({
-                "sheet_id": sheet_id,
+                "prediction_id": prediction_id,
                 "user_id": user_id,
                 "status": "completed",
                 "processed_at": datetime.now().isoformat()
