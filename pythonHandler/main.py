@@ -43,12 +43,34 @@ def get_user_config(user_id: str) -> dict:
 def update_process_status(status_text: str, mode: str, user_id: str) -> None:
     """Update process status in Supabase."""
     try:
+        # First check if account exists
+        response = supabase.table("account").select("*").eq("userId", user_id).execute()
+        
         status_field = "trainingStatus" if mode == "training" else "categorisationStatus"
-        supabase.table("account").update({
-            status_field: status_text
-        }).eq("userId", user_id).execute()
+        
+        if not response.data:
+            # Create new account with status
+            default_config = {
+                "userId": user_id,
+                "categorisationTab": "new_dump",
+                "columnRange": "A:Z",
+                "categoryColumn": "E",
+                status_field: status_text
+            }
+            supabase.table("account").insert(default_config).execute()
+            logger.info(f"Created new account for user {user_id} with status: {status_text}")
+        else:
+            # Update existing account
+            supabase.table("account").update({
+                status_field: status_text
+            }).eq("userId", user_id).execute()
+            logger.info(f"Updated status for user {user_id}: {status_text}")
+            
     except Exception as e:
         logger.error(f"Error updating process status: {e}")
+        # Log the full error details for debugging
+        logger.error(f"Full error details: {str(e)}")
+        logger.error(f"Status update attempted - mode: {mode}, user: {user_id}, status: {status_text}")
 
 def clean_text(text: str) -> str:
     """Clean transaction description text while preserving business names."""
@@ -308,6 +330,24 @@ def training_webhook():
             error_msg = "Missing required parameters: spreadsheetId and userId"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
+
+        # Ensure user account exists
+        try:
+            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            if not response.data:
+                # Create new account
+                default_config = {
+                    "userId": user_id,
+                    "categorisationTab": "new_dump",
+                    "columnRange": "A:Z",
+                    "categoryColumn": "E",
+                    "trainingStatus": "processing"
+                }
+                supabase.table("account").insert(default_config).execute()
+                logger.info(f"Created new account for user {user_id}")
+        except Exception as e:
+            logger.warning(f"Error checking/creating user account: {e}")
+            # Continue with webhook processing even if account creation fails
 
         # Get prediction_id from multiple sources with logging
         prediction_id = None
