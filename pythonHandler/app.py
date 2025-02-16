@@ -48,48 +48,89 @@ def classify_transactions():
     try:
         # Get request data
         data = request.get_json()
-        if not data or 'transactions' not in data:
-            return jsonify({
-                "error": "Missing transactions data"
-            }), 400
+        if not data:
+            return jsonify({"error": "Missing request data"}), 400
             
-        # Get required parameters
+        if not isinstance(data, dict):
+            return jsonify({"error": "Invalid request format - expected JSON object"}), 400
+            
+        if 'transactions' not in data:
+            return jsonify({"error": "Missing transactions data"}), 400
+            
+        if not isinstance(data['transactions'], list):
+            return jsonify({"error": "Invalid transactions format - expected array"}), 400
+            
+        if len(data['transactions']) == 0:
+            return jsonify({"error": "Empty transactions array"}), 400
+            
+        # Get and validate required parameters
         user_id = data.get('userId')
+        if not user_id or not isinstance(user_id, str) or len(user_id.strip()) == 0:
+            return jsonify({"error": "Invalid or missing userId"}), 400
+            
         # Support both parameter names for backward compatibility
         sheet_id = data.get('spreadsheetId') or data.get('expenseSheetId')
-        
-        if not user_id or not sheet_id:
-            return jsonify({
-                "error": "Missing required parameters: userId and spreadsheetId"
-            }), 400
+        if not sheet_id or not isinstance(sheet_id, str) or len(sheet_id.strip()) == 0:
+            return jsonify({"error": "Invalid or missing spreadsheetId"}), 400
             
-        # Convert transactions to DataFrame
-        df = pd.DataFrame(data['transactions'])
+        # Convert transactions to DataFrame with error handling
+        try:
+            df = pd.DataFrame(data['transactions'])
+        except Exception as e:
+            logger.error(f"Error converting transactions to DataFrame: {str(e)}")
+            return jsonify({"error": "Invalid transaction data format"}), 400
+            
         if 'Narrative' not in df.columns:
-            return jsonify({
-                "error": "Missing 'Narrative' column in transactions"
-            }), 400
-        
+            return jsonify({"error": "Missing 'Narrative' column in transactions"}), 400
+            
+        # Validate narratives
+        df['Narrative'] = df['Narrative'].astype(str).str.strip()
+        if df['Narrative'].empty or df['Narrative'].isna().any():
+            return jsonify({"error": "Invalid or empty narratives found"}), 400
+            
         # Initialize classification service
-        classifier = ClassificationService(
-            supabase_url=supabase_url,
-            supabase_key=supabase_key,
-            backend_api=request.host_url.rstrip('/')
-        )
+        try:
+            classifier = ClassificationService(
+                supabase_url=supabase_url,
+                supabase_key=supabase_key,
+                backend_api=request.host_url.rstrip('/')
+            )
+        except Exception as e:
+            logger.error(f"Error initializing classification service: {str(e)}")
+            return jsonify({"error": "Service initialization failed"}), 500
+            
+        # Check if training data exists before classification
+        try:
+            classifier.fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
+        except Exception as e:
+            logger.error(f"Error checking training data: {str(e)}")
+            return jsonify({"error": "No training data found. Please train the model first."}), 400
         
-        # Run classification
-        prediction = classifier.classify(df, sheet_id, user_id)
-        
-        # Return prediction ID for status tracking
-        return jsonify({
-            "status": "processing",
-            "prediction_id": prediction.id
-        })
+        # Run classification with timeout handling
+        try:
+            prediction = classifier.classify(df, sheet_id, user_id)
+            if not prediction or not prediction.id:
+                raise ValueError("Invalid prediction response")
+                
+            # Log successful request
+            logger.info(f"Successfully started classification for {len(df)} transactions. Prediction ID: {prediction.id}")
+            
+            # Return prediction ID for status tracking
+            return jsonify({
+                "status": "processing",
+                "prediction_id": prediction.id,
+                "transaction_count": len(df)
+            })
+            
+        except Exception as e:
+            logger.error(f"Classification failed: {str(e)}")
+            return jsonify({"error": f"Classification failed: {str(e)}"}), 500
         
     except Exception as e:
-        logger.error(f"Error processing request: {str(e)}")
+        logger.error(f"Unexpected error in classify_transactions: {str(e)}")
         return jsonify({
-            "error": str(e)
+            "error": "Internal server error",
+            "details": str(e)
         }), 500
 
 @app.route('/train', methods=['POST'])
