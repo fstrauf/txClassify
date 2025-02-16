@@ -5,6 +5,7 @@ import pandas as pd
 import logging
 from dotenv import load_dotenv
 import os
+from supabase import create_client
 
 # Load environment variables
 load_dotenv()
@@ -44,16 +45,42 @@ def health_check():
 
 @app.route('/classify', methods=['POST'])
 def classify_transactions():
-    """Endpoint to classify transactions"""
+    """Classify new transactions."""
     try:
-        # Get request data
         data = request.get_json()
-        if not data:
-            return jsonify({"error": "Missing request data"}), 400
+        logger.info("Received classification request")
+        
+        # Extract and validate required parameters
+        user_id = data.get("userId")
+        sheet_id = data.get("spreadsheetId")
+        
+        logger.info(f"Request parameters - userId: {user_id}, spreadsheetId: {sheet_id}")
+        
+        if not user_id:
+            error_msg = "Missing required parameter: userId"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
             
-        if not isinstance(data, dict):
-            return jsonify({"error": "Invalid request format - expected JSON object"}), 400
+        if not sheet_id:
+            error_msg = "Missing required parameter: spreadsheetId"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
             
+        # Get user configuration with detailed logging
+        config = get_user_config(user_id)
+        if not config:
+            error_msg = f"User configuration not found for userId: {user_id}"
+            logger.error(error_msg)
+            return jsonify({
+                "error": error_msg,
+                "details": "Please ensure the user is properly set up in the system"
+            }), 400
+
+        # Log successful parameter validation
+        logger.info(f"Parameters validated - userId: {user_id}, spreadsheetId: {sheet_id}")
+        logger.info(f"Using configuration: {config}")
+
+        # Get and validate required parameters
         if 'transactions' not in data:
             return jsonify({"error": "Missing transactions data"}), 400
             
@@ -62,16 +89,6 @@ def classify_transactions():
             
         if len(data['transactions']) == 0:
             return jsonify({"error": "Empty transactions array"}), 400
-            
-        # Get and validate required parameters
-        user_id = data.get('userId')
-        if not user_id or not isinstance(user_id, str) or len(user_id.strip()) == 0:
-            return jsonify({"error": "Invalid or missing userId"}), 400
-            
-        # Support both parameter names for backward compatibility
-        sheet_id = data.get('spreadsheetId') or data.get('expenseSheetId')
-        if not sheet_id or not isinstance(sheet_id, str) or len(sheet_id.strip()) == 0:
-            return jsonify({"error": "Invalid or missing spreadsheetId"}), 400
             
         # Convert transactions to DataFrame with error handling
         try:
@@ -218,6 +235,46 @@ def train_model():
             "error": "Internal server error",
             "details": str(e)
         }), 500
+
+def get_user_config(user_id: str) -> dict:
+    """Get user configuration from Supabase."""
+    try:
+        logger.info(f"Looking up user configuration for userId: {user_id}")
+        
+        # Verify Supabase connection
+        try:
+            # Test connection with a simple query
+            test = supabase.table("account").select("count").execute()
+            logger.info("Supabase connection verified")
+        except Exception as e:
+            logger.error(f"Supabase connection error: {e}")
+            return {}
+
+        # Query user configuration
+        response = supabase.table("account").select("*").eq("userId", user_id).execute()
+        
+        if response.data:
+            logger.info(f"Found configuration for user {user_id}: {response.data[0]}")
+            return response.data[0]
+        else:
+            logger.error(f"No configuration found for user {user_id}")
+            # Create default configuration
+            try:
+                default_config = {
+                    "userId": user_id,
+                    "categorisationTab": "Expense-Detail",  # Default sheet name
+                    "columnRange": "A:Z",  # Full range
+                    "categoryColumn": "E"  # Default category column
+                }
+                logger.info(f"Creating default configuration for user {user_id}: {default_config}")
+                supabase.table("account").insert(default_config).execute()
+                return default_config
+            except Exception as e:
+                logger.error(f"Error creating default configuration: {e}")
+                return {}
+    except Exception as e:
+        logger.error(f"Error fetching user config: {e}")
+        return {}
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
