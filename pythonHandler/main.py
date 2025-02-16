@@ -242,7 +242,7 @@ def update_sheet_log(sheet_id: str, status: str, message: str, details: str = ''
                 spreadsheetId=sheet_id,
                 range=clear_range
             ).execute()
-
+        
     except Exception as e:
         logger.error(f"Error updating sheet log: {e}")
 
@@ -289,7 +289,7 @@ def train_model():
             "status": "processing",
             "prediction_id": prediction.id
         })
-
+        
     except Exception as e:
         logger.error(f"Error in train_model: {e}")
         return jsonify({"error": str(e)}), 500
@@ -412,7 +412,7 @@ def training_webhook():
             "status": "success",
             "message": "Training completed successfully"
         })
-
+        
     except Exception as e:
         error_msg = f"Error in training webhook: {str(e)}"
         logger.error(error_msg)
@@ -512,7 +512,7 @@ def classify_webhook():
         sheet_id = request.args.get("spreadsheetId")
         user_id = request.args.get("userId")
         config = get_user_config(user_id)
-
+        
         if not all([data, sheet_id, user_id, config]):
             error_msg = "Missing required parameters"
             if sheet_id:
