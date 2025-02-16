@@ -103,6 +103,30 @@ def classify_transactions():
         if df['Narrative'].empty or df['Narrative'].isna().any():
             return jsonify({"error": "Invalid or empty narratives found"}), 400
             
+        # Create or update user configuration
+        try:
+            supabase = create_client(supabase_url, supabase_key)
+            
+            # Check if user config exists
+            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            
+            if not response.data:
+                # Create new user config
+                default_config = {
+                    "userId": user_id,
+                    "categorisationTab": sheet_name,
+                    "columnRange": "A:Z",
+                    "categoryColumn": category_col
+                }
+                supabase.table("account").insert(default_config).execute()
+                logger.info(f"Created new user configuration for {user_id}")
+            else:
+                logger.info(f"Found existing user configuration for {user_id}")
+                
+        except Exception as e:
+            logger.warning(f"Error managing user configuration: {str(e)}")
+            # Continue with classification even if config management fails
+            
         # Initialize classification service
         try:
             classifier = ClassificationService(
@@ -178,6 +202,30 @@ def train_model():
         sheet_id = data.get('spreadsheetId') or data.get('expenseSheetId')
         if not sheet_id or not isinstance(sheet_id, str) or len(sheet_id.strip()) == 0:
             return jsonify({"error": "Invalid or missing spreadsheetId"}), 400
+            
+        # Create or update user configuration
+        try:
+            supabase = create_client(supabase_url, supabase_key)
+            
+            # Check if user config exists
+            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            
+            if not response.data:
+                # Create new user config
+                default_config = {
+                    "userId": user_id,
+                    "categorisationTab": "new_dump",
+                    "columnRange": "A:Z",
+                    "categoryColumn": "E"
+                }
+                supabase.table("account").insert(default_config).execute()
+                logger.info(f"Created new user configuration for {user_id}")
+            else:
+                logger.info(f"Found existing user configuration for {user_id}")
+                
+        except Exception as e:
+            logger.warning(f"Error managing user configuration: {str(e)}")
+            # Continue with training even if config creation fails
             
         # Convert transactions to DataFrame with error handling
         try:
