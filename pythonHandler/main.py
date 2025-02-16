@@ -393,9 +393,11 @@ def training_webhook():
         try:
             result = {
                 "prediction_id": prediction_id,
-                "user_id": user_id,
-                "completed_at": datetime.now().isoformat(),
-                "success": True
+                "results": {
+                    "user_id": user_id,
+                    "status": "success",
+                    "embeddings_shape": embeddings.shape
+                }
             }
             supabase.table("webhook_results").insert(result).execute()
             logger.info(f"Stored webhook result for prediction_id: {prediction_id}")
