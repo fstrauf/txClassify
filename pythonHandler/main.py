@@ -425,14 +425,29 @@ def classify_transactions():
     """Classify new transactions."""
     try:
         data = request.get_json()
-        sheet_id = data.get("expenseSheetId")
+        
+        # Extract and validate required parameters
         user_id = data.get("userId")
-        config = get_user_config(user_id)
-
-        if not all([sheet_id, user_id, config]):
-            error_msg = "Missing required parameters"
-            update_sheet_log(sheet_id, "ERROR", error_msg)
+        sheet_id = data.get("spreadsheetId")
+        
+        if not user_id:
+            error_msg = "Missing required parameter: userId"
+            logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
+            
+        if not sheet_id:
+            error_msg = "Missing required parameter: spreadsheetId"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+            
+        config = get_user_config(user_id)
+        if not config:
+            error_msg = "User configuration not found"
+            logger.error(f"{error_msg} for userId: {user_id}")
+            return jsonify({"error": error_msg}), 400
+
+        # Log successful parameter validation
+        logger.info(f"Parameters validated - userId: {user_id}, spreadsheetId: {sheet_id}")
 
         # Verify training data exists
         try:
