@@ -611,26 +611,53 @@ function checkTrainingStatus() {
     
     var config = getServiceConfig();
     
-    // Add retry logic for fetch
+    // Add retry logic for fetch with exponential backoff
     var maxFetchRetries = 3;
     var response = null;
     var fetchError = null;
     
     for (var i = 0; i < maxFetchRetries; i++) {
       try {
-        response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, {
-          headers: { 'X-API-Key': config.apiKey },
+        var options = {
+          headers: { 
+            'X-API-Key': config.apiKey,
+            'Accept': 'application/json',
+            'Connection': 'keep-alive'
+          },
           muteHttpExceptions: true,
           validateHttpsCertificates: true,
           followRedirects: true,
-          timeout: 30  // 30 seconds timeout
-        });
-        fetchError = null;
-        break;
+          timeout: 30000  // 30 seconds timeout
+        };
+        
+        response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, options);
+        var responseCode = response.getResponseCode();
+        
+        // Handle different response codes
+        if (responseCode === 200) {
+          fetchError = null;
+          break;
+        } else if (responseCode === 404) {
+          // Status not found - might be temporary, retry
+          fetchError = "Status not found";
+          Logger.log("Status not found, will retry...");
+          Utilities.sleep(Math.pow(2, i) * 1000);  // Exponential backoff
+          continue;
+        } else if (responseCode >= 500) {
+          // Server error - retry
+          fetchError = `Server error (${responseCode})`;
+          Logger.log("Server error, will retry...");
+          Utilities.sleep(Math.pow(2, i) * 1000);
+          continue;
+        } else {
+          // Other errors - don't retry
+          throw new Error(`Unexpected response code: ${responseCode}`);
+        }
       } catch (e) {
         fetchError = e;
         if (i < maxFetchRetries - 1) {
-          Utilities.sleep(1000 * (i + 1));  // Exponential backoff
+          Logger.log(`Fetch attempt ${i + 1} failed: ${e}. Retrying...`);
+          Utilities.sleep(Math.pow(2, i) * 1000);
         }
       }
     }
@@ -676,19 +703,12 @@ function checkTrainingStatus() {
       
       updateStatus(statusMessage);
       
-      if (result.status === "succeeded") {
-        if (result.result) {
-          var completionTime = new Date().toLocaleString();
-          updateStats('Last Training Time', completionTime);
-          updateStats('Model Status', 'Ready');
-          updateStatus("Training completed successfully!");
-          cleanupTrigger(triggerId);
-          userProperties.deleteAllProperties();
-        } else {
-          statusMessage = `Training completed, processing results... (${minutesElapsed} min)`;
-          updateStatus(statusMessage);
-          updateStats('Model Status', 'Processing Results');
-        }
+      if (result.status === "completed") {
+        updateStats('Last Training Time', new Date().toLocaleString());
+        updateStats('Model Status', 'Ready');
+        updateStatus("Training completed successfully!");
+        cleanupTrigger(triggerId);
+        userProperties.deleteAllProperties();
       } else if (result.status === "failed") {
         updateStats('Model Status', 'Error: Training failed');
         updateStatus(`Error: Training failed - ${result.error || "Unknown error"}`);
@@ -1087,9 +1107,6 @@ function trainModel(config) {
       }
     }
     
-    Logger.log("Training data sample:");
-    Logger.log(JSON.stringify(transactions.slice(0, 3)));
-    
     if (transactions.length === 0) {
       updateStatus("Error: No training data found");
       ui.alert('No training data found. Please ensure you have transactions with categories.');
@@ -1102,49 +1119,71 @@ function trainModel(config) {
     var apiKey = serviceConfig.apiKey;
     var userId = apiKey.substring(0, 8);  // Use first 8 chars as user ID
     
-    // Call training endpoint
-    var options = {
-      method: 'post',
-      contentType: 'application/json',
-      headers: {
-        'X-API-Key': serviceConfig.apiKey,
-        'Accept': 'application/json'
-      },
-      payload: JSON.stringify({ 
-        transactions: transactions,
-        userId: userId,
-        expenseSheetId: sheet.getParent().getId()  // Add sheet ID to payload
-      }),
-      muteHttpExceptions: true
-    };
+    // Prepare the payload
+    var payload = JSON.stringify({ 
+      transactions: transactions,
+      userId: userId,
+      expenseSheetId: sheet.getParent().getId()
+    });
     
-    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/train', options);
-    var responseCode = response.getResponseCode();
-    var responseText = response.getContentText();
+    // Initialize retry variables
+    var maxRetries = 3;
+    var retryCount = 0;
+    var lastError = null;
+    var response = null;
     
-    // Log raw response for debugging
-    Logger.log("Response code: " + responseCode);
-    Logger.log("Response text: " + responseText);
-    
-    // Validate response
-    if (responseCode !== 200) {
-      var errorMessage = "Training failed with status " + responseCode;
+    // Retry loop for the initial training request
+    while (retryCount < maxRetries) {
       try {
-        var errorJson = JSON.parse(responseText);
-        if (errorJson.error) {
-          errorMessage += ": " + errorJson.error;
+        // Add retry attempt to status
+        if (retryCount > 0) {
+          updateStatus(`Retrying training request (attempt ${retryCount + 1}/${maxRetries})...`);
+          Utilities.sleep(Math.pow(2, retryCount) * 1000); // Exponential backoff
+        }
+        
+        // Call training endpoint with improved options
+        var options = {
+          method: 'post',
+          contentType: 'application/json',
+          headers: {
+            'X-API-Key': serviceConfig.apiKey,
+            'Accept': 'application/json',
+            'Connection': 'keep-alive'
+          },
+          payload: payload,
+          muteHttpExceptions: true,
+          validateHttpsCertificates: true,
+          followRedirects: true,
+          timeout: 30000  // 30 second timeout
+        };
+        
+        response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/train', options);
+        var responseCode = response.getResponseCode();
+        
+        // Handle different response codes
+        if (responseCode === 200) {
+          break; // Success, exit retry loop
+        } else if (responseCode === 502 || responseCode === 503 || responseCode === 504) {
+          // Retry on gateway errors
+          lastError = `Server returned ${responseCode}`;
+          throw new Error(lastError);
+        } else {
+          // Don't retry on other errors
+          throw new Error(`Training failed with status ${responseCode}`);
         }
       } catch (e) {
-        // If response is not JSON, extract error message from text
-        if (responseText.includes("<!DOCTYPE")) {
-          errorMessage += ": Server error occurred";
-        } else {
-          errorMessage += ": " + responseText;
+        lastError = e;
+        if (retryCount === maxRetries - 1) {
+          // Last attempt failed
+          updateStatus(`Error: Training failed after ${maxRetries} attempts. Last error: ${e.toString()}`);
+          throw new Error(`Training failed after ${maxRetries} attempts: ${e.toString()}`);
         }
+        retryCount++;
+        continue;
       }
-      updateStatus("Error: " + errorMessage);
-      throw new Error(errorMessage);
     }
+    
+    var responseText = response.getContentText();
     
     // Parse response carefully
     var result;
@@ -1177,12 +1216,9 @@ function trainModel(config) {
         'PREDICTION_ID': result.prediction_id,
         'TRIGGER_ID': trigger.getUniqueId(),
         'START_TIME': new Date().getTime().toString(),
-        'TRAINING_SIZE': transactions.length.toString()
+        'TRAINING_SIZE': transactions.length.toString(),
+        'RETRY_COUNT': '0'  // Initialize retry count
       });
-      
-      // Log stored properties for debugging
-      Logger.log("Stored properties:");
-      Logger.log(JSON.stringify(userProperties.getProperties()));
       
       ui.alert('Training has started! The sheet will update automatically when training is complete.\n\nYou can close this window.');
       return;
