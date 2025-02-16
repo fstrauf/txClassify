@@ -308,6 +308,15 @@ def training_webhook():
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
+        # Check if we've already processed this webhook
+        try:
+            webhook_results = supabase.table("webhook_results").select("*").eq("sheet_id", sheet_id).execute()
+            if webhook_results.data:
+                logger.info(f"Webhook already processed for sheet_id: {sheet_id}")
+                return jsonify({"status": "success", "message": "Already processed"}), 200
+        except Exception as e:
+            logger.warning(f"Error checking webhook results: {e}")
+
         # Safely parse JSON with size limit and error handling
         if not request.is_json:
             error_msg = "Request must be JSON"
@@ -315,6 +324,8 @@ def training_webhook():
             return jsonify({"error": error_msg}), 400
             
         try:
+            # Use a higher max content length for large embeddings
+            request.max_content_length = 50 * 1024 * 1024  # 50MB limit
             data = request.get_json(force=True)
         except Exception as e:
             error_msg = f"Failed to parse JSON: {str(e)}"
@@ -337,6 +348,17 @@ def training_webhook():
 
         # Store embeddings
         store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
+        
+        # Store webhook result
+        try:
+            supabase.table("webhook_results").insert({
+                "sheet_id": sheet_id,
+                "user_id": user_id,
+                "status": "completed",
+                "processed_at": datetime.now().isoformat()
+            }).execute()
+        except Exception as e:
+            logger.warning(f"Error storing webhook result: {e}")
         
         # Update status
         update_process_status("completed", "training", user_id)
@@ -483,6 +505,49 @@ def classify_webhook():
         if sheet_id:
             update_sheet_log(sheet_id, "ERROR", f"Classification webhook failed: {error_msg}")
         return jsonify({"error": error_msg}), 500
+
+@app.route("/status/<prediction_id>", methods=["GET"])
+def get_prediction_status(prediction_id):
+    """Get the status of a prediction."""
+    try:
+        # Get prediction from Replicate
+        prediction = replicate.predictions.get(prediction_id)
+        
+        if not prediction:
+            return jsonify({"error": "Prediction not found"}), 404
+            
+        # Check if we have a completed webhook in Supabase
+        try:
+            webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
+            if webhook_results.data:
+                return jsonify({
+                    "status": "completed",
+                    "result": webhook_results.data[0]
+                })
+        except Exception as e:
+            logger.warning(f"Error checking webhook results: {e}")
+        
+        # Return status based on prediction state
+        status = prediction.status
+        if status == "succeeded":
+            return jsonify({
+                "status": "completed",
+                "message": "Processing completed successfully"
+            })
+        elif status == "failed":
+            return jsonify({
+                "status": "failed",
+                "error": prediction.error
+            })
+        else:
+            return jsonify({
+                "status": status,
+                "message": "Processing in progress"
+            })
+            
+    except Exception as e:
+        logger.error(f"Error getting prediction status: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
