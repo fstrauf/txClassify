@@ -481,10 +481,27 @@ def classify_transactions():
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
             
-        config = get_user_config(user_id)
-        if not config:
-            error_msg = "User configuration not found"
-            logger.error(f"{error_msg} for userId: {user_id}")
+        # Get user configuration with error handling
+        try:
+            config = get_user_config(user_id)
+            if not config:
+                error_msg = "User configuration not found"
+                logger.error(f"{error_msg} for userId: {user_id}")
+                return jsonify({"error": error_msg}), 400
+                
+            # Validate required configuration fields
+            if not config.get("categorisationTab"):
+                error_msg = "Missing categorisationTab in user configuration"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 400
+                
+            if not config.get("categorisationRange"):
+                error_msg = "Missing categorisationRange in user configuration"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 400
+        except Exception as e:
+            error_msg = f"Error getting user configuration: {str(e)}"
+            logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
         # Log successful parameter validation
@@ -503,7 +520,7 @@ def classify_transactions():
             return jsonify({"error": error_msg}), 400
 
         # Get sheet configuration
-        sheet_range = f"{config['categorisationTab']}!{config['columnRange']}"
+        sheet_range = f"{config['categorisationTab']}!{config['categorisationRange']}"
         
         # Fetch transaction data
         status_msg = "Fetching transactions"
@@ -518,12 +535,18 @@ def classify_transactions():
         
         # Process data
         df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0])
-        if 'description' not in df.columns:
-            error_msg = "Missing required column: description"
+        
+        # Get description column from configuration
+        column_config = config.get("columnOrderCategorisation", {})
+        description_column = column_config.get("descriptionColumn", "C")
+        
+        if description_column not in df.columns:
+            error_msg = f"Description column '{description_column}' not found in sheet"
             update_sheet_log(sheet_id, "ERROR", error_msg)
             return jsonify({"error": error_msg}), 400
 
-        df["description"] = df["description"].apply(clean_text)
+        # Clean descriptions
+        df["description"] = df[description_column].apply(clean_text)
         
         # Run prediction
         status_msg = f"Getting embeddings for {len(df)} transactions"
@@ -540,7 +563,8 @@ def classify_transactions():
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error in classify_transactions: {error_msg}")
-        update_process_status(f"Error: {error_msg}", "classify", user_id)
+        if user_id:
+            update_process_status(f"Error: {error_msg}", "classify", user_id)
         if sheet_id:
             update_sheet_log(sheet_id, "ERROR", f"Classification failed: {error_msg}")
         return jsonify({"error": error_msg}), 500

@@ -306,8 +306,23 @@ def get_user_config(user_id: str) -> dict:
             logger.info(f"Query response: {response.data}")
             
             if response.data:
-                logger.info(f"Found existing configuration for user {user_id}")
-                return response.data[0]
+                config = response.data[0]
+                # Ensure all required fields exist
+                if not config.get("columnOrderCategorisation"):
+                    config["columnOrderCategorisation"] = {
+                        "categoryColumn": "E",
+                        "descriptionColumn": "C"
+                    }
+                if not config.get("categorisationRange"):
+                    config["categorisationRange"] = "A:Z"
+                if not config.get("categorisationTab"):
+                    config["categorisationTab"] = "new_dump"
+                    
+                # Update the configuration if we added any missing fields
+                supabase.table("account").update(config).eq("userId", user_id).execute()
+                logger.info(f"Updated configuration for user {user_id}")
+                return config
+                
         except Exception as e:
             logger.error(f"Error querying user configuration: {str(e)}")
             
@@ -316,8 +331,11 @@ def get_user_config(user_id: str) -> dict:
         default_config = {
             "userId": user_id,
             "categorisationTab": "new_dump",
-            "columnRange": "A:Z",
-            "categoryColumn": "E"
+            "categorisationRange": "A:Z",
+            "columnOrderCategorisation": {
+                "categoryColumn": "E",
+                "descriptionColumn": "C"
+            }
         }
         
         # Insert default configuration
