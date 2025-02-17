@@ -528,25 +528,33 @@ def classify_transactions():
         update_sheet_log(sheet_id, "INFO", status_msg)
         sheet_data = get_spreadsheet_data(sheet_id, sheet_range)
         
-        if not sheet_data or len(sheet_data) < 2:
+        if not sheet_data:
             error_msg = "No transactions found to classify"
             update_sheet_log(sheet_id, "ERROR", error_msg)
             return jsonify({"error": error_msg}), 400
         
-        # Process data
-        df = pd.DataFrame(sheet_data[1:], columns=sheet_data[0])
-        
-        # Get description column from configuration
+        # Get column configuration
         column_config = config.get("columnOrderCategorisation", {})
         description_column = column_config.get("descriptionColumn", "C")
         
-        if description_column not in df.columns:
-            error_msg = f"Description column '{description_column}' not found in sheet"
+        # Convert column letter to index (0-based)
+        description_index = ord(description_column.upper()) - ord('A')
+        
+        # Process data without assuming headers
+        descriptions = []
+        for row in sheet_data:
+            if len(row) > description_index:
+                description = row[description_index]
+                if description and str(description).strip():
+                    descriptions.append({"description": str(description).strip()})
+        
+        if not descriptions:
+            error_msg = "No valid descriptions found in the specified column"
             update_sheet_log(sheet_id, "ERROR", error_msg)
             return jsonify({"error": error_msg}), 400
 
-        # Clean descriptions
-        df["description"] = df[description_column].apply(clean_text)
+        # Create DataFrame with descriptions
+        df = pd.DataFrame(descriptions)
         
         # Run prediction
         status_msg = f"Getting embeddings for {len(df)} transactions"
