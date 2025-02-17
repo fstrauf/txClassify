@@ -616,8 +616,12 @@ def classify_webhook():
         similarities = cosine_similarity(new_embeddings, trained_embeddings)
         best_matches = similarities.argmax(axis=1)
         
-        # Get predicted categories
-        categories = [trained_data[i]["category"] for i in best_matches]
+        # Get predicted categories from structured array
+        categories = []
+        for idx in best_matches:
+            # Access the Category field from the structured array
+            category = trained_data[idx].item()['Category']
+            categories.append(category)
         
         # Update sheet with predictions
         status_msg = f"Writing {len(categories)} predictions to sheet"
@@ -629,7 +633,7 @@ def classify_webhook():
         ))
         
         # Write categories back to sheet
-        category_range = f"{config['categorisationTab']}!{category_column}"
+        category_range = f"{config['categorisationTab']}!{category_column}1:{category_column}{len(categories)}"
         service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
             range=category_range,
