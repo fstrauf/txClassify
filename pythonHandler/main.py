@@ -53,8 +53,8 @@ def update_process_status(status_text: str, mode: str, user_id: str) -> None:
             default_config = {
                 "userId": user_id,
                 "categorisationTab": "new_dump",
-                "columnRange": "A:Z",
-                "categoryColumn": "E",
+                "categorisationRange": "A:Z",
+                "columnOrderCategorisation": {"categoryColumn": "E", "descriptionColumn": "C"},
                 status_field: status_text
             }
             supabase.table("account").insert(default_config).execute()
@@ -339,9 +339,10 @@ def training_webhook():
                 default_config = {
                     "userId": user_id,
                     "categorisationTab": "new_dump",
-                    "columnRange": "A:Z",
-                    "categoryColumn": "E",
-                    "trainingStatus": "processing"
+                    "categorisationRange": "A:Z",
+                    "columnOrderCategorisation": {"categoryColumn": "E", "descriptionColumn": "C"},
+                    "trainingStatus": "processing",
+                    "expenseSheetId": sheet_id
                 }
                 supabase.table("account").insert(default_config).execute()
                 logger.info(f"Created new account for user {user_id}")
@@ -551,9 +552,22 @@ def classify_webhook():
         data = request.get_json()
         sheet_id = request.args.get("spreadsheetId")
         user_id = request.args.get("userId")
-        config = get_user_config(user_id)
         
-        if not all([data, sheet_id, user_id, config]):
+        # Get user configuration
+        response = supabase.table("account").select("*").eq("userId", user_id).execute()
+        if not response.data:
+            error_msg = "User configuration not found"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+            
+        config = response.data[0]
+        column_config = config.get("columnOrderCategorisation", {})
+        if not isinstance(column_config, dict):
+            column_config = {}
+            
+        category_column = column_config.get("categoryColumn", "E")
+        
+        if not all([data, sheet_id, user_id]):
             error_msg = "Missing required parameters"
             if sheet_id:
                 update_sheet_log(sheet_id, "ERROR", error_msg)
@@ -583,7 +597,7 @@ def classify_webhook():
         ))
         
         # Write categories back to sheet
-        category_range = f"{config['categorisationTab']}!{config['categoryColumn']}"
+        category_range = f"{config['categorisationTab']}!{category_column}"
         service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
             range=category_range,
