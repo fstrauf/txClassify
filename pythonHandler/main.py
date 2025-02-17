@@ -619,8 +619,10 @@ def classify_webhook():
         # Get predicted categories from structured array
         categories = []
         for idx in best_matches:
-            # Access the Category field from the structured array
-            category = trained_data[idx].item()['Category']
+            # Get the record at index idx
+            record = trained_data[idx]
+            # Access the Category field from the record
+            category = str(record[1])  # Index 1 corresponds to the Category field
             categories.append(category)
         
         # Update sheet with predictions
@@ -632,7 +634,7 @@ def classify_webhook():
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
         ))
         
-        # Write categories back to sheet
+        # Write categories back to sheet starting from row 1
         category_range = f"{config['categorisationTab']}!{category_column}1:{category_column}{len(categories)}"
         service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
