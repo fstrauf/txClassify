@@ -323,6 +323,7 @@ def training_webhook():
     """Handle training webhook from Replicate."""
     sheet_id = request.args.get("spreadsheetId")
     user_id = request.args.get("userId")
+    embeddings_shape = None  # Initialize embeddings_shape variable
     
     try:
         # Log incoming request details
@@ -418,7 +419,8 @@ def training_webhook():
         # Process embeddings
         try:
             embeddings = np.array([item["embedding"] for item in data["output"]], dtype=np.float32)
-            logger.info(f"Successfully processed embeddings with shape: {embeddings.shape}")
+            embeddings_shape = embeddings.shape  # Store shape before clearing embeddings
+            logger.info(f"Successfully processed embeddings with shape: {embeddings_shape}")
             
             # Store embeddings
             store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
@@ -439,7 +441,7 @@ def training_webhook():
                 "results": {
                     "user_id": user_id,
                     "status": "success",
-                    "embeddings_shape": embeddings.shape
+                    "embeddings_shape": embeddings_shape
                 }
             }
             supabase.table("webhook_results").insert(result).execute()
