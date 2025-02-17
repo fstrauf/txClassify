@@ -619,10 +619,10 @@ def classify_webhook():
         # Get predicted categories from structured array
         categories = []
         for idx in best_matches:
-            # Get the record at index idx
-            record = trained_data[idx]
-            # Access the Category field from the record
-            category = str(record[1])  # Index 1 corresponds to the Category field
+            # Get the record at index idx and convert to dictionary
+            record = trained_data[idx].item()
+            # Access the Category field from the dictionary
+            category = str(record['Category'])
             categories.append(category)
         
         # Update sheet with predictions
