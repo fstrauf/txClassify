@@ -300,9 +300,11 @@ def train_model():
         if len(df) < 10:  # Minimum required for meaningful training
             return jsonify({"error": "At least 10 valid transactions required for training"}), 400
         
-        # Store training data index
+        # Store training data index with proper dtype
         df["item_id"] = range(len(df))
-        store_embeddings("txclassify", f"{sheet_id}_index.npy", df[["item_id", "Category", "description"]].to_records())
+        training_data = np.array(list(zip(df["item_id"], df["Category"], df["description"])), 
+                               dtype=[('item_id', int), ('Category', 'U100'), ('description', 'U500')])
+        store_embeddings("txclassify", f"{sheet_id}_index.npy", training_data)
         
         # Run prediction
         prediction = run_prediction("train", sheet_id, user_id, df["description"].tolist())
@@ -619,10 +621,8 @@ def classify_webhook():
         # Get predicted categories from structured array
         categories = []
         for idx in best_matches:
-            # Get the record at index idx and convert to dictionary
-            record = trained_data[idx].item()
-            # Access the Category field from the dictionary
-            category = str(record['Category'])
+            # Get the category directly from the structured array
+            category = str(trained_data[idx][1])  # Index 1 is the Category field
             categories.append(category)
         
         # Update sheet with predictions
