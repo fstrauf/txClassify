@@ -801,9 +801,13 @@ function classifyTransactions(config) {
         transactions: transactions,
         userId: serviceConfig.userId,
         spreadsheetId: sheet.getParent().getId(),
-        sheetName: originalSheetName,  // Add sheet name for configuration
-        descriptionColumn: config.descriptionCol,  // Add column configuration
-        categoryColumn: config.categoryCol,
+        sheetName: originalSheetName,
+        columnOrderCategorisation: {
+          descriptionColumn: config.descriptionCol,
+          categoryColumn: config.categoryCol
+        },
+        categorisationRange: "A:Z",
+        categorisationTab: originalSheetName,
         startRow: config.startRow
       }),
       muteHttpExceptions: true
@@ -1135,11 +1139,17 @@ function trainModel(config) {
     
     updateStatus("Processing " + transactions.length + " transactions...");
     
-    // Prepare the payload
+    // Prepare the payload with consistent field names
     var payload = JSON.stringify({ 
       transactions: transactions,
-      userId: serviceConfig.userId,  // Use consistent userId from config
-      expenseSheetId: sheet.getParent().getId()
+      userId: serviceConfig.userId,
+      expenseSheetId: sheet.getParent().getId(),
+      columnOrderCategorisation: {
+        descriptionColumn: config.narrativeCol,
+        categoryColumn: config.categoryCol
+      },
+      categorisationRange: "A:Z",
+      categorisationTab: sheet.getName()
     });
     
     // Initialize retry variables
