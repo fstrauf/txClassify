@@ -7,7 +7,7 @@ export default function Features() {
       <ul className="list-disc list-inside mt-4 text-lg">
         <li>Automatic categorization using advanced AI algorithms</li>
         <li>
-          Secure Google Sheets integration to ensure privacy and data protection
+          Secure Google Sheets™ integration to ensure privacy and data protection
         </li>
         <li>Streamlined interface for seamless user experience</li>
         <li>Accurate transaction identification to reduce manual oversight</li>

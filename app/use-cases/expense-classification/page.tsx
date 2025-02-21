@@ -20,7 +20,7 @@ export default function ExpenseClassification() {
             Simplify with AI-powered Classification
           </h2>
           <p className="text-lg text-center">
-            Using our AI-driven tool, you can seamlessly integrate expense classification into your daily routine. No more manual categorization. Just link it to your Google Sheet, and let the technology handle the rest.
+            Using our AI-driven tool, you can seamlessly integrate expense classification into your daily routine. No more manual categorization. Just link it to your Google Sheets™, and let the technology handle the rest.
           </p>
           <div className="mt-6 text-center">
             <Link href="/" className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out">

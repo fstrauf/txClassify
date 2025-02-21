@@ -9,7 +9,7 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata = {
   metadataBase: new URL('https://www.expensesorted.com/'),
   title: "Expense Sorted - Categorise your expenses",
-  description: "Automatically categorise your monthly expenses using AI. Hook this App up to your Google Sheet and get your monthly budgeting done in no time.",
+  description: "Automatically categorise your monthly expenses using AI. Hook this App up to your Google Sheets™ and get your monthly budgeting done in no time.",
   alternates: {
     canonical: '/',
   },

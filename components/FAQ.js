@@ -29,7 +29,7 @@ export default function FAQ() {
 
   const faqItems = [
     {
-      question: "How secure is the connection to my Google Sheet?",
+      question: "How secure is the connection to my Google Sheets™?",
       answer: "Our integration prioritizes security. We use OAuth 2.0 and never store your data."
     },
     {

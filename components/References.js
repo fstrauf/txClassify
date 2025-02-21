@@ -36,7 +36,7 @@ export default function References() {
             href="/use-cases/simple-expense-tracker-google-sheet"
             className="px-4 py-1 text-first hover:bg-third rounded hover:underline"
           >
-            Google Sheet Expense Tracking
+            Google Sheets™ Expense Tracking
           </Link>
         </div>
       </div>

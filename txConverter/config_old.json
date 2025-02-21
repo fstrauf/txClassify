@@ -42,6 +42,19 @@
               "direction": "Direction"
             },
             "defaultCurrency": "EUR"
+          },
+          {
+            "name": "ANZ",
+            "file_path": "txConverter/data/anz.csv",
+            "separator": ",",
+            "date_format": "%d/%m/%Y",
+            "column_mapping": {
+              "date": "Date",
+              "amount": "Amount",
+              "description": ["Code", "Reference"],
+              "currency": null
+            },
+            "defaultCurrency": "NZD"
           }
     ]
 }
