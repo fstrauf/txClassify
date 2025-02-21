@@ -12,7 +12,7 @@ export default function FuckYouMoneySheet() {
       <main className="flex-grow flex items-center justify-center p-10">
         <div className="mx-auto w-full prose prose-invert max-w-4xl bg-third p-6 rounded-xl shadow-lg space-y-6">
           <h1 className="text-3xl font-bold leading-tight text-center">
-            Fuck you Money - Cost of Living Tracking Google Sheet
+            Fuck you Money - Cost of Living Tracking Google Sheets™
           </h1>
           <GetItHereButton />
           <StayUpToDate />

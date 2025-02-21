@@ -32,7 +32,7 @@ export default function Home() {
           </h1>
           <h2 className="text-2xl text-first text-center">Use AI instead!</h2>
           <p className="text-lg text-center">
-            Hook this up to your Google Sheet and speed up your monthly
+            Hook this up to your Google Sheets™ and speed up your monthly
             workflow.
           </p>
           <div className="text-center">
@@ -40,7 +40,7 @@ export default function Home() {
               className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out inline-block"
               href="/fuck-you-money-sheet"
             >
-              Get the Google Sheet Template
+              Get the Google Sheets™ Template
             </Link>
           </div>
           <div className="text-center">

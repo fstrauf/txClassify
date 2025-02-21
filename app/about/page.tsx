@@ -30,7 +30,7 @@ export default function About() {
             Most people currently use something like rule-based categorisation.
             I want to simplify this. I hope that by using the{" "}
             <Link href="/fuck-you-money-sheet" className="underline">
-              Google Sheet Template
+              Google Sheets™ Template
             </Link>{" "}
             in combination with the{" "}
             <Link href="/demo" className="underline">
