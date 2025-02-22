@@ -9,21 +9,17 @@ export default function Header() {
 
   return (
     <header className="w-full bg-surface shadow-soft sticky top-0 z-50">
-      <div className="container mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between">
+      <div className="container mx-auto px-4 py-3 flex flex-col sm:flex-row items-center justify-between">
         <div className="flex items-center justify-between w-full sm:w-auto">
-          <Link href="/" className="flex items-center space-x-3">
-            <div className="relative">
-              <Image
-                width={32}
-                height={32}
-                src="/128_logo_es.png"
-                className="rounded-md shadow-soft"
-                alt="Expense Sorted"
-              />
-            </div>
-            <h1 className="text-xl font-semibold text-gray-900">
-              Expense Sorted
-            </h1>
+          <Link href="/" className="flex items-center">
+            <Image
+              width={220}
+              height={40}
+              src="/expense_sorted.svg"
+              alt="Expense Sorted"
+              className="w-[160px] h-auto"
+              priority
+            />
           </Link>
           <button 
             className="sm:hidden block text-gray-600" 
