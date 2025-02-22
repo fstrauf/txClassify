@@ -799,7 +799,6 @@ function classifyTransactions(config) {
       },
       payload: JSON.stringify({ 
         transactions: transactions,
-        userId: serviceConfig.userId,
         spreadsheetId: sheet.getParent().getId(),
         sheetName: originalSheetName,
         columnOrderCategorisation: {

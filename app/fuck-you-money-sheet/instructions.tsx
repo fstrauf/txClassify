@@ -51,8 +51,7 @@ export default function Instructions() {
           </div>
         </li>
         <li>
-          Categorise your expenses{" "}
-          <Link href="/demo">head here to use the AI-Tool</Link>
+          Categorise your expenses
         </li>
         <li>
           Review and adjust categories{" "}
