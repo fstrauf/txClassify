@@ -56,12 +56,6 @@ function Navigation() {
       >
         Instructions
       </Link>
-      <Link
-        className="bg-second hover:bg-third py-2 px-4 rounded-full text-white font-semibold transition duration-300 ease-in-out no-underline"
-        href="/demo"
-      >
-        Try the Demo
-      </Link>
     </nav>
   );
 }

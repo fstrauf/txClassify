@@ -47,20 +47,28 @@ def health_check():
 def classify_transactions():
     """Classify new transactions."""
     try:
+        # Get API key from headers
+        api_key = request.headers.get('X-API-Key')
+        if not api_key:
+            return jsonify({"error": "API key is required"}), 401
+
+        # Validate API key and get user ID
+        try:
+            user_id = validate_api_key(api_key)
+        except Exception as e:
+            return jsonify({"error": "Invalid API key"}), 401
+
         data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
         logger.info("Received classification request")
         
         # Extract and validate required parameters
-        user_id = data.get("userId")
         sheet_id = data.get("spreadsheetId")
         
         logger.info(f"Request parameters - userId: {user_id}, spreadsheetId: {sheet_id}")
         
-        if not user_id:
-            error_msg = "Missing required parameter: userId"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-            
         if not sheet_id:
             error_msg = "Missing required parameter: spreadsheetId"
             logger.error(error_msg)
@@ -182,6 +190,17 @@ def classify_transactions():
 def train_model():
     """Endpoint to train the model with new data"""
     try:
+        # Get API key from headers
+        api_key = request.headers.get('X-API-Key')
+        if not api_key:
+            return jsonify({"error": "API key is required"}), 401
+
+        # Validate API key and get user ID
+        try:
+            user_id = validate_api_key(api_key)
+        except Exception as e:
+            return jsonify({"error": "Invalid API key"}), 401
+
         # Get request data
         data = request.get_json()
         if not data:
@@ -192,11 +211,6 @@ def train_model():
             
         if 'transactions' not in data:
             return jsonify({"error": "Missing transactions data"}), 400
-            
-        # Get and validate required parameters
-        user_id = data.get('userId')
-        if not user_id or not isinstance(user_id, str) or len(user_id.strip()) == 0:
-            return jsonify({"error": "Invalid or missing userId"}), 400
             
         # Support both parameter names for backward compatibility
         sheet_id = data.get('spreadsheetId') or data.get('expenseSheetId')
@@ -354,6 +368,17 @@ def get_user_config(user_id: str) -> dict:
     except Exception as e:
         logger.error(f"Error in get_user_config: {str(e)}")
         raise Exception(f"User configuration error: {str(e)}")
+
+def validate_api_key(api_key: str) -> str:
+    """Validate API key and return user ID if valid."""
+    try:
+        response = supabase.table("account").select("userId").eq("api_key", api_key).execute()
+        if not response.data:
+            raise Exception("Invalid API key")
+        return response.data[0]["userId"]
+    except Exception as e:
+        logger.error(f"Error validating API key: {e}")
+        raise
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))

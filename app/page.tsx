@@ -45,10 +45,10 @@ export default function Home() {
           </div>
           <div className="text-center">
             <Link
-              href="/demo"
-              className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out"
+              className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out inline-block"
+              href="/api-key"
             >
-              Try it out now
+              Get Your API Key
             </Link>
           </div>
           <div className="mt-6">

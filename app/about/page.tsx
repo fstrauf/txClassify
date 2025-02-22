@@ -32,11 +32,7 @@ export default function About() {
             <Link href="/fuck-you-money-sheet" className="underline">
               Google Sheets™ Template
             </Link>{" "}
-            in combination with the{" "}
-            <Link href="/demo" className="underline">
-              categorisation tool
-            </Link>{" "}
-            you can improve your monthly workflow.
+            in combination with the categorisation tool you can improve your monthly workflow.
           </p>
         </div>
       </main>
