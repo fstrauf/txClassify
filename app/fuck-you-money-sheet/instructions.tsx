@@ -6,11 +6,11 @@ export default function Instructions() {
   return (
     <section id="instructions">
       <h2>Instructions</h2>
-      <p className="prose prose-invert">
+      <p className="text-gray-700">
         The sheet below is all you need to get tracking.
       </p>
       <GetItHereButton/>
-      <p className="prose prose-invert">
+      <p className="text-gray-700">
         Hop in and make a copy, ideally to a Google Drive.
       </p>
       <div className="mt-6">
@@ -22,8 +22,8 @@ export default function Instructions() {
           alt="Copy the template sheet"
         />
       </div>
-      <p className="prose prose-invert">Every month then do the following:</p>
-      <ol className="list-decimal ml-8 prose prose-invert mx-auto">
+      <p className="text-gray-700">Every month then do the following:</p>
+      <ol className="list-decimal ml-8 text-gray-700 mx-auto space-y-6">
         <li>
           Add your income from different sources to the Income Tab of the
           financial-overview sheet
@@ -91,9 +91,12 @@ export default function Instructions() {
         </li>
         <li>Start saving up fuck you money</li>
       </ol>
-      <p className="prose prose-invert">
+      <p className="text-gray-700 mt-6">
         To get into the right mood of why to use this, I recommend reading this:{" "}
-        <a href="https://florianstrauf.substack.com/p/fuck-you-money-doesnt-mean-you-need">
+        <a 
+          href="https://florianstrauf.substack.com/p/fuck-you-money-doesnt-mean-you-need"
+          className="text-primary hover:text-primary-dark underline"
+        >
           Fuck You Money Doesn't Mean You Need To Be Rich
         </a>
       </p>

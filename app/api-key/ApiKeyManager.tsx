@@ -70,27 +70,27 @@ export default function ApiKeyManager({ userId }: ApiKeyManagerProps) {
   };
 
   if (loading) {
-    return <div className="text-center">Loading...</div>;
+    return <div className="text-gray-700 text-center">Loading...</div>;
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <Toaster />
       {apiKey ? (
-        <div className="space-y-4">
-          <div className="bg-gray-800 p-4 rounded-lg break-all">
-            <p className="text-sm font-mono">{apiKey}</p>
+        <div className="space-y-6">
+          <div className="bg-gray-50 p-6 rounded-xl shadow-soft border border-gray-200">
+            <p className="text-sm font-mono text-gray-700 break-all">{apiKey}</p>
           </div>
-          <div className="flex gap-4 justify-center">
+          <div className="flex flex-wrap gap-4 justify-center">
             <button
               onClick={copyToClipboard}
-              className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out"
+              className="px-6 py-3 rounded-xl bg-primary text-white font-semibold hover:bg-primary-dark transition-all duration-200 shadow-soft hover:shadow-glow"
             >
               Copy API Key
             </button>
             <button
               onClick={generateApiKey}
-              className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out"
+              className="px-6 py-3 rounded-xl bg-white text-primary border border-primary/10 font-semibold hover:bg-gray-50 transition-all duration-200 shadow-soft"
             >
               Generate New Key
             </button>
@@ -100,15 +100,15 @@ export default function ApiKeyManager({ userId }: ApiKeyManagerProps) {
         <div className="text-center">
           <button
             onClick={generateApiKey}
-            className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out"
+            className="px-6 py-3 rounded-xl bg-primary text-white font-semibold hover:bg-primary-dark transition-all duration-200 shadow-soft hover:shadow-glow"
           >
             Generate API Key
           </button>
         </div>
       )}
-      <div className="mt-8 text-sm text-gray-300">
-        <h2 className="font-semibold mb-2">How to use your API key:</h2>
-        <ol className="list-decimal list-inside space-y-2">
+      <div className="bg-surface rounded-xl p-6 shadow-soft">
+        <h2 className="text-xl font-semibold text-gray-900 mb-4">How to use your API key:</h2>
+        <ol className="list-decimal list-inside space-y-3 text-gray-700">
           <li>Copy your API key</li>
           <li>Open your Google Sheets™ document</li>
           <li>Go to Extensions &gt; Apps Script</li>
