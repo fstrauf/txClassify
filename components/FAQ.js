@@ -1,67 +1,64 @@
 "use client"
 import { useState } from "react";
 
-const FAQItem = ({ index, question, answer, openIndex, handleClick }) => (
-  <li>
-    <button onClick={() => handleClick(index)} className="relative flex gap-2 items-center w-full py-5 text-base font-semibold text-left border-t md:text-lg border-base-content/10" aria-expanded={openIndex === index}>
-      <span className="flex-1 text-base-content ">{question}</span>
-      <svg className="flex-shrink-0 w-4 h-4 ml-auto fill-current" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
-        <rect y="7" width="16" height="2" rx="1" className="transform origin-center transition duration-200 ease-out false"></rect>
-        <rect y="7" width="16" height="2" rx="1" className="transform origin-center rotate-90 transition duration-200 ease-out false"></rect>
-      </svg>
-    </button>
-    <div className={`transition-all duration-300 ease-in-out ${openIndex === index ? 'opacity-100 max-h-full' : 'opacity-0 max-h-0'}`} style={{transition: 'max-height 0.3s ease-in-out, opacity 0.3s ease-in-out'}}>
-      <div className="pb-5 leading-relaxed">
-        <div className="space-y-2 leading-relaxed">
-          {answer}
-        </div>
-      </div>
-    </div>
-  </li>
-);
-
 export default function FAQ() {
   const [openIndex, setOpenIndex] = useState(null);
 
-  const handleClick = (index) => {
-    setOpenIndex(openIndex === index ? null : index);
-  };
-
-  const faqItems = [
+  const faqs = [
     {
-      question: "How secure is the connection to my Google Sheets™?",
-      answer: "Our integration prioritizes security. We use OAuth 2.0 and never store your data."
+      question: "How does the AI categorization work?",
+      answer: "Our AI model learns from your existing categorized expenses. When you submit new transactions, it analyzes patterns in descriptions and amounts to automatically assign the most appropriate category."
     },
     {
-      question: "Can I customize the expense categories?",
-      answer: "Yes, our tool is flexible, allowing you to add or modify categories as you see fit."
+      question: "Is my data secure?",
+      answer: "Yes! Your data stays in your Google Sheets™. We only process the specific transactions you send for categorization, and we don't store any of your financial data permanently."
     },
     {
-      question: "Is there any manual intervention required?",
-      answer: "While our AI is highly accurate, we provide an interface for you to make manual adjustments if needed."
+      question: "How accurate is the categorization?",
+      answer: "The accuracy depends on your training data. With a good set of pre-categorized transactions, our AI typically achieves 90%+ accuracy. The more you use it, the better it gets."
+    },
+    {
+      question: "Can I customize the categories?",
+      answer: "Absolutely! You can train the model with your own custom categories. The AI will learn your specific categorization preferences and apply them to new transactions."
     }
   ];
 
   return (
-    <div className="py-24 px-8 max-w-5xl mx-auto flex flex-col md:flex-row gap-12">
-      <div className="flex flex-col text-left basis-1/2">
-        <p className="inline-block font-semibold text-primary mb-4">FAQ</p>
-        <p className="sm:text-4xl text-3xl font-extrabold text-base-content">
-          Frequently Asked Questions
-        </p>
-      </div>
-      <ul className="basis-1/2">
-        {faqItems.map((item, index) => (
-          <FAQItem
-            key={index}
-            index={index}
-            question={item.question}
-            answer={item.answer}
-            openIndex={openIndex}
-            handleClick={handleClick}
-          />
-        ))}
-      </ul>
+    <div className="max-w-3xl mx-auto divide-y divide-gray-200">
+      {faqs.map((faq, index) => (
+        <div key={index} className="py-6">
+          <button
+            onClick={() => setOpenIndex(openIndex === index ? null : index)}
+            className="flex justify-between items-center w-full text-left"
+          >
+            <h3 className="text-lg font-semibold text-gray-900">
+              {faq.question}
+            </h3>
+            <span className="ml-6 flex-shrink-0">
+              <svg
+                className={`w-6 h-6 transform ${openIndex === index ? 'rotate-180' : ''} text-gray-400`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
+            </span>
+          </button>
+          {openIndex === index && (
+            <div className="mt-4">
+              <p className="text-gray-600">
+                {faq.answer}
+              </p>
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

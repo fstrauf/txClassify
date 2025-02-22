@@ -6,20 +6,22 @@ export default async function ApiKeyPage() {
   const user = session?.user;
 
   return (
-    <div className="flex flex-col min-h-screen bg-gradient-to-br from-first via-second to-third">
-      <main className="flex-grow flex items-center justify-center p-10">
-        <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
-          <h1 className="text-3xl font-bold leading-tight text-center">
+    <div className="min-h-screen bg-background-default">
+      <main className="container mx-auto px-4 py-16 max-w-7xl">
+        <div className="bg-surface rounded-2xl shadow-soft p-8 space-y-8">
+          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 text-center bg-clip-text text-transparent bg-gradient-to-r from-primary-dark via-primary to-secondary animate-gradient">
             API Key Management
           </h1>
-          <p className="text-lg text-center">
-            Generate and manage your API key to use with the Google Sheets™ integration.
-          </p>
-          {user ? (
-            <ApiKeyManager userId={user.sub} />
-          ) : (
-            <p className="text-center">Please log in to manage your API key.</p>
-          )}
+          <div className="max-w-3xl mx-auto">
+            <p className="text-xl text-gray-700 text-center mb-8">
+              Generate and manage your API key to use with the Google Sheets™ integration.
+            </p>
+            {user ? (
+              <ApiKeyManager userId={user.sub} />
+            ) : (
+              <p className="text-gray-700 text-center">Please log in to manage your API key.</p>
+            )}
+          </div>
         </div>
       </main>
     </div>
