@@ -51,6 +51,17 @@ export default function Home() {
               Get Your API Key
             </Link>
           </div>
+          <div className="text-center text-lg">
+            <p>Join our Telegram group to stay updated and connect with other users:</p>
+            <a
+              href="https://t.me/f_you_money"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-first hover:text-second font-semibold transition duration-300 ease-in-out"
+            >
+              @f_you_money on Telegram
+            </a>
+          </div>
           <div className="mt-6">
             <Image
               width={852}
