@@ -9,7 +9,7 @@ import Script from "next/script";
 
 export default function Home() {
   return (
-    <div className="flex flex-col min-h-screen bg-gradient-to-br from-first via-second to-third">
+    <div className="min-h-screen bg-background-default">
       <div className="container">
         <Script src="https://www.googletagmanager.com/gtag/js?id=G-NB5F14FKZT" />
         <Script id="google-analytics">
@@ -25,50 +25,91 @@ export default function Home() {
       <Head>
         <link rel="canonical" href="https://www.expensesorted.com/" />
       </Head>
-      <main className="flex-grow flex items-center justify-center p-10">
-        <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
-          <h1 className="text-3xl font-bold leading-tight text-center">
-            Avoid the chores of manually categorising your expenses every month.
+      
+      <main className="container mx-auto px-4 py-16 max-w-7xl">
+        {/* Hero Section */}
+        <div className="text-center mb-16">
+          <h1 className="text-4xl md:text-6xl font-bold text-gray-900 mb-6 bg-clip-text text-transparent bg-gradient-to-r from-primary-dark via-primary to-secondary animate-gradient">
+            Smart Expense Categorization
           </h1>
-          <h2 className="text-2xl text-first text-center">Use AI instead!</h2>
-          <p className="text-lg text-center">
-            Hook this up to your Google Sheets™ and speed up your monthly
-            workflow.
+          <p className="text-xl md:text-2xl text-gray-600 max-w-3xl mx-auto mb-12">
+            Stop manually categorizing your expenses. Let AI handle the chores and focus on what matters.
           </p>
-          <div className="text-center">
+          
+          {/* CTA Buttons */}
+          <div className="flex flex-col sm:flex-row gap-4 justify-center mb-12">
             <Link
-              className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out inline-block"
               href="/fuck-you-money-sheet"
+              className="inline-flex items-center px-8 py-4 rounded-xl bg-primary text-white font-semibold hover:bg-primary-dark transition-all duration-200 shadow-soft hover:shadow-glow"
             >
-              Get the Google Sheets™ Template
+              Get Started with Google Sheets™
+              <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
             </Link>
-          </div>
-          <div className="text-center">
             <Link
-              href="/demo"
-              className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out"
+              href="/api-key"
+              className="inline-flex items-center px-8 py-4 rounded-xl bg-white text-primary border border-primary/10 font-semibold hover:bg-gray-50 transition-all duration-200 shadow-soft"
             >
-              Try it out now
+              Get Your API Key
             </Link>
           </div>
-          <div className="mt-6">
+
+          {/* Telegram Group */}
+          <div className="bg-surface rounded-xl p-6 shadow-soft max-w-2xl mx-auto mb-16">
+            <p className="text-gray-700 mb-3">Join our community of users:</p>
+            <a
+              href="https://t.me/f_you_money"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center text-primary hover:text-primary-dark font-semibold transition-colors"
+            >
+              <svg className="w-6 h-6 mr-2" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.161c-.18 1.897-.962 6.502-1.359 8.627-.168.9-.5 1.201-.82 1.23-.697.064-1.226-.461-1.901-.903-1.056-.692-1.653-1.123-2.678-1.799-1.185-.781-.417-1.21.258-1.911.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.139-5.062 3.345-.479.329-.913.489-1.302.481-.428-.008-1.252-.241-1.865-.44-.752-.244-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.831-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635.099-.002.321.023.465.141.145.118.181.344.203.483.023.139.041.562.041.562z"/>
+              </svg>
+              @f_you_money on Telegram
+            </a>
+          </div>
+
+          {/* Demo Image */}
+          <div className="rounded-2xl overflow-hidden shadow-soft hover:shadow-glow transition-shadow duration-300">
             <Image
               width={852}
               height={762}
               src="/expense-sorter-main.png"
-              className="rounded-md"
-              alt="Expense Sorter"
+              className="w-full"
+              alt="Expense Sorter Demo"
             />
           </div>
-          <h1 className="pt-20 text-3xl font-bold leading-tight text-center">
-            You want to learn more you said?
-          </h1>
-          <div className="flex flex-col gap-20">
-            <Features />
-            <Testimonials />
-            <FAQ />
-            <References />
-          </div>
+        </div>
+
+        {/* Features Section */}
+        <div className="bg-surface rounded-2xl p-8 shadow-soft mb-16">
+          <h2 className="text-3xl font-bold text-gray-900 mb-12 text-center">
+            Why Choose Our Solution?
+          </h2>
+          <Features />
+        </div>
+
+        {/* Testimonials Section */}
+        <div className="bg-gradient-to-br from-primary/5 to-secondary/5 rounded-2xl p-8 mb-16">
+          <h2 className="text-3xl font-bold text-gray-900 mb-12 text-center">
+            What Our Users Say
+          </h2>
+          <Testimonials />
+        </div>
+
+        {/* FAQ Section */}
+        <div className="bg-surface rounded-2xl p-8 shadow-soft mb-16">
+          <h2 className="text-3xl font-bold text-gray-900 mb-12 text-center">
+            Frequently Asked Questions
+          </h2>
+          <FAQ />
+        </div>
+
+        {/* References Section */}
+        <div className="bg-gradient-to-br from-accent/5 to-primary/5 rounded-2xl p-8">
+          <References />
         </div>
       </main>
     </div>

@@ -10,7 +10,7 @@ export const NavBarButtons = () => {
   const { user } = useUser();
 
   return (
-    <div className=" p-4 sm:p-1 flex flex-col justify-end sm:flex-row gap-2">
+    <div className="flex flex-col sm:flex-row items-center gap-3">
       {!user && (
         <>
           <SignupButton />
@@ -18,13 +18,16 @@ export const NavBarButtons = () => {
         </>
       )}
       {user && (
-        <div className="flex gap-2 ">
+        <div className="flex items-center gap-3">
           <LogoutButton />
-          <Link href="/profile" className="inline-block">
+          <Link 
+            href="/profile" 
+            className="flex items-center justify-center w-10 h-10 rounded-full overflow-hidden shadow-soft hover:shadow-glow transition-all duration-200"
+          >
             <img
               src={user.picture}
               alt={user.name}
-              className="rounded-full h-10 w-10 object-cover"
+              className="w-full h-full object-cover"
             />
           </Link>
         </div>
