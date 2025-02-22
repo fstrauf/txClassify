@@ -1,8 +1,11 @@
+// Service configuration
+const CLASSIFICATION_SERVICE_URL = 'https://txclassify.onrender.com';
+
 // Add menu to the spreadsheet
 function onOpen() {
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var menuEntries = [
-    {name: "Setup Service", functionName: "setupService"},
+    {name: "Configure API Key", functionName: "setupApiKey"},
     {name: "Train Model", functionName: "showTrainingDialog"},
     {name: "Classify New Transactions", functionName: "showClassifyDialog"}
   ];
@@ -304,25 +307,18 @@ function showTrainingDialog() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Train Model');
 }
 
-// Setup function to configure service URL and API key
-function setupService() {
+// Setup function to configure API key
+function setupApiKey() {
   var ui = SpreadsheetApp.getUi();
   var properties = PropertiesService.getScriptProperties();
   
-  // Get service URL
-  var serviceUrl = ui.prompt(
-    'Setup Classification Service',
-    'Enter the classification service URL:',
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (serviceUrl.getSelectedButton() !== ui.Button.OK) return;
-  
   // Get API key
   var apiKey = ui.prompt(
-    'Setup API Key',
+    'Configure API Key',
     'Enter your API key (or leave blank to generate a new one):',
     ui.ButtonSet.OK_CANCEL
   );
+  
   if (apiKey.getSelectedButton() !== ui.Button.OK) return;
   
   // If no API key provided, generate one
@@ -332,11 +328,8 @@ function setupService() {
     ui.alert('Generated new API key', 'Your API key is: ' + key + '\n\nPlease save this key somewhere safe.', ui.ButtonSet.OK);
   }
   
-  // Store both values
-  properties.setProperties({
-    'CLASSIFICATION_SERVICE_URL': serviceUrl.getResponseText(),
-    'API_KEY': key
-  });
+  // Store the API key
+  properties.setProperty('API_KEY', key);
   
   ui.alert('Setup completed successfully!');
 }
@@ -344,15 +337,14 @@ function setupService() {
 // Helper function to get stored properties
 function getServiceConfig() {
   var properties = PropertiesService.getScriptProperties();
-  var serviceUrl = properties.getProperty('CLASSIFICATION_SERVICE_URL');
   var apiKey = properties.getProperty('API_KEY');
   
-  if (!serviceUrl || !apiKey) {
-    throw new Error('Service not configured. Please use "Setup Service" first.');
+  if (!apiKey) {
+    throw new Error('API key not configured. Please use "Configure API Key" first.');
   }
   
   return { 
-    serviceUrl, 
+    serviceUrl: CLASSIFICATION_SERVICE_URL,
     apiKey,
     userId: apiKey.substring(0, 8)  // Consistently use first 8 chars as user ID
   };
@@ -799,7 +791,6 @@ function classifyTransactions(config) {
       },
       payload: JSON.stringify({ 
         transactions: transactions,
-        userId: serviceConfig.userId,
         spreadsheetId: sheet.getParent().getId(),
         sheetName: originalSheetName,
         columnOrderCategorisation: {

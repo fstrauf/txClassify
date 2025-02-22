@@ -8,18 +8,26 @@ import StayUpToDate from "./stayUpToDate";
 
 export default function FuckYouMoneySheet() {
   return (
-    <div className="flex flex-col min-h-screen bg-gradient-to-br from-first via-second to-third">
-      <main className="flex-grow flex items-center justify-center p-10">
-        <div className="mx-auto w-full prose prose-invert max-w-4xl bg-third p-6 rounded-xl shadow-lg space-y-6">
-          <h1 className="text-3xl font-bold leading-tight text-center">
-            Fuck you Money - Cost of Living Tracking Google Sheets™
+    <div className="min-h-screen bg-background-default">
+      <main className="container mx-auto px-4 py-16 max-w-7xl">
+        <div className="bg-surface rounded-2xl shadow-soft p-8 space-y-8">
+          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 text-center bg-clip-text text-transparent bg-gradient-to-r from-primary-dark via-primary to-secondary animate-gradient">
+            Fuck you Money - Cost of Living Tracking
           </h1>
-          <GetItHereButton />
-          <StayUpToDate />
-          <ImageComponent />
-          <Navigation />
-          <Intro />
-          <Instructions />
+          <div className="max-w-3xl mx-auto">
+            <GetItHereButton />
+            <StayUpToDate />
+            <div className="mt-12 rounded-xl overflow-hidden shadow-soft hover:shadow-glow transition-all duration-300">
+              <ImageComponent />
+            </div>
+            <div className="mt-8">
+              <Navigation />
+            </div>
+            <div className="prose prose-lg max-w-none mt-12 prose-headings:text-gray-900 prose-p:text-gray-700 prose-strong:text-gray-900 prose-a:text-primary hover:prose-a:text-primary-dark">
+              <Intro />
+              <Instructions />
+            </div>
+          </div>
         </div>
       </main>
     </div>
@@ -28,39 +36,31 @@ export default function FuckYouMoneySheet() {
 
 function ImageComponent() {
   return (
-    <div className="mt-6">
-      <Image
-        width={3214 / 2}
-        height={1356 / 2}
-        src="/f-you-money-overview.png"
-        className="rounded-md"
-        alt="Expense Sorter"
-        priority={true}
-      />
-    </div>
+    <Image
+      width={3214 / 2}
+      height={1356 / 2}
+      src="/f-you-money-overview.png"
+      className="w-full"
+      alt="Expense Sorter"
+      priority={true}
+    />
   );
 }
 
 function Navigation() {
   return (
-    <nav className="flex space-x-4">
+    <nav className="flex flex-wrap gap-4 justify-center">
       <Link
-        className="bg-second hover:bg-third py-2 px-4 rounded-full text-white font-semibold transition duration-300 ease-in-out no-underline"
         href="#intro"
+        className="px-6 py-3 rounded-xl bg-primary text-white font-semibold hover:bg-primary-dark transition-all duration-200 shadow-soft hover:shadow-glow"
       >
         Intro
       </Link>
       <Link
-        className="bg-second hover:bg-third py-2 px-4 rounded-full text-white font-semibold transition duration-300 ease-in-out no-underline"
         href="#instructions"
+        className="px-6 py-3 rounded-xl bg-white text-primary border border-primary/10 font-semibold hover:bg-gray-50 transition-all duration-200 shadow-soft"
       >
         Instructions
-      </Link>
-      <Link
-        className="bg-second hover:bg-third py-2 px-4 rounded-full text-white font-semibold transition duration-300 ease-in-out no-underline"
-        href="/demo"
-      >
-        Try the Demo
       </Link>
     </nav>
   );

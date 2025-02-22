@@ -1,34 +1,81 @@
 import Link from 'next/link';
 
-export default function SimpleGoogleSheetsTracker() {
+export default function SimpleExpenseTracker() {
   return (
-    <div className="flex flex-col min-h-screen bg-gradient-to-br from-first via-second to-third">
-
-      <main className="flex-grow flex items-center justify-center p-10">
-        <div className="w-full max-w-4xl bg-third p-6 rounded-xl shadow-lg text-white space-y-6">
-          <h1 className="text-3xl font-bold leading-tight text-center">
-            The Power of Simplicity: Expense Tracker for Google Sheets™
+    <div className="min-h-screen bg-background-default">
+      <main className="container mx-auto px-4 py-16 max-w-7xl">
+        <div className="bg-surface rounded-2xl shadow-soft p-8 space-y-8">
+          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 text-center bg-clip-text text-transparent bg-gradient-to-r from-primary-dark via-primary to-secondary animate-gradient">
+            Simple Expense Tracker with Google Sheets™
           </h1>
-          <p className="text-lg text-center">
-            In today's complex financial world, there's beauty in simplicity. That's where our simple expense tracker for Google Sheets™ shines. It strips away the complications and gives you straightforward, effective expense tracking.
-          </p>
-          <p className="text-lg text-center">
-            No bells and whistles, just a clean, user-friendly interface on a platform you're already familiar with. Google Sheets™' flexibility combined with our tool's simplicity creates the ultimate budgeting solution.
-          </p>
-          <h2 className="text-2xl text-first text-center mt-4">
-            Embrace Minimalism in Financial Management
-          </h2>
-          <p className="text-lg text-center">
-            Merging innovation with minimalism, our tool is designed for those who value simplicity. Integrate it with Google Sheets™, and you have a streamlined expense tracker at your fingertips. Keep track of your finances without the fuss.
-          </p>
-          <div className="mt-6 text-center">
-            <Link href="/" className="bg-first hover:bg-second py-2 px-6 rounded-full text-white font-semibold transition duration-300 ease-in-out">
-                Discover Simplicity
-            </Link>
+          <div className="max-w-3xl mx-auto space-y-8">
+            <p className="text-xl text-gray-700 text-center">
+              Track your expenses effortlessly using a familiar tool - Google Sheets™. 
+              Our simple expense tracker template helps you monitor your spending without 
+              the complexity of traditional budgeting software.
+            </p>
+            <div className="grid md:grid-cols-2 gap-8">
+              <div className="bg-white rounded-xl p-6 shadow-soft">
+                <h3 className="text-2xl font-semibold text-gray-900 mb-4">Key Features</h3>
+                <ul className="space-y-3 text-gray-700">
+                  <li className="flex items-center">
+                    <svg className="w-5 h-5 text-primary mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    Easy-to-use template
+                  </li>
+                  <li className="flex items-center">
+                    <svg className="w-5 h-5 text-primary mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    Automatic calculations
+                  </li>
+                  <li className="flex items-center">
+                    <svg className="w-5 h-5 text-primary mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    Monthly summaries
+                  </li>
+                </ul>
+              </div>
+              <div className="bg-white rounded-xl p-6 shadow-soft">
+                <h3 className="text-2xl font-semibold text-gray-900 mb-4">Benefits</h3>
+                <ul className="space-y-3 text-gray-700">
+                  <li className="flex items-center">
+                    <svg className="w-5 h-5 text-primary mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    No software to install
+                  </li>
+                  <li className="flex items-center">
+                    <svg className="w-5 h-5 text-primary mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    Access anywhere
+                  </li>
+                  <li className="flex items-center">
+                    <svg className="w-5 h-5 text-primary mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    Easy sharing
+                  </li>
+                </ul>
+              </div>
+            </div>
+            <div className="text-center pt-4">
+              <Link
+                href="/fuck-you-money-sheet"
+                className="px-6 py-3 rounded-xl bg-primary text-white font-semibold hover:bg-primary-dark transition-all duration-200 shadow-soft hover:shadow-glow inline-flex items-center"
+              >
+                Get Started
+                <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </Link>
+            </div>
           </div>
         </div>
       </main>
-
     </div>
   );
 }
