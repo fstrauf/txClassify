@@ -1,6 +1,5 @@
 import Image from "next/image";
 import GetItHereButton from "./getItHereButton";
-import Link from "next/link";
 
 export default function Instructions() {
   return (
@@ -11,81 +10,86 @@ export default function Instructions() {
       </p>
       <GetItHereButton/>
       <p className="text-gray-700">
-        Hop in and make a copy, ideally to a Google Drive.
+        Hop in and make a copy.
       </p>
       <div className="mt-6">
         <Image
           width={760 / 2}
           height={546 / 2}
           src="/f-you-make-a-copy.png"
-          className="rounded-md"
+          className="rounded-md shadow-lg"
           alt="Copy the template sheet"
         />
       </div>
+      <p className="text-gray-700">
+        Next, get the Expense Sorted extension from the Google Sheets Extension Marketplace
+      </p>
+      <div className="mt-6">
+                  <Image
+          width={1306 / 1.5}
+          height={1230 / 1.5}
+          src="/f-you-money-expense-sorted-extension.png"
+          className="rounded-md shadow-lg"
+          alt="Copy the template sheet"
+        />
+      </div>    
       <p className="text-gray-700">Every month then do the following:</p>
       <ol className="list-decimal ml-8 text-gray-700 mx-auto space-y-6">
         <li>
-          Add your income from different sources to the Income Tab of the
-          financial-overview sheet
+          Start off by training the model on your current expenses. That way it will now, how to categorise your future expenses.
           <div className="mt-6">
             <Image
-              width={752 / 2}
-              height={846 / 2}
-              src="/f-you-income.png"
-              className="rounded-md"
+              width={1306}
+              height={1229}
+              src="/f-you-money-expense-detail.png"
+              className="rounded-md shadow-lg"
               alt="Add your income to the sheet"
+              sizes="(max-width: 768px) 100vw, 768px"
+              quality={100}
             />
           </div>
         </li>
-
         <li>
-          Add your new expenses from your bank account to the new_dump sheet
+          Check the Stats and Log tabs for progress.
+        </li>
+        <li>
+          Add your new expenses from your bank account to the new_transactions sheet and categorise your expenses via the Expense Sorted extension
           <div className="mt-6">
             <Image
-              width={1572 / 2}
-              height={846 / 2}
-              src="/f-you-new-dump.png"
-              className="rounded-md"
+              width={929}
+              height={327}
+              src="/f-you-money-new_transactions.png"
+              className="rounded-md shadow-lg"
               alt="Add new expenses"
             />
           </div>
         </li>
         <li>
-          Categorise your expenses
+          Once complete, copy all transactions over to the Expense-Detail tab and adjust categories as needed.
         </li>
         <li>
-          Review and adjust categories{" "}
+          Copy over a new row in the Monthly Expense tab and fill in the new month.
           <div className="mt-6">
             <Image
-              width={2174 / 2}
-              height={846 / 2}
-              src="/f-you-expense-detail.png"
-              className="rounded-md"
-              alt="Adjust your expense categories"
+              width={865}
+              height={372}
+              src="/f-you-money-monthly-expenses.png"
+              className="rounded-md shadow-lg"
+              alt="Copy over a new row in the Monthly Expense tab and fill in the new month."
             />
           </div>
         </li>
         <li>
-          Copy over to a new month from the expense overview tab{" "}
+          Review spending, saving, and run-rate in the Expenses vs. Saving tab.
           <div className="mt-6">
             <Image
-              width={1336 / 2}
-              height={846 / 2}
-              src="/f-you-expense-overview.png"
-              className="rounded-md"
-              alt="Calculate your monthly results"
-            />
-          </div>
-        </li>
-        <li>
-          Review spending, saving, and run-rate{" "}
-          <div className="mt-6">
-            <Image
-              width={1200 / 2}
-              height={1076 / 2}
-              src="/f-you-stats.png"
-              className="rounded-md"
-              alt="Calculate your monthly results"
+              width={1200}
+              height={1076}
+              src="/f-you-money-expense-vs-savings.png"
+              className="rounded-md shadow-lg"
+              alt="Review spending, saving, and run-rate in the Expenses vs. Saving tab."
+              sizes="(max-width: 768px) 100vw, 768px"
+              quality={100}
             />
           </div>
         </li>

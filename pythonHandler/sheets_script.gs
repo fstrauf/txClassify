@@ -6,7 +6,7 @@ function onOpen(e) {
   var menu = SpreadsheetApp.getUi().createAddonMenu(); // Changed from addMenu to createAddonMenu
   menu.addItem("Configure API Key", "setupApiKey")
       .addItem("Train Model", "showTrainingDialog")
-      .addItem("Classify New Transactions", "showClassifyDialog")
+      .addItem("Categorise New Transactions", "showClassifyDialog")
       .addToUi();
 }
 
@@ -85,11 +85,11 @@ function showClassifyDialog() {
     <div class="form-group">
       <label>Start Row:</label>
       <input type="number" id="startRow" value="1" min="1" style="width: 100%; padding: 5px;">
-      <div class="help-text">First row of data to classify</div>
+      <div class="help-text">First row of data to categorise</div>
     </div>
     <div id="error" class="error"></div>
     <button onclick="submitForm()" id="submitBtn">
-      <span class="button-text">Classify Transactions</span>
+      <span class="button-text">Categorise Transactions</span>
       <span class="processing-text">Processing...</span>
       <div class="spinner"></div>
     </button>
@@ -147,7 +147,7 @@ function showClassifyDialog() {
             buttonText.style.display = 'inline-block';
             processingText.style.display = 'none';
           })
-          .classifyTransactions(config);
+          .categoriseTransactions(config);
       }
       
       // Set default value and min for start row
@@ -161,7 +161,7 @@ function showClassifyDialog() {
     .setWidth(400)
     .setHeight(350);
   
-  SpreadsheetApp.getUi().showModalDialog(html, 'Classify Transactions');
+  SpreadsheetApp.getUi().showModalDialog(html, 'Categorise Transactions');
 }
 
 // Show dialog to select columns for training
@@ -730,13 +730,13 @@ function cleanupTrigger(triggerId) {
 }
 
 // Main classification function
-function classifyTransactions(config) {
+function categoriseTransactions(config) {
   var sheet = SpreadsheetApp.getActiveSheet();
   var ui = SpreadsheetApp.getUi();
   
   try {
-    Logger.log("Starting classification with config: " + JSON.stringify(config));
-    updateStatus("Starting classification...");
+    Logger.log("Starting categorisation with config: " + JSON.stringify(config));
+    updateStatus("Starting categorisation...");
     var serviceConfig = getServiceConfig();
     
     // Log service configuration
@@ -763,14 +763,14 @@ function classifyTransactions(config) {
     
     if (transactions.length === 0) {
       updateStatus("Error: No transactions found");
-      ui.alert('No transactions found to classify');
+      ui.alert('No transactions found to categorise');
       return;
     }
     
-    Logger.log("Found " + transactions.length + " transactions to classify");
+    Logger.log("Found " + transactions.length + " transactions to categorise");
     updateStatus("Processing " + transactions.length + " transactions...");
     
-    // Call classification service
+    // Call categorisation service
     var options = {
       method: 'post',
       contentType: 'application/json',
@@ -792,20 +792,20 @@ function classifyTransactions(config) {
       muteHttpExceptions: true
     };
     
-    Logger.log("Making classification request with API key: " + serviceConfig.apiKey);
+    Logger.log("Making categorisation request with API key: " + serviceConfig.apiKey);
     var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/classify', options);
     var result = JSON.parse(response.getContentText());
     
-    Logger.log("Classification service response: " + JSON.stringify(result));
+    Logger.log("Categorisation service response: " + JSON.stringify(result));
     
     if (response.getResponseCode() !== 200) {
-      updateStatus("Error: Classification failed");
-      throw new Error('Classification service error: ' + response.getContentText());
+      updateStatus("Error: Categorisation failed");
+      throw new Error('Categorisation service error: ' + response.getContentText());
     }
     
     // Check if we got a prediction ID
     if (result.prediction_id) {
-      updateStatus("Classification in progress...");
+      updateStatus("Categorisation in progress...");
       
       // Store configuration for status checking
       var userProperties = PropertiesService.getUserProperties();
@@ -816,7 +816,7 @@ function classifyTransactions(config) {
       // Store new properties
       var properties = {
         'PREDICTION_ID': result.prediction_id,
-        'OPERATION_TYPE': 'classify',
+        'OPERATION_TYPE': 'categorise',
         'START_TIME': new Date().getTime().toString(),
         'ORIGINAL_SHEET_NAME': originalSheetName,
         'CONFIG': JSON.stringify({
@@ -843,11 +843,11 @@ function classifyTransactions(config) {
       var storedProps = userProperties.getProperties();
       Logger.log("Stored properties: " + JSON.stringify(storedProps));
       
-      ui.alert('Classification has started! The sheet will update automatically when complete.\n\nYou can close this window.');
+      ui.alert('Categorisation has started! The sheet will update automatically when complete.\n\nYou can close this window.');
       return;
     }
   } catch (error) {
-    Logger.log("Classification error: " + error.toString());
+    Logger.log("Categorisation error: " + error.toString());
     updateStatus("Error: " + error.toString());
     ui.alert('Error: ' + error.toString());
   }
@@ -896,7 +896,7 @@ function checkOperationStatus() {
     // Check webhook results first
     if (result.result && result.result.results) {
       Logger.log("Found webhook results");
-      if (operationType === "classify") {
+      if (operationType === "categorise") {
         handleClassificationResults(result, config, originalSheetName);
       } else {
         // For training, just update status and stats
@@ -914,7 +914,7 @@ function checkOperationStatus() {
     if (result.status === "completed") {
       // Wait for webhook results
       var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
-      updateStatus(`${operationType === "classify" ? "Classification" : "Training"} completed, processing results... (${minutesElapsed} min)`);
+      updateStatus(`${operationType === "categorise" ? "Categorisation" : "Training"} completed, processing results... (${minutesElapsed} min)`);
       return;
     } else if (result.status === "failed") {
       updateStatus(`Error: ${operationType} failed - ` + (result.error || "Unknown error"));
@@ -925,7 +925,7 @@ function checkOperationStatus() {
     
     // Still processing, update status
     var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
-    var statusMessage = `${operationType === "classify" ? "Classification" : "Training"} in progress... (${minutesElapsed} min)`;
+    var statusMessage = `${operationType === "categorise" ? "Categorisation" : "Training"} in progress... (${minutesElapsed} min)`;
     
     if (result.status) {
       statusMessage += ` - ${result.status}`;
@@ -963,7 +963,7 @@ function handleClassificationResults(result, config, originalSheetName) {
     
     var webhookResults = result.result.results;
     if (!webhookResults || webhookResults.length === 0) {
-      throw new Error("No classification results found");
+      throw new Error("No categorisation results found");
     }
     
     // Write categories and confidence scores
@@ -980,9 +980,9 @@ function handleClassificationResults(result, config, originalSheetName) {
     confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
       .setNumberFormat("0.00%");
     
-    updateStatus("Classification completed successfully!");
+    updateStatus("Categorisation completed successfully!");
   } catch (error) {
-    Logger.log("Error handling classification results: " + error);
+    Logger.log("Error handling categorisation results: " + error);
     throw error;
   }
 }
