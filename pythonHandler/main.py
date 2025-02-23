@@ -356,6 +356,40 @@ def update_sheet_log(sheet_id: str, status: str, message: str, details: str = ''
     except Exception as e:
         logger.error(f"Error updating sheet log: {e}")
 
+def ensure_default_config(user_id: str) -> None:
+    """Ensure user has default configuration values."""
+    try:
+        logger.info(f"Ensuring default configuration for user {user_id}")
+        response = supabase.table("account").select("*").eq("userId", user_id).execute()
+        
+        if not response.data:
+            logger.error(f"No account found for user {user_id}")
+            raise Exception("Account not found")
+            
+        account = response.data[0]
+        default_config = {
+            "categorisationTab": "new_dump",
+            "categorisationRange": "A:Z",
+            "columnOrderCategorisation": {"categoryColumn": "E", "descriptionColumn": "C"}
+        }
+        
+        # Check which fields are missing and need to be updated
+        update_fields = {}
+        for key, value in default_config.items():
+            if key not in account or not account[key]:
+                update_fields[key] = value
+                
+        if update_fields:
+            logger.info(f"Updating missing fields for user {user_id}: {list(update_fields.keys())}")
+            supabase.table("account").update(update_fields).eq("userId", user_id).execute()
+            logger.info("Successfully updated user configuration with default values")
+        else:
+            logger.info("User configuration already has all required fields")
+            
+    except Exception as e:
+        logger.error(f"Error ensuring default configuration: {str(e)}")
+        raise Exception(f"Failed to ensure default configuration: {str(e)}")
+
 @app.route("/train", methods=["POST"])
 def train_model():
     """Train the model with new data."""
@@ -557,17 +591,16 @@ def training_webhook():
 def classify_transactions():
     """Classify new transactions."""
     try:
-        # Get API key from headers
-        api_key = request.headers.get('X-API-Key')
+        api_key = request.headers.get("X-API-Key")
         if not api_key:
-            return jsonify({"error": "API key is required"}), 401
+            return jsonify({"error": "Missing API key"}), 401
 
         # Validate API key and get user ID
-        try:
-            user_id = validate_api_key(api_key)
-        except Exception as e:
-            return jsonify({"error": "Invalid API key"}), 401
-
+        user_id = validate_api_key(api_key)
+        
+        # Ensure user has default configuration
+        ensure_default_config(user_id)
+        
         data = request.get_json()
         
         # Extract and validate required parameters
