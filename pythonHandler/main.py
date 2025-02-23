@@ -78,13 +78,85 @@ except Exception as e:
 BACKEND_API = os.environ.get("BACKEND_API")
 
 def get_user_config(user_id: str) -> dict:
-    """Get user configuration from Supabase."""
+    """Get user configuration from Supabase using API key-based user ID."""
     try:
-        response = supabase.table("account").select("*").eq("userId", user_id).execute()
-        return response.data[0] if response.data else {}
+        logger.info(f"Looking up user configuration for userId: {user_id}")
+        
+        # Query user configuration
+        logger.info("Querying Supabase for user configuration...")
+        try:
+            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            logger.info(f"Query response: {response.data}")
+            
+            if response.data:
+                config = response.data[0]
+                
+                # Convert column order configuration to expected format
+                if config.get("columnOrderCategorisation"):
+                    column_order = config["columnOrderCategorisation"]
+                    if isinstance(column_order, list):  # Handle array format
+                        # Find description and category columns
+                        description_col = next((col["name"] for col in column_order if col.get("type") == "description"), "C")
+                        category_col = "E"  # Default to E since category is not in the current configuration
+                        
+                        # Update configuration to expected format
+                        config["columnOrderCategorisation"] = {
+                            "categoryColumn": category_col,
+                            "descriptionColumn": description_col
+                        }
+                    elif isinstance(column_order, dict):
+                        if not column_order.get("categoryColumn"):
+                            column_order["categoryColumn"] = "E"
+                        if not column_order.get("descriptionColumn"):
+                            column_order["descriptionColumn"] = "C"
+                else:
+                    config["columnOrderCategorisation"] = {
+                        "categoryColumn": "E",
+                        "descriptionColumn": "C"
+                    }
+                
+                # Ensure other required fields exist
+                if not config.get("categorisationRange"):
+                    config["categorisationRange"] = "A:Z"
+                if not config.get("categorisationTab"):
+                    config["categorisationTab"] = "new_dump"
+                    
+                # Update the configuration
+                supabase.table("account").update(config).eq("userId", user_id).execute()
+                logger.info(f"Updated configuration for user {user_id}")
+                return config
+                
+        except Exception as e:
+            logger.error(f"Error querying user configuration: {str(e)}")
+            
+        # If no configuration exists, create a default one
+        logger.info(f"No configuration found, creating default for user {user_id}")
+        default_config = {
+            "userId": user_id,
+            "categorisationTab": "new_dump",
+            "categorisationRange": "A:Z",
+            "columnOrderCategorisation": {
+                "categoryColumn": "E",
+                "descriptionColumn": "C"
+            }
+        }
+        
+        # Insert default configuration
+        try:
+            insert_response = supabase.table("account").insert(default_config).execute()
+            if insert_response and insert_response.data:
+                logger.info(f"Created default configuration for user {user_id}")
+                return default_config
+            else:
+                logger.error("Insert response was empty")
+                raise Exception("Failed to create default configuration - empty response")
+        except Exception as insert_error:
+            logger.error(f"Error creating default configuration: {str(insert_error)}")
+            raise Exception(f"Failed to create default configuration: {str(insert_error)}")
+            
     except Exception as e:
-        logger.error(f"Error fetching user config: {e}")
-        return {}
+        logger.error(f"Error in get_user_config: {str(e)}")
+        raise Exception(f"User configuration error: {str(e)}")
 
 def validate_api_key(api_key: str) -> str:
     """Validate API key and return user ID if valid."""
@@ -394,27 +466,108 @@ def ensure_default_config(user_id: str) -> None:
 def train_model():
     """Train the model with new data."""
     try:
+        # Log all incoming request details
+        logger.info("=== Incoming Training Request ===")
+        logger.info(f"Headers: {dict(request.headers)}")
+        
+        # Get request data
         data = request.get_json()
+        logger.info(f"Request data: {data}")
         
-        # Extract data from request
-        transactions = data.get("transactions")
-        user_id = data.get("userId")
-        
-        if not transactions or not user_id:
-            return jsonify({"error": "Missing required parameters: transactions and userId"}), 400
+        if not data:
+            logger.error("Missing request data")
+            return jsonify({"error": "Missing request data"}), 400
             
-        # Get sheet ID from first transaction
-        sheet_id = data.get("expenseSheetId")
-        if not sheet_id:
-            return jsonify({"error": "Missing expenseSheetId"}), 400
-
-        # Process transactions
-        df = pd.DataFrame(transactions)
+        if not isinstance(data, dict):
+            logger.error(f"Invalid request format - expected JSON object, got {type(data)}")
+            return jsonify({"error": "Invalid request format - expected JSON object"}), 400
+            
+        if 'transactions' not in data:
+            logger.error("Missing transactions data in request")
+            return jsonify({"error": "Missing transactions data"}), 400
+            
+        # Support both parameter names for backward compatibility
+        sheet_id = data.get('spreadsheetId') or data.get('expenseSheetId')
+        if not sheet_id or not isinstance(sheet_id, str) or len(sheet_id.strip()) == 0:
+            logger.error(f"Invalid or missing spreadsheetId: {sheet_id}")
+            return jsonify({"error": "Invalid or missing spreadsheetId"}), 400
+            
+        # Get user ID either from API key validation or payload
+        user_id = None
+        api_key = request.headers.get('X-API-Key')
         
+        if api_key:
+            try:
+                user_id = validate_api_key(api_key)
+                logger.info(f"Got user_id from API key validation: {user_id}")
+            except Exception as e:
+                logger.error(f"API key validation failed: {str(e)}")
+                # Don't return error yet, try userId from payload
+        
+        # If no user_id from API key, try payload
+        if not user_id:
+            user_id = data.get('userId')
+            if user_id:
+                # If user_id is an email, prefix it with google-oauth2|
+                if '@' in user_id and not user_id.startswith('google-oauth2|'):
+                    user_id = f"google-oauth2|{user_id}"
+                logger.info(f"Got user_id from payload: {user_id}")
+            else:
+                logger.error("No valid user_id found in API key or payload")
+                return jsonify({"error": "No valid user ID found. Please provide either a valid API key or userId in the request."}), 401
+            
+        # Create or update user configuration
+        try:
+            # Check if user config exists
+            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            
+            if not response.data:
+                # Create new user config
+                default_config = {
+                    "userId": user_id,
+                    "categorisationTab": "new_dump",
+                    "columnRange": "A:Z",
+                    "categoryColumn": "E"
+                }
+                supabase.table("account").insert(default_config).execute()
+                logger.info(f"Created new user configuration for {user_id}")
+            else:
+                logger.info(f"Found existing user configuration for {user_id}")
+                
+        except Exception as e:
+            logger.warning(f"Error managing user configuration: {str(e)}")
+            # Continue with training even if config creation fails
+            
+        # Convert transactions to DataFrame with error handling
+        try:
+            logger.info(f"Converting transactions to DataFrame. Sample: {data['transactions'][:2]}")
+            df = pd.DataFrame(data['transactions'])
+            logger.info(f"DataFrame columns: {df.columns.tolist()}")
+        except Exception as e:
+            logger.error(f"Error converting transactions to DataFrame: {str(e)}")
+            return jsonify({"error": "Invalid transaction data format"}), 400
+            
         # Validate required columns
-        if 'Narrative' not in df.columns or 'Category' not in df.columns:
-            return jsonify({"error": "Missing required columns: Narrative and Category"}), 400
-
+        required_columns = ['Narrative', 'Category']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            logger.error(f"Missing required columns: {missing_columns}")
+            return jsonify({
+                "error": f"Missing required columns: {missing_columns}"
+            }), 400
+            
+        # Validate data quality
+        df['Narrative'] = df['Narrative'].astype(str).str.strip()
+        df['Category'] = df['Category'].astype(str).str.strip()
+        
+        if df['Narrative'].empty or df['Narrative'].isna().any():
+            logger.error("Invalid or empty narratives found")
+            return jsonify({"error": "Invalid or empty narratives found"}), 400
+            
+        if df['Category'].empty or df['Category'].isna().any():
+            logger.error("Invalid or empty categories found")
+            return jsonify({"error": "Invalid or empty categories found"}), 400
+            
         # Clean descriptions
         df["description"] = df["Narrative"].apply(clean_text)
         df = df.drop_duplicates(subset=["description"])
@@ -623,8 +776,7 @@ def classify_transactions():
             if not config.get("categorisationTab"):
                 error_msg = "Missing categorisationTab in user configuration"
                 logger.error(error_msg)
-                return jsonify({"error": error_msg}), 400
-                
+                return jsonify({"error": error_msg}), 400            
             if not config.get("categorisationRange"):
                 error_msg = "Missing categorisationRange in user configuration"
                 logger.error(error_msg)

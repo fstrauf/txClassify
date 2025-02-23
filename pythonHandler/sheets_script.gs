@@ -357,7 +357,8 @@ function getServiceConfig() {
   
   return { 
     serviceUrl: CLASSIFICATION_SERVICE_URL,
-    apiKey: apiKey
+    apiKey: apiKey,
+    userId: Session.getEffectiveUser().getEmail()  // Use the user's email as userId
   };
 }
 
