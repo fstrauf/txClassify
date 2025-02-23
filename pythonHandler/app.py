@@ -124,7 +124,12 @@ def classify_transactions():
             
         # Create or update user configuration
         try:
+            # Initialize Supabase client
+            logger.info("Initializing Supabase client...")
+            logger.info(f"Supabase URL: {supabase_url}")
+            logger.info(f"Supabase key length: {len(supabase_key) if supabase_key else 0}")
             supabase = create_client(supabase_url, supabase_key)
+            logger.info("Supabase client initialized successfully")
             
             # Check if user config exists
             response = supabase.table("account").select("*").eq("userId", user_id).execute()
@@ -230,7 +235,12 @@ def train_model():
             
         # Create or update user configuration
         try:
+            # Initialize Supabase client
+            logger.info("Initializing Supabase client...")
+            logger.info(f"Supabase URL: {supabase_url}")
+            logger.info(f"Supabase key length: {len(supabase_key) if supabase_key else 0}")
             supabase = create_client(supabase_url, supabase_key)
+            logger.info("Supabase client initialized successfully")
             
             # Check if user config exists
             response = supabase.table("account").select("*").eq("userId", user_id).execute()
@@ -319,10 +329,15 @@ def get_user_config(user_id: str) -> dict:
         logger.info(f"Looking up user configuration for userId: {user_id}")
         
         # Initialize Supabase client
-        supabase = create_client(
-            supabase_url,
-            supabase_key
-        )
+        try:
+            logger.info("Initializing Supabase client...")
+            logger.info(f"Supabase URL: {supabase_url}")
+            logger.info(f"Supabase key length: {len(supabase_key) if supabase_key else 0}")
+            supabase = create_client(supabase_url, supabase_key)
+            logger.info("Supabase client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Supabase client: {str(e)}")
+            raise
         
         # Query user configuration
         logger.info("Querying Supabase for user configuration...")
