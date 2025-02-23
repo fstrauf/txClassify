@@ -18,13 +18,13 @@ load_dotenv()
 logging.basicConfig(
     stream=sys.stdout,
     format='%(asctime)s - [%(process)d] - [%(levelname)s] - %(name)s - %(message)s',
-    level=logging.DEBUG  # Set to DEBUG level
+    level=logging.INFO  # Set to INFO level
 )
 logger = logging.getLogger('app')  # Use a specific logger for the application
 
-# Ensure all loggers are set to DEBUG
-logging.getLogger('werkzeug').setLevel(logging.DEBUG)
-logging.getLogger('gunicorn').setLevel(logging.DEBUG)
+# Ensure all loggers are set to INFO
+logging.getLogger('werkzeug').setLevel(logging.INFO)
+logging.getLogger('gunicorn').setLevel(logging.INFO)
 
 # Custom logging filter to add request ID
 class RequestIdFilter(logging.Filter):
@@ -41,14 +41,12 @@ CORS(app)
 @app.before_request
 def log_request_info():
     """Log details about each request."""
-    logger.debug('Headers: %s', dict(request.headers))
-    logger.debug('Body: %s', request.get_data())
+    logger.info(f"Incoming request: {request.method} {request.path}")
 
 @app.after_request
 def log_response_info(response):
     """Log details about each response."""
-    logger.debug('Response Status: %s', response.status)
-    logger.debug('Response Headers: %s', dict(response.headers))
+    logger.info(f"Response status: {response.status}")
     return response
 
 @app.errorhandler(Exception)
