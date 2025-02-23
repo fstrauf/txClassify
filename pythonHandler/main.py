@@ -86,6 +86,48 @@ def get_user_config(user_id: str) -> dict:
         logger.error(f"Error fetching user config: {e}")
         return {}
 
+def validate_api_key(api_key: str) -> str:
+    """Validate API key and return user ID if valid."""
+    try:
+        # Clean the API key
+        api_key = api_key.strip()
+        logger.info(f"Validating API key (length: {len(api_key)})")
+        logger.debug(f"API key first/last 4 chars: {api_key[:4]}...{api_key[-4:]}")
+        
+        # Log the query we're about to make
+        logger.info("Querying Supabase for API key validation")
+        
+        # First try exact match
+        response = supabase.table("account").select("*").eq("api_key", api_key).execute()
+        logger.debug(f"Exact match query response count: {len(response.data) if response.data else 0}")
+        
+        if not response.data:
+            # Try case-insensitive match as fallback
+            logger.info("No exact match found, trying case-insensitive match")
+            response = supabase.table("account").select("*").ilike("api_key", api_key).execute()
+            logger.debug(f"Case-insensitive query response count: {len(response.data) if response.data else 0}")
+            
+        if not response.data:
+            logger.error(f"No account found for API key: {api_key[:4]}...{api_key[-4:]}")
+            raise Exception("Invalid API key - no matching account found")
+            
+        # Log the found user data (excluding sensitive info)
+        user_data = response.data[0]
+        logger.info(f"Found user data - userId: {user_data.get('userId')}")
+        logger.debug(f"User data keys: {list(user_data.keys())}")
+        
+        if not user_data.get("userId"):
+            logger.error("User data found but missing userId")
+            raise Exception("Invalid user configuration - missing userId")
+        
+        return user_data["userId"]
+        
+    except Exception as e:
+        logger.error(f"Error validating API key: {str(e)}")
+        logger.error(f"Full error details: {e}")
+        logger.error(f"API key validation failed for key: {api_key[:4]}...{api_key[-4:]}")
+        raise Exception(f"API key validation failed: {str(e)}")
+
 def update_process_status(status_text: str, mode: str, user_id: str) -> None:
     """Update process status in Supabase."""
     try:
