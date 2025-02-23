@@ -372,13 +372,35 @@ def get_user_config(user_id: str) -> dict:
 def validate_api_key(api_key: str) -> str:
     """Validate API key and return user ID if valid."""
     try:
-        response = supabase.table("account").select("userId").eq("api_key", api_key).execute()
+        # Clean the API key
+        api_key = api_key.strip()
+        
+        # Log the query we're about to make
+        logger.info(f"Validating API key: {api_key}")
+        
+        # First try exact match
+        supabase = create_client(supabase_url, supabase_key)
+        response = supabase.table("account").select("*").eq("api_key", api_key).execute()
+        logger.info(f"Query response: {response.data}")
+        
         if not response.data:
+            # Try case-insensitive match as fallback
+            response = supabase.table("account").select("*").ilike("api_key", api_key).execute()
+            logger.info(f"Case-insensitive query response: {response.data}")
+            
+        if not response.data:
+            logger.error(f"No account found for API key: {api_key}")
             raise Exception("Invalid API key")
-        return response.data[0]["userId"]
+            
+        # Log the found user data (excluding sensitive info)
+        user_data = response.data[0]
+        logger.info(f"Found user data - userId: {user_data.get('userId')}")
+        
+        return user_data["userId"]
     except Exception as e:
-        logger.error(f"Error validating API key: {e}")
-        raise
+        logger.error(f"Error validating API key: {str(e)}")
+        logger.error(f"Full error details: {e}")
+        raise Exception(f"API key validation failed: {str(e)}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
