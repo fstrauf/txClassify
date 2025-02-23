@@ -6,29 +6,50 @@ import logging
 from dotenv import load_dotenv
 import os
 from supabase import create_client
+import sys
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    stream=sys.stdout,  # Log to stdout for Docker/Gunicorn to capture
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Initialize Flask app with logging
+app = Flask(__name__)
+CORS(app)
+
+# Log startup information
+logger.info("=== Application Starting ===")
+logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'production')}")
 
 # Initialize classification service with environment variables
 supabase_url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 supabase_key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
 if not all([supabase_url, supabase_key]):
+    logger.error("Missing required environment variables for Supabase")
     raise ValueError("Missing required environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY")
 
-app = Flask(__name__)
-CORS(app)
+logger.info(f"Supabase URL configured: {supabase_url}")
+logger.info(f"Supabase key length: {len(supabase_key)}")
+
+# Initialize Supabase client with logging
+try:
+    logger.info("=== Initializing Supabase ===")
+    supabase = create_client(supabase_url, supabase_key)
+    logger.info("Supabase client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase: {str(e)}")
+    raise
 
 @app.route('/')
 def root():
     """Root endpoint"""
+    logger.info("Root endpoint accessed")
     return jsonify({
         "message": "TX Classify API",
         "version": "1.0.0",
@@ -38,6 +59,7 @@ def root():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for Render"""
+    logger.info("Health check endpoint accessed")
     return jsonify({
         "status": "healthy",
         "version": "1.0.0"
@@ -124,13 +146,6 @@ def classify_transactions():
             
         # Create or update user configuration
         try:
-            # Initialize Supabase client
-            logger.info("Initializing Supabase client...")
-            logger.info(f"Supabase URL: {supabase_url}")
-            logger.info(f"Supabase key length: {len(supabase_key) if supabase_key else 0}")
-            supabase = create_client(supabase_url, supabase_key)
-            logger.info("Supabase client initialized successfully")
-            
             # Check if user config exists
             response = supabase.table("account").select("*").eq("userId", user_id).execute()
             
@@ -235,13 +250,6 @@ def train_model():
             
         # Create or update user configuration
         try:
-            # Initialize Supabase client
-            logger.info("Initializing Supabase client...")
-            logger.info(f"Supabase URL: {supabase_url}")
-            logger.info(f"Supabase key length: {len(supabase_key) if supabase_key else 0}")
-            supabase = create_client(supabase_url, supabase_key)
-            logger.info("Supabase client initialized successfully")
-            
             # Check if user config exists
             response = supabase.table("account").select("*").eq("userId", user_id).execute()
             
@@ -328,17 +336,6 @@ def get_user_config(user_id: str) -> dict:
     try:
         logger.info(f"Looking up user configuration for userId: {user_id}")
         
-        # Initialize Supabase client
-        try:
-            logger.info("Initializing Supabase client...")
-            logger.info(f"Supabase URL: {supabase_url}")
-            logger.info(f"Supabase key length: {len(supabase_key) if supabase_key else 0}")
-            supabase = create_client(supabase_url, supabase_key)
-            logger.info("Supabase client initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize Supabase client: {str(e)}")
-            raise
-        
         # Query user configuration
         logger.info("Querying Supabase for user configuration...")
         try:
@@ -405,7 +402,6 @@ def validate_api_key(api_key: str) -> str:
         logger.info(f"Validating API key: {api_key}")
         
         # First try exact match
-        supabase = create_client(supabase_url, supabase_key)
         response = supabase.table("account").select("*").eq("api_key", api_key).execute()
         logger.info(f"Query response: {response.data}")
         
