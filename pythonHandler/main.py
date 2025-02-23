@@ -831,51 +831,107 @@ def classify_webhook():
             return jsonify({"error": error_msg}), 400
 
         # Get new embeddings
-        new_embeddings = np.array([item["embedding"] for item in data["output"]])
+        try:
+            new_embeddings = np.array([item["embedding"] for item in data["output"]], dtype=np.float32)
+            logger.info(f"Processed {len(new_embeddings)} new embeddings")
+        except Exception as e:
+            error_msg = f"Error processing embeddings: {str(e)}"
+            logger.error(error_msg)
+            update_sheet_log(sheet_id, "ERROR", error_msg)
+            return jsonify({"error": error_msg}), 400
         
         # Get trained embeddings and categories
-        trained_embeddings = fetch_embeddings("txclassify", f"{sheet_id}.npy")
-        trained_data = fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
+        try:
+            trained_embeddings = fetch_embeddings("txclassify", f"{sheet_id}.npy")
+            trained_data = fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
+            logger.info(f"Retrieved {len(trained_embeddings)} trained embeddings and {len(trained_data)} training data points")
+            
+            if len(trained_embeddings) == 0 or len(trained_data) == 0:
+                error_msg = "No training data found"
+                logger.error(error_msg)
+                update_sheet_log(sheet_id, "ERROR", error_msg)
+                return jsonify({"error": error_msg}), 400
+        except Exception as e:
+            error_msg = f"Error fetching training data: {str(e)}"
+            logger.error(error_msg)
+            update_sheet_log(sheet_id, "ERROR", error_msg)
+            return jsonify({"error": error_msg}), 400
         
         # Calculate similarities
-        similarities = cosine_similarity(new_embeddings, trained_embeddings)
-        best_matches = similarities.argmax(axis=1)
+        try:
+            similarities = cosine_similarity(new_embeddings, trained_embeddings)
+            best_matches = similarities.argmax(axis=1)
+            logger.info(f"Calculated similarities with shape {similarities.shape}")
+        except Exception as e:
+            error_msg = f"Error calculating similarities: {str(e)}"
+            logger.error(error_msg)
+            update_sheet_log(sheet_id, "ERROR", error_msg)
+            return jsonify({"error": error_msg}), 400
         
-        # Get predicted categories and similarity scores
+        # Get predicted categories and confidence scores
         results = []
         for i, idx in enumerate(best_matches):
-            category = str(trained_data[idx][1])  # Index 1 is the Category field
-            similarity_score = float(similarities[i][idx])  # Get the similarity score
-            results.append({
-                "predicted_category": category,
-                "similarity_score": similarity_score
-            })
+            try:
+                category = str(trained_data[idx][1])  # Index 1 is the Category field
+                similarity_score = float(similarities[i][idx])  # Get the similarity score
+                results.append({
+                    "predicted_category": category,
+                    "similarity_score": similarity_score
+                })
+            except Exception as e:
+                logger.error(f"Error processing prediction {i}: {str(e)}")
+                results.append({
+                    "predicted_category": "Unknown",
+                    "similarity_score": 0.0
+                })
+        
+        logger.info(f"Generated {len(results)} predictions")
         
         # Update sheet with predictions
         status_msg = f"Writing {len(results)} predictions to sheet"
         update_sheet_log(sheet_id, "INFO", status_msg)
         
-        service = build("sheets", "v4", credentials=Credentials.from_service_account_info(
-            json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT")),
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        ))
-        
-        # Get column configuration from request args
-        category_column = request.args.get("categoryColumn", "E")
-        
-        # Write categories back to sheet starting from row 1
-        category_range = f"{sheet_name}!{category_column}1:{category_column}{len(results)}"
-        service.spreadsheets().values().update(
-            spreadsheetId=sheet_id,
-            range=category_range,
-            valueInputOption="USER_ENTERED",
-            body={"values": [[cat["predicted_category"]] for cat in results]}
-        ).execute()
-        
-        status_msg = "Classification completed successfully"
-        update_process_status("completed", "classify", user_id)
-        update_sheet_log(sheet_id, "SUCCESS", status_msg)
-        return jsonify({"status": "success"})
+        try:
+            service = build("sheets", "v4", credentials=Credentials.from_service_account_info(
+                json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT")),
+                scopes=["https://www.googleapis.com/auth/spreadsheets"]
+            ))
+            
+            # Get column configuration from request args
+            category_column = request.args.get("categoryColumn", "E")
+            
+            # Write categories back to sheet starting from row 1
+            category_range = f"{sheet_name}!{category_column}1:{category_column}{len(results)}"
+            logger.info(f"Writing to range: {category_range}")
+            
+            service.spreadsheets().values().update(
+                spreadsheetId=sheet_id,
+                range=category_range,
+                valueInputOption="USER_ENTERED",
+                body={"values": [[cat["predicted_category"]] for cat in results]}
+            ).execute()
+            
+            # Write confidence scores in the next column
+            confidence_column = chr(ord(category_column) + 1)
+            confidence_range = f"{sheet_name}!{confidence_column}1:{confidence_column}{len(results)}"
+            
+            service.spreadsheets().values().update(
+                spreadsheetId=sheet_id,
+                range=confidence_range,
+                valueInputOption="USER_ENTERED",
+                body={"values": [[f"{cat['similarity_score']:.2%}"] for cat in results]}
+            ).execute()
+            
+            status_msg = "Classification completed successfully"
+            update_process_status("completed", "classify", user_id)
+            update_sheet_log(sheet_id, "SUCCESS", status_msg)
+            return jsonify({"status": "success"})
+            
+        except Exception as e:
+            error_msg = f"Error writing to sheet: {str(e)}"
+            logger.error(error_msg)
+            update_sheet_log(sheet_id, "ERROR", error_msg)
+            return jsonify({"error": error_msg}), 500
 
     except Exception as e:
         error_msg = str(e)
