@@ -618,71 +618,38 @@ function checkTrainingStatus() {
     }
     
     var config = getServiceConfig();
-    
-    // Add retry logic for fetch with exponential backoff
-    var maxFetchRetries = 3;
     var response = null;
     var fetchError = null;
     
-    for (var i = 0; i < maxFetchRetries; i++) {
-      try {
-    var options = {
-      headers: {
-            'X-API-Key': config.apiKey,
-            'Accept': 'application/json',
-            'Connection': 'keep-alive'
-          },
-          muteHttpExceptions: true,
-          validateHttpsCertificates: true,
-          followRedirects: true,
-          timeout: 30000  // 30 seconds timeout
-        };
-        
-        response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, options);
-        var responseCode = response.getResponseCode();
-        
-        // Handle different response codes
-        if (responseCode === 200) {
-          fetchError = null;
-          break;
-        } else if (responseCode === 404) {
-          // Status not found - might be temporary, retry
-          fetchError = "Status not found";
-          Logger.log("Status not found, will retry...");
-          Utilities.sleep(Math.pow(2, i) * 1000);  // Exponential backoff
-          continue;
-        } else if (responseCode >= 500) {
-          // Server error - retry
-          fetchError = `Server error (${responseCode})`;
-          Logger.log("Server error, will retry...");
-          Utilities.sleep(Math.pow(2, i) * 1000);
-          continue;
-        } else {
-          // Other errors - don't retry
-          throw new Error(`Unexpected response code: ${responseCode}`);
-        }
-      } catch (e) {
-        fetchError = e;
-        if (i < maxFetchRetries - 1) {
-          Logger.log(`Fetch attempt ${i + 1} failed: ${e}. Retrying...`);
-          Utilities.sleep(Math.pow(2, i) * 1000);
-        }
+    try {
+      var options = {
+        headers: {
+          'X-API-Key': config.apiKey,
+          'Accept': 'application/json'
+        },
+        muteHttpExceptions: true
+      };
+      
+      response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, options);
+      var responseCode = response.getResponseCode();
+      
+      if (responseCode !== 200) {
+        throw new Error(`Unexpected response code: ${responseCode}`);
       }
-    }
-    
-    if (fetchError) {
+    } catch (e) {
+      fetchError = e;
       retryCount++;
       userProperties.setProperty('RETRY_COUNT', retryCount.toString());
       
       if (retryCount >= maxRetries) {
-        updateStatus("Error: Service unavailable after multiple retries. Please try again later.");
+        updateStatus("Error: Service unavailable after multiple retries");
         updateStats('Model Status', 'Error: Service unavailable');
         cleanupTrigger(triggerId);
         userProperties.deleteAllProperties();
         return;
       }
       
-      var backoffMinutes = Math.min(retryCount, 5);  // Cap at 5 minutes
+      var backoffMinutes = Math.min(retryCount, 5);
       updateStatus(`Service temporarily unavailable. Retrying in ${backoffMinutes} minute(s)... (Attempt ${retryCount}/${maxRetries})`);
       return;
     }
@@ -693,8 +660,9 @@ function checkTrainingStatus() {
     }
     
     var responseText = response.getContentText();
-    if (!responseText || responseText.trim() === '') {
+    if (!responseText) {
       updateStatus(`Training in progress... (${minutesElapsed} min)`);
+      updateStats('Model Status', 'Training in progress');
       return;
     }
     
@@ -704,6 +672,7 @@ function checkTrainingStatus() {
       
       if (result.status) {
         statusMessage += ` - ${result.status}`;
+        updateStats('Model Status', result.status);
       }
       if (result.message) {
         statusMessage += `\n${result.message}`;
@@ -712,9 +681,14 @@ function checkTrainingStatus() {
       updateStatus(statusMessage);
       
       if (result.status === "completed") {
+        // Update all stats
+        var sheet = SpreadsheetApp.getActiveSheet();
         updateStats('Last Training Time', new Date().toLocaleString());
+        updateStats('Training Data Size', sheet.getLastRow() - 1);  // Subtract header row
+        updateStats('Training Sheet', sheet.getName());
         updateStats('Model Status', 'Ready');
-    updateStatus("Training completed successfully!");
+        
+        updateStatus("Training completed successfully!");
         cleanupTrigger(triggerId);
         userProperties.deleteAllProperties();
       } else if (result.status === "failed") {
@@ -727,11 +701,11 @@ function checkTrainingStatus() {
     } catch (parseError) {
       Logger.log("Error parsing response: " + parseError);
       updateStatus(`Training in progress... (${minutesElapsed} min) - Waiting for response`);
+      updateStats('Model Status', 'Training in progress');
     }
     
   } catch (error) {
     Logger.log("Error checking training status: " + error);
-    Logger.log("Error stack: " + error.stack);
     cleanupTrigger(triggerId);
     userProperties.deleteAllProperties();
     updateStatus("Error: " + error.toString());
