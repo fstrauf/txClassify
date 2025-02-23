@@ -10,6 +10,8 @@ import sys
 import uuid
 import traceback
 from datetime import datetime
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Load environment variables
 load_dotenv()
@@ -113,16 +115,12 @@ def classify_transactions():
     try:
         # Log all incoming request details
         logger.info("=== Incoming Classification Request ===")
-        logger.info(f"Headers: {dict(request.headers)}")
         
         # Get API key from headers
         api_key = request.headers.get('X-API-Key')
         if not api_key:
             logger.error("No API key provided in request headers")
             return jsonify({"error": "API key is required"}), 401
-
-        # Log the API key we're about to validate (safely)
-        logger.info(f"Attempting to validate API key: {api_key[:4]}...{api_key[-4:]}")
 
         # Validate API key and get user ID
         try:
@@ -132,81 +130,42 @@ def classify_transactions():
             logger.error(f"API key validation failed: {str(e)}")
             return jsonify({"error": str(e)}), 401
 
+        # Get and validate request data
         data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
-        logger.info("Received classification request")
-        
-        # Extract and validate required parameters
+        # Extract required parameters
         sheet_id = data.get("spreadsheetId")
-        
-        logger.info(f"Request parameters - userId: {user_id}, spreadsheetId: {sheet_id}")
-        
         if not sheet_id:
-            error_msg = "Missing required parameter: spreadsheetId"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-            
-        # Get sheet configuration from request
-        sheet_name = data.get("sheetName", "new_dump")
-        description_col = data.get("descriptionColumn", "C")
-        category_col = data.get("categoryColumn", "E")
-        start_row = data.get("startRow", "2")
-        
-        logger.info(f"Sheet configuration - name: {sheet_name}, description: {description_col}, category: {category_col}, start: {start_row}")
-        
-        # Get and validate required parameters
-        if 'transactions' not in data:
+            return jsonify({"error": "Missing required parameter: spreadsheetId"}), 400
+
+        # Get transactions data
+        transactions = data.get('transactions')
+        if not transactions:
             return jsonify({"error": "Missing transactions data"}), 400
-            
-        if not isinstance(data['transactions'], list):
+        if not isinstance(transactions, list):
             return jsonify({"error": "Invalid transactions format - expected array"}), 400
-            
-        if len(data['transactions']) == 0:
+        if len(transactions) == 0:
             return jsonify({"error": "Empty transactions array"}), 400
-            
-        # Convert transactions to DataFrame with error handling
+
+        # Convert transactions to DataFrame
         try:
-            df = pd.DataFrame(data['transactions'])
+            df = pd.DataFrame(transactions)
+            if 'description' in df.columns and 'Narrative' not in df.columns:
+                df['Narrative'] = df['description']
+            
+            # Validate narratives
+            if 'Narrative' not in df.columns:
+                return jsonify({"error": "Missing 'Narrative' or 'description' column in transactions"}), 400
+            
+            df['Narrative'] = df['Narrative'].astype(str).str.strip()
+            if df['Narrative'].empty or df['Narrative'].isna().any():
+                return jsonify({"error": "Invalid or empty narratives found"}), 400
         except Exception as e:
-            logger.error(f"Error converting transactions to DataFrame: {str(e)}")
+            logger.error(f"Error processing transactions data: {str(e)}")
             return jsonify({"error": "Invalid transaction data format"}), 400
-            
-        if 'Narrative' not in df.columns and 'description' not in df.columns:
-            return jsonify({"error": "Missing 'Narrative' or 'description' column in transactions"}), 400
-            
-        # Use description field if Narrative is not present
-        if 'description' in df.columns and 'Narrative' not in df.columns:
-            df['Narrative'] = df['description']
-            
-        # Validate narratives
-        df['Narrative'] = df['Narrative'].astype(str).str.strip()
-        if df['Narrative'].empty or df['Narrative'].isna().any():
-            return jsonify({"error": "Invalid or empty narratives found"}), 400
-            
-        # Create or update user configuration
-        try:
-            # Check if user config exists
-            response = supabase.table("account").select("*").eq("userId", user_id).execute()
-            
-            if not response.data:
-                # Create new user config
-                default_config = {
-                    "userId": user_id,
-                    "categorisationTab": sheet_name,
-                    "columnRange": "A:Z",
-                    "categoryColumn": category_col
-                }
-                supabase.table("account").insert(default_config).execute()
-                logger.info(f"Created new user configuration for {user_id}")
-            else:
-                logger.info(f"Found existing user configuration for {user_id}")
-                
-        except Exception as e:
-            logger.warning(f"Error managing user configuration: {str(e)}")
-            # Continue with classification even if config management fails
-            
+
         # Initialize classification service
         try:
             classifier = ClassificationService(
@@ -217,40 +176,32 @@ def classify_transactions():
         except Exception as e:
             logger.error(f"Error initializing classification service: {str(e)}")
             return jsonify({"error": "Service initialization failed"}), 500
-            
-        # Check if training data exists before classification
+
+        # Check if training data exists
         try:
             classifier.fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
         except Exception as e:
             logger.error(f"Error checking training data: {str(e)}")
             return jsonify({"error": "No training data found. Please train the model first."}), 400
-        
-        # Run classification with timeout handling
+
+        # Run classification
         try:
             prediction = classifier.classify(df, sheet_id, user_id)
             if not prediction or not prediction.id:
                 raise ValueError("Invalid prediction response")
-                
-            # Log successful request
+
             logger.info(f"Successfully started classification for {len(df)} transactions. Prediction ID: {prediction.id}")
             
-            # Return prediction ID for status tracking
             return jsonify({
                 "status": "processing",
                 "prediction_id": prediction.id,
-                "transaction_count": len(df),
-                "sheet_config": {
-                    "sheetName": sheet_name,
-                    "descriptionColumn": description_col,
-                    "categoryColumn": category_col,
-                    "startRow": start_row
-                }
+                "transaction_count": len(df)
             })
-            
+
         except Exception as e:
             logger.error(f"Classification failed: {str(e)}")
             return jsonify({"error": f"Classification failed: {str(e)}"}), 500
-        
+
     except Exception as e:
         logger.error(f"Unexpected error in classify_transactions: {str(e)}")
         return jsonify({
@@ -540,6 +491,63 @@ def validate_api_key(api_key: str) -> str:
         logger.error(f"Full error details: {e}")
         logger.error(f"API key validation failed for key: {api_key[:4]}...{api_key[-4:]}")
         raise Exception(f"API key validation failed: {str(e)}")
+
+@app.route("/classify/webhook", methods=["POST"])
+def classify_webhook():
+    """Handle classification webhook from Replicate."""
+    try:
+        data = request.get_json()
+        sheet_id = request.args.get("spreadsheetId")
+        user_id = request.args.get("userId")
+        
+        if not all([data, sheet_id, user_id]):
+            error_msg = "Missing required parameters"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+
+        # Get new embeddings
+        new_embeddings = np.array([item["embedding"] for item in data["output"]])
+        
+        # Get trained embeddings and categories
+        trained_embeddings = fetch_embeddings("txclassify", f"{sheet_id}.npy")
+        trained_data = fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
+        
+        # Calculate similarities
+        similarities = cosine_similarity(new_embeddings, trained_embeddings)
+        best_matches = similarities.argmax(axis=1)
+        
+        # Get predicted categories and confidence scores
+        results = []
+        for i, idx in enumerate(best_matches):
+            category = str(trained_data[idx][1])  # Index 1 is the Category field
+            similarity_score = float(similarities[i][idx])  # Get the similarity score
+            results.append({
+                "predicted_category": category,
+                "similarity_score": similarity_score
+            })
+        
+        # Store webhook result
+        try:
+            result = {
+                "prediction_id": request.headers.get('X-Replicate-Prediction-Id'),
+                "results": results,
+                "user_id": user_id,
+                "status": "success"
+            }
+            supabase.table("webhook_results").insert(result).execute()
+            logger.info("Stored classification results")
+        except Exception as e:
+            logger.warning(f"Error storing webhook result: {e}")
+
+        return jsonify({
+            "status": "success",
+            "results": results
+        })
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error in classify webhook: {error_msg}")
+        return jsonify({"error": error_msg}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
