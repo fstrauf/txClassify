@@ -32,35 +32,20 @@ All of this runs on the lowest tiers, so it can happen that they are temporarily
 Account table
 
 -- Table Definition
+-- This script only contains the table creation statements and does not fully represent the table in the database. Do not use it as a backup.
+
+-- Table Definition
 CREATE TABLE "public"."account" (
-    "bert_data" bytea,
-    "expenseSheetId" text,
-    "trainingRange" text,
     "categorisationRange" text,
-    "trainingStatus" text,
-    "categorisationStatus" text,
     "userId" text NOT NULL,
-    "runStatusTraining" text,
-    "runStatusCategorisation" text,
-    "trainingTab" text,
     "categorisationTab" text,
-    "columnOrderTraining" _jsonb,
     "columnOrderCategorisation" jsonb,
-    "role" text DEFAULT 'none'::text,
     "api_key" text,
     PRIMARY KEY ("userId")
 );
 
 -- Column Comment
-COMMENT ON COLUMN "public"."account"."expenseSheetId" IS 'The Id of the sheet used to do your expenses';
-COMMENT ON COLUMN "public"."account"."trainingRange" IS 'The range and sheet name of the training date';
 COMMENT ON COLUMN "public"."account"."categorisationRange" IS 'the range that is to be selected for categorising';
-COMMENT ON COLUMN "public"."account"."trainingStatus" IS 'status of current training run';
-COMMENT ON COLUMN "public"."account"."categorisationStatus" IS 'Status of current categorisation';
 COMMENT ON COLUMN "public"."account"."userId" IS 'Auth0 user id';
-COMMENT ON COLUMN "public"."account"."runStatusTraining" IS 'String of when the training was last run.';
-COMMENT ON COLUMN "public"."account"."runStatusCategorisation" IS 'String of when the categorisation was last run';
-COMMENT ON COLUMN "public"."account"."trainingTab" IS 'The tab of the sheet used for training';
 COMMENT ON COLUMN "public"."account"."categorisationTab" IS 'The tab of the sheet used for categorisation';
-COMMENT ON COLUMN "public"."account"."columnOrderTraining" IS 'Order and type of columns for training purposes.';
 COMMENT ON COLUMN "public"."account"."columnOrderCategorisation" IS 'Order of categorisation columns in a users sheet.';
