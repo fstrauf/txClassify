@@ -469,17 +469,22 @@ def training_webhook():
 def classify_transactions():
     """Classify new transactions."""
     try:
+        # Get API key from headers
+        api_key = request.headers.get('X-API-Key')
+        if not api_key:
+            return jsonify({"error": "API key is required"}), 401
+
+        # Validate API key and get user ID
+        try:
+            user_id = validate_api_key(api_key)
+        except Exception as e:
+            return jsonify({"error": "Invalid API key"}), 401
+
         data = request.get_json()
         
         # Extract and validate required parameters
-        user_id = data.get("userId")
         sheet_id = data.get("spreadsheetId")
         
-        if not user_id:
-            error_msg = "Missing required parameter: userId"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-            
         if not sheet_id:
             error_msg = "Missing required parameter: spreadsheetId"
             logger.error(error_msg)
