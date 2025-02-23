@@ -1,1 +1,1 @@
-web: cd pythonHandler && PYTHONUNBUFFERED=1 gunicorn --config gunicorn.conf.py --log-level debug --capture-output app:app 
+web: cd pythonHandler && PYTHONUNBUFFERED=1 gunicorn --config gunicorn.conf.py --log-level debug --capture-output main:app 
