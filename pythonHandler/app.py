@@ -113,7 +113,6 @@ def classify_transactions():
         # Log all incoming request details
         logger.info("=== Incoming Classification Request ===")
         logger.info(f"Headers: {dict(request.headers)}")
-        logger.info(f"API Key in header: {request.headers.get('X-API-Key')}")
         
         # Get API key from headers
         api_key = request.headers.get('X-API-Key')
@@ -121,8 +120,8 @@ def classify_transactions():
             logger.error("No API key provided in request headers")
             return jsonify({"error": "API key is required"}), 401
 
-        # Log the API key we're about to validate
-        logger.info(f"Attempting to validate API key: {api_key}")
+        # Log the API key we're about to validate (safely)
+        logger.info(f"Attempting to validate API key: {api_key[:4]}...{api_key[-4:]}")
 
         # Validate API key and get user ID
         try:
@@ -130,7 +129,7 @@ def classify_transactions():
             logger.info(f"API key validated successfully for user: {user_id}")
         except Exception as e:
             logger.error(f"API key validation failed: {str(e)}")
-            return jsonify({"error": "Invalid API key"}), 401
+            return jsonify({"error": str(e)}), 401
 
         data = request.get_json()
         if not data:
@@ -372,6 +371,72 @@ def train_model():
             "details": str(e)
         }), 500
 
+@app.route('/debug/validate-key', methods=['GET'])
+def debug_validate_key():
+    """Debug endpoint to validate API key."""
+    try:
+        # Get API key from headers
+        api_key = request.headers.get('X-API-Key')
+        if not api_key:
+            logger.error("No API key provided in request headers")
+            return jsonify({
+                "error": "API key is required",
+                "details": "Please provide X-API-Key header"
+            }), 401
+
+        # Log the API key we're about to validate (safely)
+        logger.info(f"Debug validation - API key: {api_key[:4]}...{api_key[-4:]}")
+
+        # Query Supabase directly
+        logger.info("Querying Supabase for account table data")
+        try:
+            # First try exact match
+            response = supabase.table("account").select("*").eq("api_key", api_key).execute()
+            match_type = "exact"
+            
+            if not response.data:
+                # Try case-insensitive match
+                response = supabase.table("account").select("*").ilike("api_key", api_key).execute()
+                match_type = "case-insensitive"
+            
+            logger.info(f"Query response count: {len(response.data) if response.data else 0}")
+            logger.info(f"Match type used: {match_type}")
+            
+            if response.data:
+                user_data = response.data[0]
+                return jsonify({
+                    "status": "success",
+                    "match_type": match_type,
+                    "user_id": user_data.get("userId"),
+                    "account_fields": list(user_data.keys()),
+                    "has_api_key": bool(user_data.get("api_key")),
+                    "api_key_length": len(user_data.get("api_key", "")),
+                })
+            else:
+                return jsonify({
+                    "status": "error",
+                    "error": "No matching account found",
+                    "details": {
+                        "provided_key_length": len(api_key),
+                        "match_attempts": [match_type]
+                    }
+                }), 401
+                
+        except Exception as e:
+            logger.error(f"Supabase query error: {str(e)}")
+            return jsonify({
+                "status": "error",
+                "error": "Database query failed",
+                "details": str(e)
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Debug validation error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
+
 def get_user_config(user_id: str) -> dict:
     """Get user configuration from Supabase using API key-based user ID."""
     try:
@@ -438,31 +503,41 @@ def validate_api_key(api_key: str) -> str:
     try:
         # Clean the API key
         api_key = api_key.strip()
+        logger.info(f"Validating API key (length: {len(api_key)})")
+        logger.debug(f"API key first/last 4 chars: {api_key[:4]}...{api_key[-4:]}")
         
         # Log the query we're about to make
-        logger.info(f"Validating API key: {api_key}")
+        logger.info("Querying Supabase for API key validation")
         
         # First try exact match
         response = supabase.table("account").select("*").eq("api_key", api_key).execute()
-        logger.info(f"Query response: {response.data}")
+        logger.debug(f"Exact match query response count: {len(response.data) if response.data else 0}")
         
         if not response.data:
             # Try case-insensitive match as fallback
+            logger.info("No exact match found, trying case-insensitive match")
             response = supabase.table("account").select("*").ilike("api_key", api_key).execute()
-            logger.info(f"Case-insensitive query response: {response.data}")
+            logger.debug(f"Case-insensitive query response count: {len(response.data) if response.data else 0}")
             
         if not response.data:
-            logger.error(f"No account found for API key: {api_key}")
-            raise Exception("Invalid API key")
+            logger.error(f"No account found for API key: {api_key[:4]}...{api_key[-4:]}")
+            raise Exception("Invalid API key - no matching account found")
             
         # Log the found user data (excluding sensitive info)
         user_data = response.data[0]
         logger.info(f"Found user data - userId: {user_data.get('userId')}")
+        logger.debug(f"User data keys: {list(user_data.keys())}")
+        
+        if not user_data.get("userId"):
+            logger.error("User data found but missing userId")
+            raise Exception("Invalid user configuration - missing userId")
         
         return user_data["userId"]
+        
     except Exception as e:
         logger.error(f"Error validating API key: {str(e)}")
         logger.error(f"Full error details: {e}")
+        logger.error(f"API key validation failed for key: {api_key[:4]}...{api_key[-4:]}")
         raise Exception(f"API key validation failed: {str(e)}")
 
 if __name__ == '__main__':
