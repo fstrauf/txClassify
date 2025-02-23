@@ -201,35 +201,11 @@ def validate_api_key(api_key: str) -> str:
         raise Exception(f"API key validation failed: {str(e)}")
 
 def update_process_status(status_text: str, mode: str, user_id: str) -> None:
-    """Update process status in Supabase."""
+    """Log process status without database updates."""
     try:
-        # First check if account exists
-        response = supabase.table("account").select("*").eq("userId", user_id).execute()
-        
-        status_field = "trainingStatus" if mode == "training" else "categorisationStatus"
-        
-        if not response.data:
-            # Create new account with status
-            default_config = {
-                "userId": user_id,
-                "categorisationTab": "new_dump",
-                "categorisationRange": "A:Z",
-                "columnOrderCategorisation": {"categoryColumn": "E", "descriptionColumn": "C"},
-                status_field: status_text
-            }
-            supabase.table("account").insert(default_config).execute()
-            logger.info(f"Created new account for user {user_id} with status: {status_text}")
-        else:
-            # Update existing account
-            supabase.table("account").update({
-                status_field: status_text
-            }).eq("userId", user_id).execute()
-            logger.info(f"Updated status for user {user_id}: {status_text}")
-            
+        logger.info(f"Process status update - mode: {mode}, user: {user_id}, status: {status_text}")
     except Exception as e:
-        logger.error(f"Error updating process status: {e}")
-        # Log the full error details for debugging
-        logger.error(f"Full error details: {str(e)}")
+        logger.error(f"Error logging process status: {e}")
         logger.error(f"Status update attempted - mode: {mode}, user: {user_id}, status: {status_text}")
 
 def clean_text(text: str) -> str:
@@ -261,6 +237,10 @@ def clean_text(text: str) -> str:
 def get_spreadsheet_data(sheet_id: str, range_name: str) -> list:
     """Get data from Google Sheets."""
     try:
+        # Format range name to ensure proper escaping
+        sheet_name, cell_range = range_name.split('!')
+        formatted_range = f"'{sheet_name}'!{cell_range}"
+        
         google_service_account = json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT"))
         creds = Credentials.from_service_account_info(
             google_service_account,
@@ -269,7 +249,7 @@ def get_spreadsheet_data(sheet_id: str, range_name: str) -> list:
         service = build("sheets", "v4", credentials=creds)
         result = service.spreadsheets().values().get(
             spreadsheetId=sheet_id,
-            range=range_name
+            range=formatted_range
         ).execute()
         return result.get("values", [])
     except Exception as e:
