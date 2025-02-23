@@ -47,15 +47,26 @@ def health_check():
 def classify_transactions():
     """Classify new transactions."""
     try:
+        # Log all incoming request details
+        logger.info("=== Incoming Classification Request ===")
+        logger.info(f"Headers: {dict(request.headers)}")
+        logger.info(f"API Key in header: {request.headers.get('X-API-Key')}")
+        
         # Get API key from headers
         api_key = request.headers.get('X-API-Key')
         if not api_key:
+            logger.error("No API key provided in request headers")
             return jsonify({"error": "API key is required"}), 401
+
+        # Log the API key we're about to validate
+        logger.info(f"Attempting to validate API key: {api_key}")
 
         # Validate API key and get user ID
         try:
             user_id = validate_api_key(api_key)
+            logger.info(f"API key validated successfully for user: {user_id}")
         except Exception as e:
+            logger.error(f"API key validation failed: {str(e)}")
             return jsonify({"error": "Invalid API key"}), 401
 
         data = request.get_json()

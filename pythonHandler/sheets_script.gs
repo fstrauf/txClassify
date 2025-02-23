@@ -814,6 +814,7 @@ function classifyTransactions(config) {
       muteHttpExceptions: true
     };
     
+    Logger.log("Making classification request with API key: " + serviceConfig.apiKey);
     var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/classify', options);
     var result = JSON.parse(response.getContentText());
     
