@@ -312,20 +312,32 @@ function setupApiKey() {
   var ui = SpreadsheetApp.getUi();
   var properties = PropertiesService.getScriptProperties();
   
+  // Show instructions first
+  var instructions = ui.alert(
+    'API Key Setup',
+    '1. Go to expensesorted.com and sign up for an account\n' +
+    '2. After signing up, go to your account settings to get your API key\n' +
+    '3. Copy the API key and paste it in the next dialog\n\n' +
+    'Do you want to continue?',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (instructions.getSelectedButton() !== ui.Button.OK) return;
+  
   // Get API key
   var apiKey = ui.prompt(
-    'Configure API Key',
-    'Enter your API key (or leave blank to generate a new one):',
+    'Enter API Key',
+    'Please enter your API key from expensesorted.com:',
     ui.ButtonSet.OK_CANCEL
   );
   
   if (apiKey.getSelectedButton() !== ui.Button.OK) return;
   
-  // If no API key provided, generate one
+  // Validate API key is provided
   var key = apiKey.getResponseText().trim();
   if (!key) {
-    key = Utilities.getUuid();
-    ui.alert('Generated new API key', 'Your API key is: ' + key + '\n\nPlease save this key somewhere safe.', ui.ButtonSet.OK);
+    ui.alert('Error', 'API key is required. Please get your API key from expensesorted.com', ui.ButtonSet.OK);
+    return;
   }
   
   // Store the API key
@@ -340,13 +352,12 @@ function getServiceConfig() {
   var apiKey = properties.getProperty('API_KEY');
   
   if (!apiKey) {
-    throw new Error('API key not configured. Please use "Configure API Key" first.');
+    throw new Error('API key not configured. Please go to expensesorted.com to get your API key, then use "Configure API Key" to set it up.');
   }
   
   return { 
     serviceUrl: CLASSIFICATION_SERVICE_URL,
-    apiKey,
-    userId: apiKey.substring(0, 8)  // Consistently use first 8 chars as user ID
+    apiKey: apiKey
   };
 }
 
@@ -754,7 +765,6 @@ function classifyTransactions(config) {
     Logger.log("Service configuration:");
     Logger.log("- URL: " + serviceConfig.serviceUrl);
     Logger.log("- API Key: " + serviceConfig.apiKey);
-    Logger.log("- User ID: " + serviceConfig.userId);
     
     // Store the original sheet name
     var originalSheetName = sheet.getName();
