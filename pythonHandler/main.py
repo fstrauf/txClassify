@@ -32,6 +32,30 @@ CORS(app)
 logger.info("=== Main Application Starting ===")
 logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'production')}")
 
+@app.route('/')
+def home():
+    """Home endpoint"""
+    logger.info("Home endpoint accessed")
+    return jsonify({
+        "status": "online",
+        "version": "1.0.0",
+        "endpoints": [
+            "/classify",
+            "/train",
+            "/health",
+            "/debug/validate-key"
+        ]
+    })
+
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    logger.info("Health check endpoint accessed")
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat()
+    })
+
 # Initialize Supabase client with logging
 try:
     logger.info("=== Initializing Supabase ===")
@@ -728,6 +752,72 @@ def get_prediction_status(prediction_id):
     except Exception as e:
         logger.error(f"Error getting prediction status: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/debug/validate-key', methods=['GET'])
+def debug_validate_key():
+    """Debug endpoint to validate API key."""
+    try:
+        # Get API key from headers
+        api_key = request.headers.get('X-API-Key')
+        if not api_key:
+            logger.error("No API key provided in request headers")
+            return jsonify({
+                "error": "API key is required",
+                "details": "Please provide X-API-Key header"
+            }), 401
+
+        # Log the API key we're about to validate (safely)
+        logger.info(f"Debug validation - API key: {api_key[:4]}...{api_key[-4:]}")
+
+        # Query Supabase directly
+        logger.info("Querying Supabase for account table data")
+        try:
+            # First try exact match
+            response = supabase.table("account").select("*").eq("api_key", api_key).execute()
+            match_type = "exact"
+            
+            if not response.data:
+                # Try case-insensitive match
+                response = supabase.table("account").select("*").ilike("api_key", api_key).execute()
+                match_type = "case-insensitive"
+            
+            logger.info(f"Query response count: {len(response.data) if response.data else 0}")
+            logger.info(f"Match type used: {match_type}")
+            
+            if response.data:
+                user_data = response.data[0]
+                return jsonify({
+                    "status": "success",
+                    "match_type": match_type,
+                    "user_id": user_data.get("userId"),
+                    "account_fields": list(user_data.keys()),
+                    "has_api_key": bool(user_data.get("api_key")),
+                    "api_key_length": len(user_data.get("api_key", "")),
+                })
+            else:
+                return jsonify({
+                    "status": "error",
+                    "error": "No matching account found",
+                    "details": {
+                        "provided_key_length": len(api_key),
+                        "match_attempts": [match_type]
+                    }
+                }), 401
+                
+        except Exception as e:
+            logger.error(f"Supabase query error: {str(e)}")
+            return jsonify({
+                "status": "error",
+                "error": "Database query failed",
+                "details": str(e)
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Debug validation error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
