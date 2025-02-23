@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from services.classification_service import ClassificationService
 from flask_cors import CORS
 import pandas as pd
@@ -7,21 +7,62 @@ from dotenv import load_dotenv
 import os
 from supabase import create_client
 import sys
+import uuid
+import traceback
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    stream=sys.stdout,  # Log to stdout for Docker/Gunicorn to capture
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout,
+    format='%(asctime)s - [%(request_id)s] - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+# Custom logging filter to add request ID
+class RequestIdFilter(logging.Filter):
+    def filter(self, record):
+        record.request_id = getattr(g, 'request_id', 'no_req_id')
+        return True
+
+logger.addFilter(RequestIdFilter())
+
 # Initialize Flask app with logging
 app = Flask(__name__)
 CORS(app)
+
+@app.before_request
+def before_request():
+    g.request_id = request.headers.get('X-Request-ID', str(uuid.uuid4()))
+    logger.info(f"Processing request: {request.method} {request.path}")
+    logger.info(f"Request headers: {dict(request.headers)}")
+    if request.is_json:
+        # Log request body but exclude sensitive data
+        safe_data = request.get_json()
+        if isinstance(safe_data, dict):
+            # Remove sensitive fields
+            safe_data.pop('api_key', None)
+            if 'headers' in safe_data and isinstance(safe_data['headers'], dict):
+                safe_data['headers'].pop('X-API-Key', None)
+        logger.info(f"Request body (sanitized): {safe_data}")
+
+@app.after_request
+def after_request(response):
+    logger.info(f"Response status: {response.status_code}")
+    return response
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Log the full exception with traceback
+    logger.error(f"Unhandled exception: {str(e)}")
+    logger.error(f"Traceback: {''.join(traceback.format_tb(e.__traceback__))}")
+    return jsonify({
+        "error": "Internal server error",
+        "message": str(e),
+        "request_id": g.request_id
+    }), 500
 
 # Log startup information
 logger.info("=== Application Starting ===")
