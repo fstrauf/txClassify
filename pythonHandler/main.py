@@ -90,38 +90,18 @@ def get_user_config(user_id: str) -> dict:
             
             if response.data:
                 config = response.data[0]
-                
-                # Convert column order configuration to expected format
-                if config.get("columnOrderCategorisation"):
-                    column_order = config["columnOrderCategorisation"]
-                    if isinstance(column_order, list):  # Handle array format
-                        # Find description and category columns
-                        description_col = next((col["name"] for col in column_order if col.get("type") == "description"), "C")
-                        category_col = "E"  # Default to E since category is not in the current configuration
-                        
-                        # Update configuration to expected format
-                        config["columnOrderCategorisation"] = {
-                            "categoryColumn": category_col,
-                            "descriptionColumn": description_col
-                        }
-                    elif isinstance(column_order, dict):
-                        if not column_order.get("categoryColumn"):
-                            column_order["categoryColumn"] = "E"
-                        if not column_order.get("descriptionColumn"):
-                            column_order["descriptionColumn"] = "C"
-                else:
+                # Ensure all required fields exist
+                if not config.get("columnOrderCategorisation"):
                     config["columnOrderCategorisation"] = {
                         "categoryColumn": "E",
                         "descriptionColumn": "C"
                     }
-                
-                # Ensure other required fields exist
                 if not config.get("categorisationRange"):
                     config["categorisationRange"] = "A:Z"
                 if not config.get("categorisationTab"):
-                    config["categorisationTab"] = "new_dump"
+                    config["categorisationTab"] = None  # Set to None as it's being deprecated
                     
-                # Update the configuration
+                # Update the configuration if we added any missing fields
                 supabase.table("account").update(config).eq("userId", user_id).execute()
                 logger.info(f"Updated configuration for user {user_id}")
                 return config
@@ -133,12 +113,12 @@ def get_user_config(user_id: str) -> dict:
         logger.info(f"No configuration found, creating default for user {user_id}")
         default_config = {
             "userId": user_id,
-            "categorisationTab": "new_dump",
             "categorisationRange": "A:Z",
             "columnOrderCategorisation": {
                 "categoryColumn": "E",
                 "descriptionColumn": "C"
-            }
+            },
+            "categorisationTab": None  # Set to None as it's being deprecated
         }
         
         # Insert default configuration
@@ -238,8 +218,14 @@ def get_spreadsheet_data(sheet_id: str, range_name: str) -> list:
     """Get data from Google Sheets."""
     try:
         # Format range name to ensure proper escaping
-        sheet_name, cell_range = range_name.split('!')
-        formatted_range = f"'{sheet_name}'!{cell_range}"
+        if '!' in range_name:
+            sheet_name, cell_range = range_name.split('!')
+            # Remove any existing quotes
+            sheet_name = sheet_name.strip("'")
+            # Add single quotes around the sheet name to handle special characters
+            formatted_range = f"'{sheet_name}'!{cell_range}"
+        else:
+            formatted_range = range_name
         
         google_service_account = json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT"))
         creds = Credentials.from_service_account_info(
@@ -256,7 +242,7 @@ def get_spreadsheet_data(sheet_id: str, range_name: str) -> list:
         logger.error(f"Error fetching spreadsheet data: {e}")
         raise
 
-def run_prediction(mode: str, sheet_id: str, user_id: str, descriptions: list) -> dict:
+def run_prediction(mode: str, sheet_id: str, user_id: str, descriptions: list, sheet_name: str = None, category_column: str = None) -> dict:
     """Run prediction using Replicate API."""
     try:
         model = replicate.models.get("replicate/all-mpnet-base-v2")
@@ -264,8 +250,17 @@ def run_prediction(mode: str, sheet_id: str, user_id: str, descriptions: list) -
             "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
         )
 
-        # Create webhook URL with consistent parameter names
-        webhook = f"{BACKEND_API}/{mode}/webhook?spreadsheetId={sheet_id}&userId={user_id}"
+        # Create webhook URL with all necessary parameters
+        webhook_params = [
+            f"spreadsheetId={sheet_id}",
+            f"userId={user_id}"
+        ]
+        if sheet_name:
+            webhook_params.append(f"sheetName={sheet_name}")
+        if category_column:
+            webhook_params.append(f"categoryColumn={category_column}")
+            
+        webhook = f"{BACKEND_API}/{mode}/webhook?{'&'.join(webhook_params)}"
         
         prediction = replicate.predictions.create(
             version=version,
@@ -420,7 +415,6 @@ def ensure_default_config(user_id: str) -> None:
             
         account = response.data[0]
         default_config = {
-            "categorisationTab": "new_dump",
             "categorisationRange": "A:Z",
             "columnOrderCategorisation": {"categoryColumn": "E", "descriptionColumn": "C"}
         }
@@ -505,7 +499,6 @@ def train_model():
                 # Create new user config
                 default_config = {
                     "userId": user_id,
-                    "categorisationTab": "new_dump",
                     "columnRange": "A:Z",
                     "categoryColumn": "E"
                 }
@@ -562,7 +555,7 @@ def train_model():
         store_embeddings("txclassify", f"{sheet_id}_index.npy", training_data)
         
         # Run prediction
-        prediction = run_prediction("train", sheet_id, user_id, df["description"].tolist())
+        prediction = run_prediction("train", sheet_id, user_id, df["description"].tolist(), sheet_name=data.get('sheetName'), category_column=data.get('categoryColumn'))
         
         return jsonify({
             "status": "processing",
@@ -593,14 +586,16 @@ def training_webhook():
         try:
             response = supabase.table("account").select("*").eq("userId", user_id).execute()
             if not response.data:
-                # Create new account
+                # Create new account with all fields from schema
                 default_config = {
                     "userId": user_id,
-                    "categorisationTab": "new_dump",
                     "categorisationRange": "A:Z",
-                    "columnOrderCategorisation": {"categoryColumn": "E", "descriptionColumn": "C"},
-                    "trainingStatus": "processing",
-                    "expenseSheetId": sheet_id
+                    "columnOrderCategorisation": {
+                        "categoryColumn": "E",
+                        "descriptionColumn": "C"
+                    },
+                    "categorisationTab": None,  # Set to None as it's being deprecated
+                    "api_key": None  # Include api_key field but set to None
                 }
                 supabase.table("account").insert(default_config).execute()
                 logger.info(f"Created new account for user {user_id}")
@@ -731,43 +726,24 @@ def classify_transactions():
         # Validate API key and get user ID
         user_id = validate_api_key(api_key)
         
-        # Ensure user has default configuration
-        ensure_default_config(user_id)
-        
         data = request.get_json()
         
         # Extract and validate required parameters
         sheet_id = data.get("spreadsheetId")
-        
         if not sheet_id:
             error_msg = "Missing required parameter: spreadsheetId"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
-            
-        # Get user configuration with error handling
-        try:
-            config = get_user_config(user_id)
-            if not config:
-                error_msg = "User configuration not found"
-                logger.error(f"{error_msg} for userId: {user_id}")
-                return jsonify({"error": error_msg}), 400
-                
-            # Validate required configuration fields
-            if not config.get("categorisationTab"):
-                error_msg = "Missing categorisationTab in user configuration"
-                logger.error(error_msg)
-                return jsonify({"error": error_msg}), 400            
-            if not config.get("categorisationRange"):
-                error_msg = "Missing categorisationRange in user configuration"
-                logger.error(error_msg)
-                return jsonify({"error": error_msg}), 400
-        except Exception as e:
-            error_msg = f"Error getting user configuration: {str(e)}"
+
+        # Get sheet name from request data
+        sheet_name = data.get("sheetName")
+        if not sheet_name:
+            error_msg = "Missing required parameter: sheetName"
             logger.error(error_msg)
             return jsonify({"error": error_msg}), 400
 
         # Log successful parameter validation
-        logger.info(f"Parameters validated - userId: {user_id}, spreadsheetId: {sheet_id}")
+        logger.info(f"Parameters validated - userId: {user_id}, spreadsheetId: {sheet_id}, sheetName: {sheet_name}")
 
         # Verify training data exists
         try:
@@ -782,7 +758,7 @@ def classify_transactions():
             return jsonify({"error": error_msg}), 400
 
         # Get sheet configuration
-        sheet_range = f"{config['categorisationTab']}!{config['categorisationRange']}"
+        sheet_range = f"{sheet_name}!A:Z"
         
         # Fetch transaction data
         status_msg = "Fetching transactions"
@@ -795,8 +771,8 @@ def classify_transactions():
             update_sheet_log(sheet_id, "ERROR", error_msg)
             return jsonify({"error": error_msg}), 400
         
-        # Get column configuration
-        column_config = config.get("columnOrderCategorisation", {})
+        # Get column configuration from request
+        column_config = data.get("columnOrderCategorisation", {})
         description_column = column_config.get("descriptionColumn", "C")
         
         # Convert column letter to index (0-based)
@@ -822,7 +798,7 @@ def classify_transactions():
         status_msg = f"Getting embeddings for {len(df)} transactions"
         update_process_status(status_msg, "classify", user_id)
         update_sheet_log(sheet_id, "INFO", status_msg)
-        prediction = run_prediction("classify", sheet_id, user_id, df["description"].tolist())
+        prediction = run_prediction("classify", sheet_id, user_id, df["description"].tolist(), sheet_name=sheet_name, category_column=column_config.get("categoryColumn"))
         
         update_sheet_log(sheet_id, "INFO", "Classification started", f"Prediction ID: {prediction.id}")
         return jsonify({
@@ -846,22 +822,9 @@ def classify_webhook():
         data = request.get_json()
         sheet_id = request.args.get("spreadsheetId")
         user_id = request.args.get("userId")
+        sheet_name = request.args.get("sheetName")
         
-        # Get user configuration
-        response = supabase.table("account").select("*").eq("userId", user_id).execute()
-        if not response.data:
-            error_msg = "User configuration not found"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-            
-        config = response.data[0]
-        column_config = config.get("columnOrderCategorisation", {})
-        if not isinstance(column_config, dict):
-            column_config = {}
-            
-        category_column = column_config.get("categoryColumn", "E")
-        
-        if not all([data, sheet_id, user_id]):
+        if not all([data, sheet_id, user_id, sheet_name]):
             error_msg = "Missing required parameters"
             if sheet_id:
                 update_sheet_log(sheet_id, "ERROR", error_msg)
@@ -878,15 +841,18 @@ def classify_webhook():
         similarities = cosine_similarity(new_embeddings, trained_embeddings)
         best_matches = similarities.argmax(axis=1)
         
-        # Get predicted categories from structured array
-        categories = []
-        for idx in best_matches:
-            # Get the category directly from the structured array
+        # Get predicted categories and similarity scores
+        results = []
+        for i, idx in enumerate(best_matches):
             category = str(trained_data[idx][1])  # Index 1 is the Category field
-            categories.append(category)
+            similarity_score = float(similarities[i][idx])  # Get the similarity score
+            results.append({
+                "predicted_category": category,
+                "similarity_score": similarity_score
+            })
         
         # Update sheet with predictions
-        status_msg = f"Writing {len(categories)} predictions to sheet"
+        status_msg = f"Writing {len(results)} predictions to sheet"
         update_sheet_log(sheet_id, "INFO", status_msg)
         
         service = build("sheets", "v4", credentials=Credentials.from_service_account_info(
@@ -894,13 +860,16 @@ def classify_webhook():
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
         ))
         
+        # Get column configuration from request args
+        category_column = request.args.get("categoryColumn", "E")
+        
         # Write categories back to sheet starting from row 1
-        category_range = f"{config['categorisationTab']}!{category_column}1:{category_column}{len(categories)}"
+        category_range = f"{sheet_name}!{category_column}1:{category_column}{len(results)}"
         service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
             range=category_range,
             valueInputOption="USER_ENTERED",
-            body={"values": [[cat] for cat in categories]}
+            body={"values": [[cat["predicted_category"]] for cat in results]}
         ).execute()
         
         status_msg = "Classification completed successfully"

@@ -249,14 +249,28 @@ def train_model():
                 # Create new user config
                 default_config = {
                     "userId": user_id,
-                    "categorisationTab": "new_dump",
-                    "columnRange": "A:Z",
-                    "categoryColumn": "E"
+                    "columnOrderCategorisation": {
+                        "categoryColumn": "E",
+                        "descriptionColumn": "C"
+                    },
+                    "categorisationRange": "A:Z"
                 }
                 supabase.table("account").insert(default_config).execute()
                 logger.info(f"Created new user configuration for {user_id}")
             else:
-                logger.info(f"Found existing user configuration for {user_id}")
+                config = response.data[0]
+                # Ensure required fields exist
+                if not config.get("columnOrderCategorisation"):
+                    config["columnOrderCategorisation"] = {
+                        "categoryColumn": "E",
+                        "descriptionColumn": "C"
+                    }
+                if not config.get("categorisationRange"):
+                    config["categorisationRange"] = "A:Z"
+                    
+                # Update the configuration if needed
+                supabase.table("account").update(config).eq("userId", user_id).execute()
+                logger.info(f"Updated configuration for user {user_id}")
                 
         except Exception as e:
             logger.warning(f"Error managing user configuration: {str(e)}")
