@@ -9,6 +9,7 @@ from supabase import create_client
 import sys
 import uuid
 import traceback
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -16,10 +17,14 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(
     stream=sys.stdout,
-    format='%(asctime)s - [%(request_id)s] - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format='%(asctime)s - [%(process)d] - [%(levelname)s] - %(name)s - %(message)s',
+    level=logging.DEBUG  # Set to DEBUG level
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('app')  # Use a specific logger for the application
+
+# Ensure all loggers are set to DEBUG
+logging.getLogger('werkzeug').setLevel(logging.DEBUG)
+logging.getLogger('gunicorn').setLevel(logging.DEBUG)
 
 # Custom logging filter to add request ID
 class RequestIdFilter(logging.Filter):
@@ -34,23 +39,16 @@ app = Flask(__name__)
 CORS(app)
 
 @app.before_request
-def before_request():
-    g.request_id = request.headers.get('X-Request-ID', str(uuid.uuid4()))
-    logger.info(f"Processing request: {request.method} {request.path}")
-    logger.info(f"Request headers: {dict(request.headers)}")
-    if request.is_json:
-        # Log request body but exclude sensitive data
-        safe_data = request.get_json()
-        if isinstance(safe_data, dict):
-            # Remove sensitive fields
-            safe_data.pop('api_key', None)
-            if 'headers' in safe_data and isinstance(safe_data['headers'], dict):
-                safe_data['headers'].pop('X-API-Key', None)
-        logger.info(f"Request body (sanitized): {safe_data}")
+def log_request_info():
+    """Log details about each request."""
+    logger.debug('Headers: %s', dict(request.headers))
+    logger.debug('Body: %s', request.get_data())
 
 @app.after_request
-def after_request(response):
-    logger.info(f"Response status: {response.status_code}")
+def log_response_info(response):
+    """Log details about each response."""
+    logger.debug('Response Status: %s', response.status)
+    logger.debug('Response Headers: %s', dict(response.headers))
     return response
 
 @app.errorhandler(Exception)
@@ -88,22 +86,27 @@ except Exception as e:
     raise
 
 @app.route('/')
-def root():
-    """Root endpoint"""
-    logger.info("Root endpoint accessed")
+def home():
+    """Home endpoint"""
+    logger.info("Home endpoint accessed")
     return jsonify({
-        "message": "TX Classify API",
+        "status": "online",
         "version": "1.0.0",
-        "endpoints": ["/health", "/classify", "/train"]
+        "endpoints": [
+            "/health",
+            "/classify",
+            "/train",
+            "/debug/validate-key"
+        ]
     })
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint for Render"""
+@app.route('/health')
+def health():
+    """Health check endpoint"""
     logger.info("Health check endpoint accessed")
     return jsonify({
         "status": "healthy",
-        "version": "1.0.0"
+        "timestamp": datetime.now().isoformat()
     })
 
 @app.route('/classify', methods=['POST'])
