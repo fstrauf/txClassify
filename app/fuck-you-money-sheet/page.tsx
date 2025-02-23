@@ -38,9 +38,9 @@ export default function FuckYouMoneySheet() {
 function ImageComponent() {
   return (
     <Image
-      width={3214 / 2}
-      height={1356 / 2}
-      src="/f-you-money-overview.png"
+      width={1306}
+      height={1230}
+      src="/f-you-money-expense-vs-savings.png"
       className="w-full"
       alt="Expense Sorter"
       priority={true}
