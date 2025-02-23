@@ -2,14 +2,17 @@
 const CLASSIFICATION_SERVICE_URL = 'https://txclassify.onrender.com';
 
 // Add menu to the spreadsheet
-function onOpen() {
-  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  var menuEntries = [
-    {name: "Configure API Key", functionName: "setupApiKey"},
-    {name: "Train Model", functionName: "showTrainingDialog"},
-    {name: "Classify New Transactions", functionName: "showClassifyDialog"}
-  ];
-  spreadsheet.addMenu("Transaction Classifier", menuEntries);
+function onOpen(e) {
+  var menu = SpreadsheetApp.getUi().createAddonMenu(); // Changed from addMenu to createAddonMenu
+  menu.addItem("Configure API Key", "setupApiKey")
+      .addItem("Train Model", "showTrainingDialog")
+      .addItem("Classify New Transactions", "showClassifyDialog")
+      .addToUi();
+}
+
+// Handle add-on installation
+function onInstall(e) {
+  onOpen(e);
 }
 
 // Show dialog to select columns for classification
@@ -868,16 +871,7 @@ function checkOperationStatus() {
   
   if (!predictionId || !triggerId) {
     Logger.log("Missing predictionId or triggerId - cleaning up");
-    // Clean up if no prediction ID or trigger ID
-    if (triggerId) {
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
-    }
+    cleanupTrigger(triggerId);
     return;
   }
   
@@ -885,13 +879,7 @@ function checkOperationStatus() {
     // Check if we've been running for more than 30 minutes
     if (new Date().getTime() - startTime > 30 * 60 * 1000) {
       updateStatus(`Error: ${operationType} timed out after 30 minutes`);
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
+      cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
     }
@@ -905,159 +893,97 @@ function checkOperationStatus() {
     var result = JSON.parse(response.getContentText());
     Logger.log("Status response: " + JSON.stringify(result));
     
-    if (result.status === "completed") {
-      if (operationType === "classify" && result.result && config) {
-        try {
-          // Get the original sheet by name
-          var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-          var sheet = spreadsheet.getSheetByName(originalSheetName);
-          if (!sheet) {
-            throw new Error("Could not find original sheet: " + originalSheetName);
-          }
-          Logger.log("Retrieved original sheet: " + sheet.getName());
-          updateStatus("Processing results for sheet: " + sheet.getName());
-
-          // Get webhook results from the result field
-          var webhookResults = [];
-          if (Array.isArray(result.result)) {
-            webhookResults = result.result;
-          } else if (typeof result.result === 'object' && Array.isArray(result.result.results)) {
-            webhookResults = result.result.results;
-          }
-          
-          Logger.log("Webhook results length: " + webhookResults.length);
-          Logger.log("First webhook result: " + JSON.stringify(webhookResults[0]));
-          
-          if (webhookResults.length === 0) {
-            updateStatus("Error: No classification results found");
-            throw new Error("No classification results found in webhook response");
-          }
-          
-          // Write categories back to sheet
-          updateStatus("Writing " + webhookResults.length + " categories to sheet...");
-          var categories = webhookResults.map(r => [r.predicted_category]);
-          Logger.log("Categories to write: " + JSON.stringify(categories.slice(0, 5)));
-          
-          // Calculate the range - allow starting from row 1
-          var startRow = parseInt(config.startRow);
-          if (isNaN(startRow)) {
-            startRow = 1; // Default to 1 if parsing fails
-          }
-          
-          // Calculate end row based on number of results
-          var endRow = startRow + categories.length - 1;
-          Logger.log("Writing to rows: " + startRow + " to " + endRow);
-          
-          // Write categories
-          try {
-            var categoryRangeA1 = config.categoryCol + startRow + ":" + config.categoryCol + endRow;
-            Logger.log("Category range A1 notation: " + categoryRangeA1);
-            updateStatus("Writing categories to range: " + categoryRangeA1);
-            
-            var categoryRange = sheet.getRange(categoryRangeA1);
-            Logger.log("Got range object successfully");
-            
-            // Log the current values in the range before writing
-            var currentValues = categoryRange.getValues();
-            Logger.log("Current values in range: " + JSON.stringify(currentValues.slice(0, 5)));
-            
-            categoryRange.setValues(categories);
-            Logger.log("Categories written successfully");
-            
-            // Verify the write
-            var writtenValues = sheet.getRange(categoryRangeA1).getValues();
-            Logger.log("Verification - written values: " + JSON.stringify(writtenValues.slice(0, 5)));
-            updateStatus("Categories written successfully to column " + config.categoryCol);
-          } catch (categoryError) {
-            Logger.log("Error writing categories: " + categoryError);
-            Logger.log("Error stack: " + categoryError.stack);
-            updateStatus("Error writing categories: " + categoryError.toString());
-            throw new Error("Failed to write categories: " + categoryError.toString());
-          }
-          
-          // Write confidence scores
-          try {
-            var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
-            var confidences = webhookResults.map(r => [r.similarity_score]);
-            var confidenceRangeA1 = confidenceCol + startRow + ":" + confidenceCol + endRow;
-            Logger.log("Confidence range A1 notation: " + confidenceRangeA1);
-            updateStatus("Writing confidence scores to range: " + confidenceRangeA1);
-            
-            var confidenceRange = sheet.getRange(confidenceRangeA1);
-            Logger.log("Got confidence range object successfully");
-            
-            // Log current values in confidence range
-            var currentConfidences = confidenceRange.getValues();
-            Logger.log("Current confidence values: " + JSON.stringify(currentConfidences.slice(0, 5)));
-            
-            confidenceRange.setValues(confidences)
-              .setNumberFormat("0.00%");  // Format as percentage
-            Logger.log("Confidence scores written successfully");
-            
-            // Verify the write
-            var writtenConfidences = sheet.getRange(confidenceRangeA1).getValues();
-            Logger.log("Verification - written confidences: " + JSON.stringify(writtenConfidences.slice(0, 5)));
-            updateStatus("Confidence scores written successfully to column " + confidenceCol);
-          } catch (confidenceError) {
-            Logger.log("Error writing confidence scores: " + confidenceError);
-            Logger.log("Error stack: " + confidenceError.stack);
-            updateStatus("Error writing confidence scores: " + confidenceError.toString());
-            throw new Error("Failed to write confidence scores: " + confidenceError.toString());
-          }
-          
-          updateStatus("Classification completed successfully!");
-          
-        } catch (writeError) {
-          Logger.log("Error writing to sheet: " + writeError);
-          Logger.log("Error stack: " + writeError.stack);
-          updateStatus("Error writing results: " + writeError.toString());
-          throw writeError;
-        }
+    // Check webhook results first
+    if (result.result && result.result.results) {
+      Logger.log("Found webhook results");
+      if (operationType === "classify") {
+        handleClassificationResults(result, config, originalSheetName);
+      } else {
+        // For training, just update status and stats
+        updateStats('Last Training Time', new Date().toLocaleString());
+        updateStats('Training Sheet', originalSheetName);
+        updateStats('Model Status', 'Ready');
+        updateStatus("Training completed successfully!");
       }
-      
-      // Clean up
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
+      cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
-      
+    }
+    
+    // Check Replicate status
+    if (result.status === "completed") {
+      // Wait for webhook results
+      var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
+      updateStatus(`${operationType === "classify" ? "Classification" : "Training"} completed, processing results... (${minutesElapsed} min)`);
+      return;
     } else if (result.status === "failed") {
       updateStatus(`Error: ${operationType} failed - ` + (result.error || "Unknown error"));
-      // Clean up
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
+      cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
     }
     
     // Still processing, update status
-    updateStatus(operationType + " in progress... " + (result.message || ""));
+    var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
+    var statusMessage = `${operationType === "classify" ? "Classification" : "Training"} in progress... (${minutesElapsed} min)`;
+    
+    if (result.status) {
+      statusMessage += ` - ${result.status}`;
+    }
+    if (result.message) {
+      statusMessage += `\n${result.message}`;
+    }
+    
+    updateStatus(statusMessage);
     
   } catch (error) {
     Logger.log(`Error checking ${operationType} status: ` + error);
     Logger.log("Error details: " + error.stack);
-    // Clean up on error
-    if (triggerId) {
-      var triggers = ScriptApp.getProjectTriggers();
-      for (var i = 0; i < triggers.length; i++) {
-        if (triggers[i].getUniqueId() === triggerId) {
-          ScriptApp.deleteTrigger(triggers[i]);
-          break;
-        }
-      }
+    
+    // Only cleanup on non-temporary errors
+    if (error.toString().includes("Address unavailable") || error.toString().includes("Failed to fetch")) {
+      updateStatus(`${operationType} in progress... (temporary connection issue)`);
+      return;
     }
+    
+    cleanupTrigger(triggerId);
     userProperties.deleteAllProperties();
     updateStatus("Error: " + error.toString());
+  }
+}
+
+function handleClassificationResults(result, config, originalSheetName) {
+  try {
+    // Get the original sheet by name
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = spreadsheet.getSheetByName(originalSheetName);
+    if (!sheet) {
+      throw new Error("Could not find original sheet: " + originalSheetName);
+    }
+    
+    var webhookResults = result.result.results;
+    if (!webhookResults || webhookResults.length === 0) {
+      throw new Error("No classification results found");
+    }
+    
+    // Write categories and confidence scores
+    var startRow = parseInt(config.startRow) || 1;
+    var endRow = startRow + webhookResults.length - 1;
+    
+    // Write categories
+    var categoryRange = sheet.getRange(config.categoryCol + startRow + ":" + config.categoryCol + endRow);
+    categoryRange.setValues(webhookResults.map(r => [r.predicted_category]));
+    
+    // Write confidence scores
+    var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
+    var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
+    confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
+      .setNumberFormat("0.00%");
+    
+    updateStatus("Classification completed successfully!");
+  } catch (error) {
+    Logger.log("Error handling classification results: " + error);
+    throw error;
   }
 }
 
@@ -1076,6 +1002,9 @@ function trainModel(config) {
   var ui = SpreadsheetApp.getUi();
   
   try {
+    // Store original sheet name
+    var originalSheetName = SpreadsheetApp.getActiveSheet().getName();
+    
     // Validate config object
     if (!config) {
       throw new Error('Configuration object is missing');
@@ -1220,7 +1149,8 @@ function trainModel(config) {
         'TRIGGER_ID': trigger.getUniqueId(),
         'START_TIME': new Date().getTime().toString(),
         'TRAINING_SIZE': transactions.length.toString(),
-        'RETRY_COUNT': '0'  // Initialize retry count
+        'RETRY_COUNT': '0',  // Initialize retry count
+        'ORIGINAL_SHEET_NAME': originalSheetName  // Store original sheet name
       });
       
       ui.alert('Training has started! The sheet will update automatically when training is complete.\n\nYou can close this window.');
