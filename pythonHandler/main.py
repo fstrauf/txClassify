@@ -14,20 +14,42 @@ from googleapiclient.discovery import build
 import re
 import logging
 import gc
+import sys
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    stream=sys.stdout,  # Log to stdout for Docker/Gunicorn to capture
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Initialize Flask app
+# Initialize Flask app with logging
 app = Flask(__name__)
 CORS(app)
 
-# Initialize Supabase client
-supabase: Client = create_client(
-    os.environ.get("NEXT_PUBLIC_SUPABASE_URL"),
-    os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
-)
+# Log startup information
+logger.info("=== Main Application Starting ===")
+logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'production')}")
+
+# Initialize Supabase client with logging
+try:
+    logger.info("=== Initializing Supabase ===")
+    supabase_url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
+    supabase_key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    
+    if not all([supabase_url, supabase_key]):
+        logger.error("Missing required environment variables for Supabase")
+        raise ValueError("Missing required environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    
+    logger.info(f"Supabase URL configured: {supabase_url}")
+    logger.info(f"Supabase key length: {len(supabase_key)}")
+    
+    supabase = create_client(supabase_url, supabase_key)
+    logger.info("Supabase client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase: {str(e)}")
+    raise
 
 BACKEND_API = os.environ.get("BACKEND_API")
 
