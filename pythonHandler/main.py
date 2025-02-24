@@ -925,6 +925,12 @@ def classify_webhook():
             trained_data = fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
             logger.info(f"Retrieved {len(trained_embeddings)} trained embeddings and {len(trained_data)} training data points")
             
+            # Add debug logging to see the structure of trained_data
+            if len(trained_data) > 0:
+                logger.info(f"First training data point: {trained_data[0]}")
+                logger.info(f"Training data dtype: {trained_data.dtype}")
+                logger.info(f"Training data shape: {trained_data.shape}")
+            
             if len(trained_embeddings) == 0 or len(trained_data) == 0:
                 error_msg = "No training data found"
                 logger.error(error_msg)
@@ -951,14 +957,33 @@ def classify_webhook():
         results = []
         for i, idx in enumerate(best_matches):
             try:
-                category = str(trained_data[idx][1])  # Index 1 is the Category field
+                # Add debug logging for the first few matches
+                if i < 3:
+                    logger.info(f"Match {i}: trained_data[{idx}] = {trained_data[idx]}")
+                    
+                # Try different ways to access the category field
+                try:
+                    # First try accessing by field name
+                    category = str(trained_data[idx]['Category'])
+                except:
+                    # If that fails, try accessing by index
+                    category = str(trained_data[idx][1])
+                
                 similarity_score = float(similarities[i][idx])  # Get the similarity score
+                
+                # Log the extracted category and score
+                if i < 3:
+                    logger.info(f"Extracted category: '{category}', similarity score: {similarity_score:.2f}")
+                
                 results.append({
                     "predicted_category": category,
                     "similarity_score": similarity_score
                 })
             except Exception as e:
                 logger.error(f"Error processing prediction {i}: {str(e)}")
+                logger.error(f"trained_data type: {type(trained_data)}, shape: {trained_data.shape if hasattr(trained_data, 'shape') else 'unknown'}")
+                if i < 3 and idx < len(trained_data):
+                    logger.error(f"trained_data[{idx}] = {trained_data[idx]}")
                 results.append({
                     "predicted_category": "Unknown",
                     "similarity_score": 0.0
@@ -983,6 +1008,9 @@ def classify_webhook():
             # Write categories back to sheet starting from the specified row
             category_range = f"{sheet_name}!{category_column}{start_row}:{category_column}{start_row + len(results) - 1}"
             logger.info(f"Writing categories to range: {category_range}")
+            
+            # Log the first few categories being written
+            logger.info(f"First few categories being written: {[cat['predicted_category'] for cat in results[:3]]}")
             
             service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
