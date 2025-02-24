@@ -6,26 +6,15 @@ import Features from "@/components/Features";
 import PageHeader from "@/app/components/PageHeader";
 import Link from "next/link";
 import Head from "next/head";
-import Script from "next/script";
 
 export default function Home() {
   return (
     <div className="min-h-screen bg-background-default">
       <div className="container">
-        <Script src="https://www.googletagmanager.com/gtag/js?id=G-NB5F14FKZT" />
-        <Script id="google-analytics">
-          {`
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
- 
-          gtag('config', 'G-NB5F14FKZT');
-        `}
-        </Script>
+        <Head>
+          <link rel="canonical" href="https://www.expensesorted.com/" />
+        </Head>
       </div>
-      <Head>
-        <link rel="canonical" href="https://www.expensesorted.com/" />
-      </Head>
       
       <main className="container mx-auto px-4 py-16 max-w-7xl">
         {/* Hero Section */}
