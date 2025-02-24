@@ -995,16 +995,22 @@ def classify_webhook():
 def get_prediction_status(prediction_id):
     """Get the status of a prediction."""
     try:
-        # Get prediction from Replicate
-        prediction = replicate.predictions.get(prediction_id)
-        
-        if not prediction:
-            return jsonify({"error": "Prediction not found"}), 404
+        # First check if we have this prediction in our local dictionary
+        if prediction_id in predictions_db:
+            logger.info(f"Found prediction {prediction_id} in local predictions_db")
+            prediction_data = predictions_db[prediction_id]
+            return jsonify({
+                "status": prediction_data.get("status", "processing"),
+                "message": "Processing in progress",
+                "processed_transactions": prediction_data.get("processed_transactions", 0),
+                "total_transactions": prediction_data.get("total_transactions", 0)
+            })
             
         # Check if we have a completed webhook in Supabase
         try:
             webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
             if webhook_results.data:
+                logger.info(f"Found completed webhook results for prediction {prediction_id}")
                 return jsonify({
                     "status": "completed",
                     "result": webhook_results.data[0]
@@ -1012,27 +1018,51 @@ def get_prediction_status(prediction_id):
         except Exception as e:
             logger.warning(f"Error checking webhook results: {e}")
         
-        # Return status based on prediction state
-        status = prediction.status
-        if status == "succeeded":
+        # Try to get prediction from Replicate
+        try:
+            prediction = replicate.predictions.get(prediction_id)
+            
+            if not prediction:
+                logger.warning(f"Prediction {prediction_id} not found in Replicate")
+                return jsonify({
+                    "status": "not_found",
+                    "message": "Prediction not found in Replicate"
+                }), 404
+                
+            # Return status based on prediction state
+            status = prediction.status
+            if status == "succeeded":
+                return jsonify({
+                    "status": "completed",
+                    "message": "Processing completed successfully"
+                })
+            elif status == "failed":
+                return jsonify({
+                    "status": "failed",
+                    "error": prediction.error
+                })
+            else:
+                return jsonify({
+                    "status": status,
+                    "message": "Processing in progress"
+                })
+        except Exception as replicate_error:
+            logger.warning(f"Error fetching prediction from Replicate: {replicate_error}")
+            # Return a more graceful error that won't cause the client to keep retrying
             return jsonify({
-                "status": "completed",
-                "message": "Processing completed successfully"
-            })
-        elif status == "failed":
-            return jsonify({
-                "status": "failed",
-                "error": prediction.error
-            })
-        else:
-            return jsonify({
-                "status": status,
-                "message": "Processing in progress"
-            })
+                "status": "unknown",
+                "message": "Unable to determine prediction status",
+                "error": str(replicate_error)
+            }), 200  # Return 200 instead of 500 to prevent constant retries
             
     except Exception as e:
         logger.error(f"Error getting prediction status: {e}")
-        return jsonify({"error": str(e)}), 500
+        # Return a more graceful error that won't cause the client to keep retrying
+        return jsonify({
+            "status": "error",
+            "message": "Error checking prediction status",
+            "error": str(e)
+        }), 200  # Return 200 instead of 500 to prevent constant retries
 
 @app.route('/debug/validate-key', methods=['GET'])
 def debug_validate_key():
