@@ -18,6 +18,10 @@ import sys
 import uuid
 import time
 from typing import List
+from threading import Thread
+
+# Dictionary to store prediction data
+predictions_db = {}
 
 # Configure logging
 logging.basicConfig(
@@ -736,7 +740,7 @@ def classify_transactions():
             return jsonify({"error": "No data provided"}), 400
 
         # Validate required fields
-        required_fields = ["transactions", "userId", "spreadsheetId"]
+        required_fields = ["transactions", "spreadsheetId"]
         for field in required_fields:
             if field not in data:
                 return jsonify({"error": f"Missing required field: {field}"}), 400
