@@ -15,6 +15,9 @@ import re
 import logging
 import gc
 import sys
+import uuid
+import time
+from typing import List
 
 # Configure logging
 logging.basicConfig(
@@ -717,8 +720,9 @@ def training_webhook():
 
 @app.route("/classify", methods=["POST"])
 def classify_transactions():
-    """Classify new transactions."""
+    """Classify transactions endpoint."""
     try:
+        # Validate API key
         api_key = request.headers.get("X-API-Key")
         if not api_key:
             return jsonify({"error": "Missing API key"}), 401
@@ -726,94 +730,135 @@ def classify_transactions():
         # Validate API key and get user ID
         user_id = validate_api_key(api_key)
         
+        # Get and validate request data
         data = request.get_json()
-        
-        # Extract and validate required parameters
-        sheet_id = data.get("spreadsheetId")
-        if not sheet_id:
-            error_msg = "Missing required parameter: spreadsheetId"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
 
-        # Get sheet name from request data
-        sheet_name = data.get("sheetName")
-        if not sheet_name:
-            error_msg = "Missing required parameter: sheetName"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
+        # Validate required fields
+        required_fields = ["transactions", "userId", "spreadsheetId"]
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing required field: {field}"}), 400
 
-        # Log successful parameter validation
-        logger.info(f"Parameters validated - userId: {user_id}, spreadsheetId: {sheet_id}, sheetName: {sheet_name}")
+        # Extract data
+        transactions = data["transactions"]
+        spreadsheet_id = data["spreadsheetId"]  # Only used for tracking
+
+        if not transactions:
+            return jsonify({"error": "No transactions provided"}), 400
 
         # Verify training data exists
         try:
-            trained_data = fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
+            trained_data = fetch_embeddings("txclassify", f"{spreadsheet_id}_index.npy")
             if len(trained_data) == 0:
                 error_msg = "No training data found. Please train the model first."
-                update_sheet_log(sheet_id, "ERROR", error_msg)
                 return jsonify({"error": error_msg}), 400
         except Exception as e:
             error_msg = "No training data found. Please train the model first."
-            update_sheet_log(sheet_id, "ERROR", error_msg)
             return jsonify({"error": error_msg}), 400
 
-        # Get sheet configuration
-        sheet_range = f"{sheet_name}!A:Z"
+        # Start classification process
+        prediction_id = str(uuid.uuid4())
         
-        # Fetch transaction data
-        status_msg = "Fetching transactions"
-        update_process_status(status_msg, "classify", user_id)
-        update_sheet_log(sheet_id, "INFO", status_msg)
-        sheet_data = get_spreadsheet_data(sheet_id, sheet_range)
-        
-        if not sheet_data:
-            error_msg = "No transactions found to classify"
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
-        
-        # Get column configuration from request
-        column_config = data.get("columnOrderCategorisation", {})
-        description_column = column_config.get("descriptionColumn", "C")
-        
-        # Convert column letter to index (0-based)
-        description_index = ord(description_column.upper()) - ord('A')
-        
-        # Process data without assuming headers
-        descriptions = []
-        for row in sheet_data:
-            if len(row) > description_index:
-                description = row[description_index]
-                if description and str(description).strip():
-                    descriptions.append({"description": str(description).strip()})
-        
-        if not descriptions:
-            error_msg = "No valid descriptions found in the specified column"
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
+        # Store prediction metadata
+        predictions_db[prediction_id] = {
+            "status": "processing",
+            "user_id": user_id,
+            "spreadsheet_id": spreadsheet_id,  # Only used for tracking
+            "total_transactions": len(transactions),
+            "processed_transactions": 0
+        }
 
-        # Create DataFrame with descriptions
-        df = pd.DataFrame(descriptions)
-        
-        # Run prediction
-        status_msg = f"Getting embeddings for {len(df)} transactions"
-        update_process_status(status_msg, "classify", user_id)
-        update_sheet_log(sheet_id, "INFO", status_msg)
-        prediction = run_prediction("classify", sheet_id, user_id, df["description"].tolist(), sheet_name=sheet_name, category_column=column_config.get("categoryColumn"))
-        
-        update_sheet_log(sheet_id, "INFO", "Classification started", f"Prediction ID: {prediction.id}")
+        # Start classification in background
+        Thread(
+            target=process_classification,
+            args=(prediction_id, transactions, user_id)
+        ).start()
+
         return jsonify({
             "status": "processing",
-            "prediction_id": prediction.id
+            "prediction_id": prediction_id
         })
 
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error in classify_transactions: {error_msg}")
-        if user_id:
-            update_process_status(f"Error: {error_msg}", "classify", user_id)
-        if sheet_id:
-            update_sheet_log(sheet_id, "ERROR", f"Classification failed: {error_msg}")
-        return jsonify({"error": error_msg}), 500
+        logger.error(f"Error in classify_transactions: {e}")
+        return jsonify({"error": str(e)}), 500
+
+def process_classification(prediction_id: str, transactions: List[dict], user_id: str):
+    """Process classification in background."""
+    try:
+        predictions_db[prediction_id]["status"] = "classifying"
+        
+        # Get trained embeddings and categories
+        spreadsheet_id = predictions_db[prediction_id]["spreadsheet_id"]
+        trained_embeddings = fetch_embeddings("txclassify", f"{spreadsheet_id}.npy")
+        trained_data = fetch_embeddings("txclassify", f"{spreadsheet_id}_index.npy")
+        
+        if len(trained_embeddings) == 0 or len(trained_data) == 0:
+            predictions_db[prediction_id]["status"] = "failed"
+            predictions_db[prediction_id]["error"] = "No training data found"
+            return
+
+        # Clean and prepare descriptions
+        descriptions = [clean_text(t["description"]) for t in transactions if t.get("description")]
+        
+        # Get embeddings for new descriptions
+        model = replicate.models.get("replicate/all-mpnet-base-v2")
+        version = model.versions.get("b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305")
+        
+        # Get embeddings for new descriptions
+        prediction = replicate.predictions.create(
+            version=version,
+            input={"text_batch": json.dumps(descriptions)}
+        )
+        
+        # Wait for embeddings
+        while prediction.status != "succeeded":
+            if prediction.status == "failed":
+                predictions_db[prediction_id]["status"] = "failed"
+                predictions_db[prediction_id]["error"] = prediction.error
+                return
+            time.sleep(1)
+            prediction.reload()
+        
+        # Process embeddings
+        new_embeddings = np.array([item["embedding"] for item in prediction.output], dtype=np.float32)
+        
+        # Calculate similarities
+        similarities = cosine_similarity(new_embeddings, trained_embeddings)
+        best_matches = similarities.argmax(axis=1)
+        
+        # Get predicted categories and confidence scores
+        results = []
+        for i, idx in enumerate(best_matches):
+            try:
+                category = str(trained_data[idx][1])  # Index 1 is the Category field
+                similarity_score = float(similarities[i][idx])  # Get the similarity score
+                results.append({
+                    "description": descriptions[i],
+                    "predicted_category": category,
+                    "similarity_score": similarity_score
+                })
+            except Exception as e:
+                logger.error(f"Error processing prediction {i}: {str(e)}")
+                results.append({
+                    "description": descriptions[i],
+                    "predicted_category": "Unknown",
+                    "similarity_score": 0.0
+                })
+            
+            # Update progress
+            predictions_db[prediction_id]["processed_transactions"] = i + 1
+
+        # Store results
+        predictions_db[prediction_id]["status"] = "completed"
+        predictions_db[prediction_id]["results"] = results
+
+    except Exception as e:
+        logger.error(f"Error in process_classification: {e}")
+        predictions_db[prediction_id]["status"] = "failed"
+        predictions_db[prediction_id]["error"] = str(e)
 
 @app.route("/classify/webhook", methods=["POST"])
 def classify_webhook():

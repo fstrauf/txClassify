@@ -168,19 +168,24 @@ function showClassifyDialog() {
 function showTrainingDialog() {
   // Get current sheet to determine default columns
   var sheet = SpreadsheetApp.getActiveSheet();
-  var headers = sheet.getRange("A1:Z1").getValues()[0];
+  var lastColumn = sheet.getLastColumn();
+  var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
   
   // Find default column indices
   var narrativeColDefault = columnToLetter(headers.indexOf("Narrative") + 1);
   var categoryColDefault = columnToLetter(headers.indexOf("Category") + 1);
   
-  // Create column options
-  var columnOptions = headers.map((header, index) => {
-    if (header) {
-      return `<option value="${columnToLetter(index + 1)}"${columnToLetter(index + 1) === narrativeColDefault ? ' selected' : ''}>${columnToLetter(index + 1)} (${header})</option>`;
-    }
-    return '';
-  }).filter(Boolean).join('\n');
+  // Create column options - always include all columns up to last used column
+  var columnOptions = [];
+  for (var i = 0; i < lastColumn; i++) {
+    var letter = columnToLetter(i + 1);
+    var header = headers[i] || ''; // Use empty string if header is null/undefined
+    columnOptions.push(
+      `<option value="${letter}"${letter === narrativeColDefault ? ' selected' : ''}>` +
+      `${letter}${header ? ' (' + header + ')' : ''}</option>`
+    );
+  }
+  var columnOptionsStr = columnOptions.join('\n');
 
   var html = HtmlService.createHtmlOutput(`
     <style>
@@ -227,19 +232,14 @@ function showTrainingDialog() {
     <div class="form-group">
       <label>Description Column:</label>
       <select id="narrativeCol">
-        ${columnOptions}
+        ${columnOptionsStr}
       </select>
       <div class="help-text">Select the column containing transaction descriptions</div>
     </div>
     <div class="form-group">
       <label>Category Column:</label>
       <select id="categoryCol">
-        ${headers.map((header, index) => {
-          if (header) {
-            return `<option value="${columnToLetter(index + 1)}"${columnToLetter(index + 1) === categoryColDefault ? ' selected' : ''}>${columnToLetter(index + 1)} (${header})</option>`;
-          }
-          return '';
-        }).filter(Boolean).join('\n')}
+        ${columnOptionsStr}
       </select>
       <div class="help-text">Select the column containing categories for training</div>
     </div>
@@ -315,38 +315,92 @@ function setupApiKey() {
   var ui = SpreadsheetApp.getUi();
   var properties = PropertiesService.getScriptProperties();
   
-  // Show instructions first
-  var instructions = ui.alert(
-    'API Key Setup',
-    '1. Go to expensesorted.com and sign up for an account\n' +
-    '2. After signing up, go to your account settings to get your API key\n' +
-    '3. Copy the API key and paste it in the next dialog\n\n' +
-    'Do you want to continue?',
-    ui.ButtonSet.OK_CANCEL
-  );
+  var html = HtmlService.createHtmlOutput(`
+    <style>
+      body { font-family: Arial, sans-serif; padding: 20px; }
+      .form-group { margin-bottom: 15px; }
+      label { display: block; margin-bottom: 5px; }
+      input { width: 100%; padding: 5px; margin-bottom: 10px; }
+      button { 
+        padding: 8px 15px; 
+        background: #4285f4; 
+        color: white; 
+        border: none; 
+        border-radius: 3px; 
+        cursor: pointer;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+      .instructions {
+        background: #f5f5f5;
+        padding: 15px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+      }
+      .instructions ol {
+        margin: 10px 0;
+        padding-left: 20px;
+      }
+      .error { 
+        color: red; 
+        margin-top: 10px; 
+        display: none; 
+      }
+    </style>
+    <div class="instructions">
+      <strong>How to get your API Key:</strong>
+      <ol>
+        <li>Go to expensesorted.com and sign up for an account</li>
+        <li>After signing up, go to your account settings</li>
+        <li>Find and copy your API key</li>
+      </ol>
+    </div>
+    <div class="form-group">
+      <label>API Key:</label>
+      <input type="text" id="apiKey" placeholder="Enter your API key">
+      <div id="error" class="error"></div>
+    </div>
+    <button onclick="submitApiKey()">Save API Key</button>
+    <script>
+      function submitApiKey() {
+        var apiKey = document.getElementById('apiKey').value.trim();
+        var errorDiv = document.getElementById('error');
+        
+        if (!apiKey) {
+          errorDiv.textContent = 'API key is required';
+          errorDiv.style.display = 'block';
+          return;
+        }
+        
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(error) {
+            errorDiv.textContent = error.message || 'An error occurred';
+            errorDiv.style.display = 'block';
+          })
+          .saveApiKey(apiKey);
+      }
+    </script>
+  `)
+    .setWidth(400)
+    .setHeight(350);
   
-  if (instructions.getSelectedButton() !== ui.Button.OK) return;
-  
-  // Get API key
-  var apiKey = ui.prompt(
-    'Enter API Key',
-    'Please enter your API key from expensesorted.com:',
-    ui.ButtonSet.OK_CANCEL
-  );
-  
-  if (apiKey.getSelectedButton() !== ui.Button.OK) return;
-  
-  // Validate API key is provided
-  var key = apiKey.getResponseText().trim();
-  if (!key) {
-    ui.alert('Error', 'API key is required. Please get your API key from expensesorted.com', ui.ButtonSet.OK);
-    return;
+  SpreadsheetApp.getUi().showModalDialog(html, 'Setup API Key');
+}
+
+// Helper function to save the API key
+function saveApiKey(apiKey) {
+  if (!apiKey) {
+    throw new Error('API key is required');
   }
   
-  // Store the API key
-  properties.setProperty('API_KEY', key);
-  
-  ui.alert('Setup completed successfully!');
+  var properties = PropertiesService.getScriptProperties();
+  properties.setProperty('API_KEY', apiKey.trim());
+  updateStatus("API key configured successfully!");
 }
 
 // Helper function to get stored properties
@@ -739,26 +793,22 @@ function categoriseTransactions(config) {
     updateStatus("Starting categorisation...");
     var serviceConfig = getServiceConfig();
     
-    // Log service configuration
-    Logger.log("Service configuration:");
-    Logger.log("- URL: " + serviceConfig.serviceUrl);
-    Logger.log("- API Key: " + serviceConfig.apiKey);
-    
     // Store the original sheet name
     var originalSheetName = sheet.getName();
+    var spreadsheetId = sheet.getParent().getId();
     Logger.log("Original sheet name: " + originalSheetName);
     
     // Get all descriptions from the specified column
     var lastRow = sheet.getLastRow();
-    var descriptionRange = sheet.getRange(config.descriptionCol + config.startRow + ":" + config.descriptionCol + lastRow);
+    var startRow = parseInt(config.startRow);
+    var descriptionRange = sheet.getRange(config.descriptionCol + startRow + ":" + config.descriptionCol + lastRow);
     var descriptions = descriptionRange.getValues();
     
-    // Filter out empty descriptions
+    // Filter out empty descriptions and prepare transactions array
     var transactions = descriptions
       .filter(row => row[0] && row[0].toString().trim() !== '')
       .map(row => ({
-        Narrative: row[0],
-        description: row[0]  // Add description field as it's expected by the backend
+        description: row[0]  // Only send the description field
       }));
     
     if (transactions.length === 0) {
@@ -770,7 +820,7 @@ function categoriseTransactions(config) {
     Logger.log("Found " + transactions.length + " transactions to categorise");
     updateStatus("Processing " + transactions.length + " transactions...");
     
-    // Call categorisation service
+    // Call categorisation service with minimal data
     var options = {
       method: 'post',
       contentType: 'application/json',
@@ -779,20 +829,13 @@ function categoriseTransactions(config) {
       },
       payload: JSON.stringify({ 
         transactions: transactions,
-        spreadsheetId: sheet.getParent().getId(),
-        sheetName: originalSheetName,
-        columnOrderCategorisation: {
-          descriptionColumn: config.descriptionCol,
-          categoryColumn: config.categoryCol
-        },
-        categorisationRange: "A:Z",
-        categorisationTab: originalSheetName,
-        startRow: config.startRow
+        userId: serviceConfig.userId,
+        spreadsheetId: spreadsheetId  // Only needed for tracking
       }),
       muteHttpExceptions: true
     };
     
-    Logger.log("Making categorisation request with API key: " + serviceConfig.apiKey);
+    Logger.log("Making categorisation request");
     var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/classify', options);
     var result = JSON.parse(response.getContentText());
     
@@ -822,7 +865,9 @@ function categoriseTransactions(config) {
         'CONFIG': JSON.stringify({
           categoryCol: config.categoryCol,
           startRow: config.startRow,
-          descriptionCol: config.descriptionCol
+          descriptionCol: config.descriptionCol,
+          transactionCount: transactions.length,
+          spreadsheetId: spreadsheetId  // Only needed for tracking
         })
       };
       
@@ -839,10 +884,6 @@ function categoriseTransactions(config) {
       Logger.log("Created trigger with ID: " + triggerId);
       userProperties.setProperty('TRIGGER_ID', triggerId);
       
-      // Verify properties were stored
-      var storedProps = userProperties.getProperties();
-      Logger.log("Stored properties: " + JSON.stringify(storedProps));
-      
       ui.alert('Categorisation has started! The sheet will update automatically when complete.\n\nYou can close this window.');
       return;
     }
@@ -853,6 +894,7 @@ function categoriseTransactions(config) {
   }
 }
 
+// Update the status check function to remove OAuth token
 function checkOperationStatus() {
   var userProperties = PropertiesService.getUserProperties();
   var predictionId = userProperties.getProperty('PREDICTION_ID');
@@ -910,7 +952,7 @@ function checkOperationStatus() {
       return;
     }
     
-    // Check Replicate status
+    // Check status
     if (result.status === "completed") {
       // Wait for webhook results
       var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
@@ -967,18 +1009,20 @@ function handleClassificationResults(result, config, originalSheetName) {
     }
     
     // Write categories and confidence scores
-    var startRow = parseInt(config.startRow) || 1;
+    var startRow = parseInt(config.startRow);
     var endRow = startRow + webhookResults.length - 1;
     
     // Write categories
     var categoryRange = sheet.getRange(config.categoryCol + startRow + ":" + config.categoryCol + endRow);
     categoryRange.setValues(webhookResults.map(r => [r.predicted_category]));
     
-    // Write confidence scores
-    var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
-    var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
-    confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
-      .setNumberFormat("0.00%");
+    // Write confidence scores if they exist
+    if (webhookResults[0].hasOwnProperty('similarity_score')) {
+      var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
+      var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
+      confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
+        .setNumberFormat("0.00%");
+    }
     
     updateStatus("Categorisation completed successfully!");
   } catch (error) {
