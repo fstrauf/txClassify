@@ -68,9 +68,28 @@ export default function PivacyPolicy() {
               our control. We are not responsible for the privacy practices or
               content of those websites.
             </p>
-            <h2 className="mb-4 text-xl font-bold">
-              Changes to Our Privacy Policy
-            </h2>
+            <h2 className="mb-4 text-xl font-bold">Google User Data Retention and Deletion</h2>
+            <p className="mb-4">
+              When you use our service with your Google account, we handle your data with utmost care and transparency:
+            </p>
+            <ul className="mb-4 ml-6 list-disc">
+              <li>
+                We only store the minimum necessary Google user data required to provide our services
+              </li>
+              <li>
+                Your Google user data is retained only for as long as necessary to provide our services or until you request deletion
+              </li>
+              <li>
+                You can request deletion of your Google user data at any time by contacting us at <a href='mailto:f.strauf@gmail.com'>f.strauf@gmail.com</a>
+              </li>
+              <li>
+                Upon receiving a deletion request, we will remove all your Google user data from our systems within 30 days
+              </li>
+              <li>
+                If you revoke our application's access through your Google Account settings, we will automatically delete all associated Google user data within 30 days
+              </li>
+            </ul>
+            <h2 className="mb-4 text-xl font-bold">Changes to Our Privacy Policy</h2>
             <p className="mb-4">
               We may update this Privacy Policy from time to time. We will
               notify you of any changes by posting the new Privacy Policy on
