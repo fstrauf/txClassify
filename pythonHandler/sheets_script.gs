@@ -903,6 +903,7 @@ function checkOperationStatus() {
   var startTime = parseInt(userProperties.getProperty('START_TIME'));
   var originalSheetName = userProperties.getProperty('ORIGINAL_SHEET_NAME');
   var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
+  var retryCount = parseInt(userProperties.getProperty('RETRY_COUNT') || '0');
   
   Logger.log("Starting checkOperationStatus");
   Logger.log("PredictionId: " + predictionId);
@@ -910,6 +911,7 @@ function checkOperationStatus() {
   Logger.log("OperationType: " + operationType);
   Logger.log("Original Sheet Name: " + originalSheetName);
   Logger.log("Config: " + JSON.stringify(config));
+  Logger.log("Retry Count: " + retryCount);
   
   if (!predictionId || !triggerId) {
     Logger.log("Missing predictionId or triggerId - cleaning up");
@@ -932,8 +934,31 @@ function checkOperationStatus() {
       muteHttpExceptions: true
     });
     
+    // Check HTTP response code
+    var responseCode = response.getResponseCode();
+    if (responseCode !== 200) {
+      retryCount++;
+      userProperties.setProperty('RETRY_COUNT', retryCount.toString());
+      
+      if (retryCount >= 5) {
+        updateStatus(`Error: ${operationType} failed after multiple retries`);
+        cleanupTrigger(triggerId);
+        userProperties.deleteAllProperties();
+        return;
+      }
+      
+      var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
+      updateStatus(`${operationType} in progress... (${minutesElapsed} min) - Temporary connection issue (retry ${retryCount}/5)`);
+      return;
+    }
+    
     var result = JSON.parse(response.getContentText());
     Logger.log("Status response: " + JSON.stringify(result));
+    
+    // Reset retry count on successful response
+    if (retryCount > 0) {
+      userProperties.setProperty('RETRY_COUNT', '0');
+    }
     
     // Check webhook results first
     if (result.result && result.result.results) {
@@ -952,7 +977,7 @@ function checkOperationStatus() {
       return;
     }
     
-    // Check status
+    // Handle different status types
     if (result.status === "completed") {
       // Wait for webhook results
       var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
@@ -962,6 +987,22 @@ function checkOperationStatus() {
       updateStatus(`Error: ${operationType} failed - ` + (result.error || "Unknown error"));
       cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
+      return;
+    } else if (result.status === "not_found" || result.status === "unknown" || result.status === "error") {
+      // Handle error statuses that indicate we should stop checking
+      retryCount++;
+      userProperties.setProperty('RETRY_COUNT', retryCount.toString());
+      
+      if (retryCount >= 3) {
+        updateStatus(`Error: ${operationType} failed - ${result.message || result.error || "Unknown error"}`);
+        cleanupTrigger(triggerId);
+        userProperties.deleteAllProperties();
+        return;
+      }
+      
+      // Continue for a few retries in case it's a temporary issue
+      var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
+      updateStatus(`${operationType} in progress... (${minutesElapsed} min) - Waiting for status (retry ${retryCount}/3)`);
       return;
     }
     
@@ -976,6 +1017,11 @@ function checkOperationStatus() {
       statusMessage += `\n${result.message}`;
     }
     
+    // Add progress information if available
+    if (result.processed_transactions && result.total_transactions) {
+      statusMessage += ` (${result.processed_transactions}/${result.total_transactions})`;
+    }
+    
     updateStatus(statusMessage);
     
   } catch (error) {
@@ -984,7 +1030,8 @@ function checkOperationStatus() {
     
     // Only cleanup on non-temporary errors
     if (error.toString().includes("Address unavailable") || error.toString().includes("Failed to fetch")) {
-      updateStatus(`${operationType} in progress... (temporary connection issue)`);
+      var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
+      updateStatus(`${operationType} in progress... (${minutesElapsed} min) - temporary connection issue`);
       return;
     }
     
