@@ -19,9 +19,14 @@ import uuid
 import time
 from typing import List
 from threading import Thread
+from functools import lru_cache
+from datetime import datetime, timedelta
 
 # Dictionary to store prediction data
 predictions_db = {}
+
+# Cache for Replicate API responses
+replicate_cache = {}
 
 # Configure logging
 logging.basicConfig(
@@ -747,7 +752,8 @@ def classify_transactions():
 
         # Extract data
         transactions = data["transactions"]
-        spreadsheet_id = data["spreadsheetId"]  # Only used for tracking
+        spreadsheet_id = data["spreadsheetId"]
+        sheet_name = data.get("sheetName", "new_transactions")  # Default to "new_transactions" if not provided
 
         if not transactions:
             return jsonify({"error": "No transactions provided"}), 400
@@ -769,7 +775,8 @@ def classify_transactions():
         predictions_db[prediction_id] = {
             "status": "processing",
             "user_id": user_id,
-            "spreadsheet_id": spreadsheet_id,  # Only used for tracking
+            "spreadsheet_id": spreadsheet_id,
+            "sheet_name": sheet_name,  # Store sheet name
             "total_transactions": len(transactions),
             "processed_transactions": 0
         }
@@ -796,6 +803,8 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         
         # Get trained embeddings and categories
         spreadsheet_id = predictions_db[prediction_id]["spreadsheet_id"]
+        sheet_name = predictions_db[prediction_id].get("sheet_name", "new_transactions")
+        
         trained_embeddings = fetch_embeddings("txclassify", f"{spreadsheet_id}.npy")
         trained_data = fetch_embeddings("txclassify", f"{spreadsheet_id}_index.npy")
         
@@ -811,53 +820,65 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         model = replicate.models.get("replicate/all-mpnet-base-v2")
         version = model.versions.get("b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305")
         
-        # Get embeddings for new descriptions
+        # Create webhook URL with all necessary parameters
+        webhook_params = [
+            f"spreadsheetId={spreadsheet_id}",
+            f"userId={user_id}",
+            f"sheetName={sheet_name}",
+            f"prediction_id={prediction_id}"
+        ]
+        
+        # Add start row parameter if available
+        start_row = predictions_db[prediction_id].get("start_row", "1")
+        webhook_params.append(f"startRow={start_row}")
+        
+        webhook = f"{BACKEND_API}/classify/webhook?{'&'.join(webhook_params)}"
+        logger.info(f"Setting up webhook URL: {webhook}")
+        
+        # Get embeddings for new descriptions with webhook
         prediction = replicate.predictions.create(
             version=version,
-            input={"text_batch": json.dumps(descriptions)}
+            input={"text_batch": json.dumps(descriptions)},
+            webhook=webhook,
+            webhook_events_filter=["completed"]
         )
         
-        # Wait for embeddings
-        while prediction.status != "succeeded":
+        # Store prediction ID for reference
+        predictions_db[prediction_id]["replicate_prediction_id"] = prediction.id
+        
+        # Wait for embeddings with exponential backoff
+        attempt = 0
+        max_attempts = 60  # Maximum number of attempts (10 minutes with exponential backoff)
+        base_delay = 5  # Start with 5 seconds delay
+        
+        while prediction.status != "succeeded" and attempt < max_attempts:
             if prediction.status == "failed":
                 predictions_db[prediction_id]["status"] = "failed"
                 predictions_db[prediction_id]["error"] = prediction.error
                 return
-            time.sleep(1)
-            prediction.reload()
-        
-        # Process embeddings
-        new_embeddings = np.array([item["embedding"] for item in prediction.output], dtype=np.float32)
-        
-        # Calculate similarities
-        similarities = cosine_similarity(new_embeddings, trained_embeddings)
-        best_matches = similarities.argmax(axis=1)
-        
-        # Get predicted categories and confidence scores
-        results = []
-        for i, idx in enumerate(best_matches):
-            try:
-                category = str(trained_data[idx][1])  # Index 1 is the Category field
-                similarity_score = float(similarities[i][idx])  # Get the similarity score
-                results.append({
-                    "description": descriptions[i],
-                    "predicted_category": category,
-                    "similarity_score": similarity_score
-                })
-            except Exception as e:
-                logger.error(f"Error processing prediction {i}: {str(e)}")
-                results.append({
-                    "description": descriptions[i],
-                    "predicted_category": "Unknown",
-                    "similarity_score": 0.0
-                })
+                
+            # Calculate delay with exponential backoff (capped at 60 seconds)
+            delay = min(base_delay * (2 ** attempt), 60)
+            logger.info(f"Waiting {delay} seconds before checking prediction status again (attempt {attempt+1}/{max_attempts})")
+            time.sleep(delay)
             
-            # Update progress
-            predictions_db[prediction_id]["processed_transactions"] = i + 1
-
-        # Store results
-        predictions_db[prediction_id]["status"] = "completed"
-        predictions_db[prediction_id]["results"] = results
+            # Reload prediction status
+            prediction.reload()
+            attempt += 1
+            
+            # Update progress information
+            predictions_db[prediction_id]["status_message"] = f"Waiting for embeddings (attempt {attempt}/{max_attempts})"
+        
+        if attempt >= max_attempts:
+            predictions_db[prediction_id]["status"] = "failed"
+            predictions_db[prediction_id]["error"] = "Timed out waiting for embeddings"
+            return
+        
+        # If we're using webhooks, we don't need to process the results here
+        # The webhook will handle it
+        predictions_db[prediction_id]["status"] = "waiting_for_webhook"
+        predictions_db[prediction_id]["status_message"] = "Embeddings completed, waiting for webhook processing"
+        logger.info(f"Embeddings completed for prediction {prediction_id}, waiting for webhook to process results")
 
     except Exception as e:
         logger.error(f"Error in process_classification: {e}")
@@ -873,11 +894,20 @@ def classify_webhook():
         user_id = request.args.get("userId")
         sheet_name = request.args.get("sheetName")
         
-        if not all([data, sheet_id, user_id, sheet_name]):
-            error_msg = "Missing required parameters"
+        # Log all parameters for debugging
+        logger.info(f"Webhook parameters: sheet_id={sheet_id}, user_id={user_id}, sheet_name={sheet_name}")
+        
+        if not all([data, sheet_id, user_id]):
+            error_msg = "Missing required parameters: data, spreadsheetId, or userId"
+            logger.error(error_msg)
             if sheet_id:
                 update_sheet_log(sheet_id, "ERROR", error_msg)
             return jsonify({"error": error_msg}), 400
+            
+        # Default sheet_name to "new_transactions" if not provided
+        if not sheet_name:
+            logger.warning("sheet_name not provided in webhook, defaulting to 'new_transactions'")
+            sheet_name = "new_transactions"
 
         # Get new embeddings
         try:
@@ -937,7 +967,7 @@ def classify_webhook():
         logger.info(f"Generated {len(results)} predictions")
         
         # Update sheet with predictions
-        status_msg = f"Writing {len(results)} predictions to sheet"
+        status_msg = f"Writing {len(results)} predictions to sheet '{sheet_name}'"
         update_sheet_log(sheet_id, "INFO", status_msg)
         
         try:
@@ -948,10 +978,11 @@ def classify_webhook():
             
             # Get column configuration from request args
             category_column = request.args.get("categoryColumn", "E")
+            start_row = int(request.args.get("startRow", "1"))  # Default to row 1 if not specified
             
-            # Write categories back to sheet starting from row 1
-            category_range = f"{sheet_name}!{category_column}1:{category_column}{len(results)}"
-            logger.info(f"Writing to range: {category_range}")
+            # Write categories back to sheet starting from the specified row
+            category_range = f"{sheet_name}!{category_column}{start_row}:{category_column}{start_row + len(results) - 1}"
+            logger.info(f"Writing categories to range: {category_range}")
             
             service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
@@ -962,7 +993,8 @@ def classify_webhook():
             
             # Write confidence scores in the next column
             confidence_column = chr(ord(category_column) + 1)
-            confidence_range = f"{sheet_name}!{confidence_column}1:{confidence_column}{len(results)}"
+            confidence_range = f"{sheet_name}!{confidence_column}{start_row}:{confidence_column}{start_row + len(results) - 1}"
+            logger.info(f"Writing confidence scores to range: {confidence_range}")
             
             service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
@@ -970,6 +1002,21 @@ def classify_webhook():
                 valueInputOption="USER_ENTERED",
                 body={"values": [[f"{cat['similarity_score']:.2%}"] for cat in results]}
             ).execute()
+            
+            # Store webhook result with minimal data
+            try:
+                result = {
+                    "prediction_id": request.args.get("prediction_id", "unknown"),
+                    "results": {
+                        "user_id": user_id,
+                        "status": "success",
+                        "count": len(results)
+                    }
+                }
+                supabase.table("webhook_results").insert(result).execute()
+                logger.info(f"Stored webhook result for sheet_id: {sheet_id}")
+            except Exception as e:
+                logger.warning(f"Error storing webhook result: {e}")
             
             status_msg = "Classification completed successfully"
             update_process_status("completed", "classify", user_id)
@@ -1001,7 +1048,7 @@ def get_prediction_status(prediction_id):
             prediction_data = predictions_db[prediction_id]
             return jsonify({
                 "status": prediction_data.get("status", "processing"),
-                "message": "Processing in progress",
+                "message": prediction_data.get("status_message", "Processing in progress"),
                 "processed_transactions": prediction_data.get("processed_transactions", 0),
                 "total_transactions": prediction_data.get("total_transactions", 0)
             })
@@ -1018,42 +1065,76 @@ def get_prediction_status(prediction_id):
         except Exception as e:
             logger.warning(f"Error checking webhook results: {e}")
         
+        # Check if we have a cached response that's less than 1 minute old
+        current_time = datetime.now()
+        if prediction_id in replicate_cache:
+            cache_entry = replicate_cache[prediction_id]
+            cache_age = current_time - cache_entry["timestamp"]
+            
+            # Use cached response if it's less than 1 minute old
+            if cache_age < timedelta(minutes=1):
+                logger.info(f"Using cached response for prediction {prediction_id} (age: {cache_age.total_seconds():.1f}s)")
+                return jsonify(cache_entry["response"])
+        
         # Try to get prediction from Replicate
         try:
             prediction = replicate.predictions.get(prediction_id)
             
             if not prediction:
                 logger.warning(f"Prediction {prediction_id} not found in Replicate")
-                return jsonify({
+                response_data = {
                     "status": "not_found",
                     "message": "Prediction not found in Replicate"
-                }), 404
+                }
+                # Cache the response
+                replicate_cache[prediction_id] = {
+                    "timestamp": current_time,
+                    "response": response_data
+                }
+                return jsonify(response_data), 404
                 
             # Return status based on prediction state
             status = prediction.status
             if status == "succeeded":
-                return jsonify({
+                response_data = {
                     "status": "completed",
                     "message": "Processing completed successfully"
-                })
+                }
             elif status == "failed":
-                return jsonify({
+                response_data = {
                     "status": "failed",
                     "error": prediction.error
-                })
+                }
             else:
-                return jsonify({
+                response_data = {
                     "status": status,
                     "message": "Processing in progress"
-                })
+                }
+                
+            # Cache the response
+            replicate_cache[prediction_id] = {
+                "timestamp": current_time,
+                "response": response_data
+            }
+            
+            return jsonify(response_data)
+            
         except Exception as replicate_error:
             logger.warning(f"Error fetching prediction from Replicate: {replicate_error}")
             # Return a more graceful error that won't cause the client to keep retrying
-            return jsonify({
+            response_data = {
                 "status": "unknown",
                 "message": "Unable to determine prediction status",
                 "error": str(replicate_error)
-            }), 200  # Return 200 instead of 500 to prevent constant retries
+            }
+            
+            # Cache the error response
+            replicate_cache[prediction_id] = {
+                "timestamp": current_time,
+                "response": response_data
+            }
+            
+            return jsonify(response_data), 200  # Return 200 instead of 500 to prevent constant retries
             
     except Exception as e:
         logger.error(f"Error getting prediction status: {e}")
