@@ -726,6 +726,8 @@ def classify_transactions():
         transactions = data["transactions"]
         spreadsheet_id = data["spreadsheetId"]
         sheet_name = data.get("sheetName", "new_transactions")  # Default to "new_transactions" if not provided
+        category_column = data.get("categoryColumn", "E")  # Default to column E if not provided
+        start_row = data.get("startRow", "1")  # Default to row 1 if not provided
 
         if not transactions:
             return jsonify({"error": "No transactions provided"}), 400
@@ -769,6 +771,8 @@ def classify_transactions():
             "user_id": user_id,
             "spreadsheet_id": spreadsheet_id,
             "sheet_name": sheet_name,  # Store sheet name
+            "category_column": category_column,  # Store category column
+            "start_row": start_row,  # Store start row
             "total_transactions": len(transactions),
             "processed_transactions": 0
         }
@@ -823,6 +827,10 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         # Add start row parameter if available
         start_row = predictions_db[prediction_id].get("start_row", "1")
         webhook_params.append(f"startRow={start_row}")
+        
+        # Add category column parameter if available
+        category_column = predictions_db[prediction_id].get("category_column", "E")
+        webhook_params.append(f"categoryColumn={category_column}")
         
         webhook = f"{BACKEND_API}/classify/webhook?{'&'.join(webhook_params)}"
         logger.info(f"Setting up webhook URL: {webhook}")
@@ -1004,14 +1012,11 @@ def classify_webhook():
             start_row = int(request.args.get("startRow", "1"))  # Default to row 1 if not specified
             
             # Store webhook result with results data
-            result = {
-                "prediction_id": request.args.get("prediction_id", "unknown"),
-                "results": results
-            }
+            prediction_id = request.args.get("prediction_id", "unknown")
             
             try:
                 supabase.table("webhook_results").insert({
-                    "prediction_id": request.args.get("prediction_id", "unknown"),
+                    "prediction_id": prediction_id,
                     "results": {
                         "user_id": user_id,
                         "status": "success",
@@ -1034,7 +1039,8 @@ def classify_webhook():
                 "config": {
                     "categoryColumn": category_column,
                     "startRow": start_row,
-                    "sheetName": sheet_name
+                    "sheetName": sheet_name,
+                    "spreadsheetId": sheet_id
                 }
             })
             
