@@ -951,7 +951,119 @@ function categoriseTransactions(config) {
   }
 }
 
-// Update the status check function to remove OAuth token
+// Helper function to write classification results to a sheet
+function writeResultsToSheet(result, config, sheet) {
+  try {
+    Logger.log("Writing results to sheet with config: " + JSON.stringify(config));
+    
+    // Check if we have results directly in the response
+    if (result.results && Array.isArray(result.results)) {
+      Logger.log("Found results directly in response");
+      var webhookResults = result.results;
+      var categoryCol = result.config ? result.config.categoryColumn : config.categoryCol;
+      var startRow = result.config ? parseInt(result.config.startRow) : parseInt(config.startRow);
+      
+      // Write categories and confidence scores
+      var endRow = startRow + webhookResults.length - 1;
+      
+      Logger.log("Writing " + webhookResults.length + " results to sheet");
+      Logger.log("Start row: " + startRow + ", End row: " + endRow);
+      
+      // Write categories
+      var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
+      categoryRange.setValues(webhookResults.map(r => [r.predicted_category]));
+      
+      // Write confidence scores if they exist
+      if (webhookResults[0].hasOwnProperty('similarity_score')) {
+        var confidenceCol = String.fromCharCode(categoryCol.charCodeAt(0) + 1);
+        var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
+        confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
+          .setNumberFormat("0.00%");
+      }
+      
+      updateStatus("Categorisation completed successfully!");
+      return true;
+    }
+    
+    // Check if we have results in the result.result.results.data format
+    if (result.result && result.result.results && result.result.results.data && Array.isArray(result.result.results.data)) {
+      Logger.log("Found results in result.result.results.data format");
+      var webhookResults = result.result.results.data;
+      var startRow = parseInt(config.startRow);
+      var endRow = startRow + webhookResults.length - 1;
+      
+      Logger.log("Writing " + webhookResults.length + " results to sheet");
+      Logger.log("Start row: " + startRow + ", End row: " + endRow);
+      
+      // Write categories
+      var categoryRange = sheet.getRange(config.categoryCol + startRow + ":" + config.categoryCol + endRow);
+      categoryRange.setValues(webhookResults.map(r => [r.predicted_category]));
+      
+      // Write confidence scores if they exist
+      if (webhookResults[0].hasOwnProperty('similarity_score')) {
+        var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
+        var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
+        confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
+          .setNumberFormat("0.00%");
+      }
+      
+      updateStatus("Categorisation completed successfully!");
+      return true;
+    }
+    
+    // For newer webhook format with success status but results elsewhere
+    if (result.result && result.result.results && result.result.results.status === "success") {
+      Logger.log("Webhook reported success but checking for results elsewhere");
+      // Check if we have results elsewhere in the response
+      if (result.results && Array.isArray(result.results)) {
+        Logger.log("Found results in result.results format");
+        var webhookResults = result.results;
+        var categoryCol = result.config ? result.config.categoryColumn : config.categoryCol;
+        var startRow = result.config ? parseInt(result.config.startRow) : parseInt(config.startRow);
+        
+        // Write categories and confidence scores
+        var endRow = startRow + webhookResults.length - 1;
+        
+        Logger.log("Writing " + webhookResults.length + " results to sheet");
+        Logger.log("Start row: " + startRow + ", End row: " + endRow);
+        
+        // Write categories
+        var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
+        categoryRange.setValues(webhookResults.map(r => [r.predicted_category]));
+        
+        // Write confidence scores if they exist
+        if (webhookResults[0].hasOwnProperty('similarity_score')) {
+          var confidenceCol = String.fromCharCode(categoryCol.charCodeAt(0) + 1);
+          var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
+          confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
+            .setNumberFormat("0.00%");
+        }
+        
+        updateStatus("Categorisation completed successfully!");
+        return true;
+      }
+      
+      updateStatus("Categorisation completed, but no results were found to write to the sheet", "Check the Log sheet for details");
+      return false;
+    }
+    
+    // No results found in any expected format
+    if (!result.result || !result.result.results) {
+      Logger.log("No webhook results found in response");
+      updateStatus("Categorisation completed, but no results were returned", "Check the Log sheet for details");
+      return false;
+    }
+    
+    return false;
+  } catch (error) {
+    Logger.log("Error writing results to sheet: " + error);
+    Logger.log("Error stack: " + error.stack);
+    updateStatus("Error writing results to sheet: " + error.toString());
+    return false;
+  }
+}
+
+// Update the status check function to use the helper function
 function checkOperationStatus() {
   var userProperties = PropertiesService.getUserProperties();
   var predictionId = userProperties.getProperty('PREDICTION_ID');
@@ -1017,35 +1129,21 @@ function checkOperationStatus() {
       userProperties.setProperty('RETRY_COUNT', '0');
     }
     
-    // Check for results directly in the response
-    if (result.results && Array.isArray(result.results)) {
-      Logger.log("Found results directly in response");
-      if (operationType === "categorise") {
-        handleClassificationResults(result, config, originalSheetName);
-      } else {
-        // For training, just update status and stats
-        updateStats('Last Training Time', new Date().toLocaleString());
-        updateStats('Training Sheet', originalSheetName);
-        updateStats('Model Status', 'Ready');
-        updateStatus("Training completed successfully!");
+    // Get the original sheet by name
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = spreadsheet.getSheetByName(originalSheetName);
+    if (!sheet) {
+      Logger.log("Sheet not found by name, trying active sheet");
+      sheet = SpreadsheetApp.getActiveSheet();
+      if (sheet.getName() !== originalSheetName) {
+        Logger.log("Warning: Using active sheet instead of original sheet");
+        updateStatus("Warning: Using active sheet instead of original sheet", "Original sheet: " + originalSheetName);
       }
-      cleanupTrigger(triggerId);
-      userProperties.deleteAllProperties();
-      return;
     }
     
-    // Check webhook results in the older format
-    if (result.result && result.result.results) {
-      Logger.log("Found webhook results in older format");
-      if (operationType === "categorise") {
-        handleClassificationResults(result, config, originalSheetName);
-      } else {
-        // For training, just update status and stats
-        updateStats('Last Training Time', new Date().toLocaleString());
-        updateStats('Training Sheet', originalSheetName);
-        updateStats('Model Status', 'Ready');
-        updateStatus("Training completed successfully!");
-      }
+    // Try to write results to sheet using the helper function
+    if (writeResultsToSheet(result, config, sheet)) {
+      // Results were successfully written, clean up
       cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
@@ -1133,76 +1231,9 @@ function handleClassificationResults(result, config, originalSheetName) {
       }
     }
     
-    // Check if we have results directly in the response
-    if (result.results && Array.isArray(result.results)) {
-      Logger.log("Found results directly in response");
-      var webhookResults = result.results;
-      var categoryCol = result.config ? result.config.categoryColumn : config.categoryCol;
-      var startRow = result.config ? parseInt(result.config.startRow) : parseInt(config.startRow);
-      
-      // Write categories and confidence scores
-      var endRow = startRow + webhookResults.length - 1;
-      
-      Logger.log("Writing " + webhookResults.length + " results to sheet");
-      Logger.log("Start row: " + startRow + ", End row: " + endRow);
-      
-      // Write categories
-      var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
-      categoryRange.setValues(webhookResults.map(r => [r.predicted_category]));
-      
-      // Write confidence scores if they exist
-      if (webhookResults[0].hasOwnProperty('similarity_score')) {
-        var confidenceCol = String.fromCharCode(categoryCol.charCodeAt(0) + 1);
-        var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
-        confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
-          .setNumberFormat("0.00%");
-      }
-      
-      updateStatus("Categorisation completed successfully!");
-      return;
-    }
-    
-    // Check if we have webhook results in the older format
-    if (!result.result || !result.result.results) {
-      Logger.log("No webhook results found in response");
-      updateStatus("Categorisation completed, but no results were returned", "Check the Log sheet for details");
-      return;
-    }
-    
-    // For newer webhook format, we might not have individual results
-    // Just a success status
-    if (result.result.results.status === "success") {
-      Logger.log("Webhook reported success but no detailed results");
-      updateStatus("Categorisation completed successfully!", "Results were written directly by the webhook");
-      return;
-    }
-    
-    // For older webhook format with detailed results
-    var webhookResults = result.result.results;
-    if (Array.isArray(webhookResults) && webhookResults.length > 0) {
-      // Write categories and confidence scores
-      var startRow = parseInt(config.startRow);
-      var endRow = startRow + webhookResults.length - 1;
-      
-      Logger.log("Writing " + webhookResults.length + " results to sheet");
-      Logger.log("Start row: " + startRow + ", End row: " + endRow);
-      
-      // Write categories
-      var categoryRange = sheet.getRange(config.categoryCol + startRow + ":" + config.categoryCol + endRow);
-      categoryRange.setValues(webhookResults.map(r => [r.predicted_category]));
-      
-      // Write confidence scores if they exist
-      if (webhookResults[0].hasOwnProperty('similarity_score')) {
-        var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
-        var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
-        confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
-          .setNumberFormat("0.00%");
-      }
-      
-      updateStatus("Categorisation completed successfully!");
-    } else {
-      Logger.log("No valid results array found in webhook response");
-      updateStatus("Categorisation completed, but no valid results were found", "Check the Log sheet for details");
+    // Use the helper function to write results to the sheet
+    if (!writeResultsToSheet(result, config, sheet)) {
+      updateStatus("Categorisation completed, but no results were found to write to the sheet", "Check the Log sheet for details");
     }
   } catch (error) {
     Logger.log("Error handling categorisation results: " + error);

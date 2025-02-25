@@ -1079,9 +1079,24 @@ def get_prediction_status(prediction_id):
             webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
             if webhook_results.data:
                 logger.info(f"Found completed webhook results for prediction {prediction_id}")
+                webhook_data = webhook_results.data[0]
+                
+                # Extract the actual results from the webhook data
+                results_data = None
+                if webhook_data.get("results") and webhook_data["results"].get("data"):
+                    results_data = webhook_data["results"]["data"]
+                
+                # Return a response that includes the actual results
                 return jsonify({
                     "status": "completed",
-                    "result": webhook_results.data[0]
+                    "results": results_data,  # Include the actual results array
+                    "config": {
+                        "categoryColumn": predictions_db.get(prediction_id, {}).get("category_column", "E"),
+                        "startRow": predictions_db.get(prediction_id, {}).get("start_row", "1"),
+                        "sheetName": predictions_db.get(prediction_id, {}).get("sheet_name", "new_transactions"),
+                        "spreadsheetId": predictions_db.get(prediction_id, {}).get("spreadsheet_id")
+                    },
+                    "result": webhook_data  # Keep the original result for backward compatibility
                 })
         except Exception as e:
             logger.warning(f"Error checking webhook results: {e}")
