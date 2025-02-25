@@ -886,7 +886,8 @@ function categoriseTransactions(config) {
         userId: serviceConfig.userId,
         spreadsheetId: spreadsheetId,
         sheetName: originalSheetName,  // Pass the sheet name explicitly
-        startRow: startRow.toString()  // Pass the start row explicitly
+        startRow: startRow.toString(),  // Pass the start row explicitly
+        categoryColumn: config.categoryCol  // Pass the category column explicitly
       }),
       muteHttpExceptions: true
     };
@@ -1016,9 +1017,26 @@ function checkOperationStatus() {
       userProperties.setProperty('RETRY_COUNT', '0');
     }
     
-    // Check webhook results first
+    // Check for results directly in the response
+    if (result.results && Array.isArray(result.results)) {
+      Logger.log("Found results directly in response");
+      if (operationType === "categorise") {
+        handleClassificationResults(result, config, originalSheetName);
+      } else {
+        // For training, just update status and stats
+        updateStats('Last Training Time', new Date().toLocaleString());
+        updateStats('Training Sheet', originalSheetName);
+        updateStats('Model Status', 'Ready');
+        updateStatus("Training completed successfully!");
+      }
+      cleanupTrigger(triggerId);
+      userProperties.deleteAllProperties();
+      return;
+    }
+    
+    // Check webhook results in the older format
     if (result.result && result.result.results) {
-      Logger.log("Found webhook results");
+      Logger.log("Found webhook results in older format");
       if (operationType === "categorise") {
         handleClassificationResults(result, config, originalSheetName);
       } else {
