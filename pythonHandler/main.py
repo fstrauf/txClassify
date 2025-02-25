@@ -54,7 +54,9 @@ def home():
         "endpoints": [
             "/classify",
             "/train",
-            "/health"
+            "/health",
+            "/api-key",
+            "/status/:prediction_id"
         ]
     })
 
@@ -497,13 +499,18 @@ def train_model():
         user_id = None
         api_key = request.headers.get('X-API-Key')
         
+        # First try to validate API key if provided
         if api_key:
             try:
                 user_id = validate_api_key(api_key)
                 logger.info(f"Got user_id from API key validation: {user_id}")
             except Exception as e:
+                # If API key validation fails and we're not in fallback mode, return error
+                if not data.get('userId'):
+                    logger.error(f"API key validation failed and no userId provided in payload: {str(e)}")
+                    return jsonify({"error": f"API key validation failed: {str(e)}"}), 401
                 logger.error(f"API key validation failed: {str(e)}")
-                # Don't return error yet, try userId from payload
+                logger.info("Falling back to userId from payload")
         
         # If no user_id from API key, try payload
         if not user_id:
@@ -526,12 +533,22 @@ def train_model():
                 # Create new user config
                 default_config = {
                     "userId": user_id,
-                    "columnRange": "A:Z",
-                    "categoryColumn": "E"
+                    "categorisationRange": "A:Z",
+                    "columnOrderCategorisation": {
+                        "categoryColumn": "E",
+                        "descriptionColumn": "C"
+                    },
+                    "categorisationTab": None,
+                    "api_key": api_key if api_key else None
                 }
                 supabase.table("account").insert(default_config).execute()
                 logger.info(f"Created new user configuration for {user_id}")
             else:
+                # Update API key if it's provided and different from stored one
+                existing_config = response.data[0]
+                if api_key and (not existing_config.get("api_key") or existing_config.get("api_key") != api_key):
+                    supabase.table("account").update({"api_key": api_key}).eq("userId", user_id).execute()
+                    logger.info(f"Updated API key for user {user_id}")
                 logger.info(f"Found existing user configuration for {user_id}")
                 
         except Exception as e:
@@ -781,9 +798,6 @@ def classify_transactions():
         if not api_key:
             return jsonify({"error": "Missing API key"}), 401
 
-        # Validate API key and get user ID
-        user_id = validate_api_key(api_key)
-        
         # Get and validate request data
         data = request.get_json()
         if not data:
@@ -802,6 +816,26 @@ def classify_transactions():
 
         if not transactions:
             return jsonify({"error": "No transactions provided"}), 400
+
+        # Validate API key and get user ID
+        try:
+            user_id = validate_api_key(api_key)
+            logger.info(f"API key validated for user: {user_id}")
+            
+            # Update API key in user account if needed
+            try:
+                response = supabase.table("account").select("*").eq("userId", user_id).execute()
+                if response.data:
+                    existing_config = response.data[0]
+                    if not existing_config.get("api_key") or existing_config.get("api_key") != api_key:
+                        supabase.table("account").update({"api_key": api_key}).eq("userId", user_id).execute()
+                        logger.info(f"Updated API key for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Error updating API key in user account: {e}")
+                # Continue with classification even if update fails
+        except Exception as e:
+            logger.error(f"API key validation failed: {e}")
+            return jsonify({"error": f"API key validation failed: {str(e)}"}), 401
 
         # Verify training data exists
         try:
@@ -1117,7 +1151,7 @@ def classify_webhook():
         error_msg = str(e)
         logger.error(f"Error in classify webhook: {error_msg}")
         if user_id:
-            update_process_status(f"Error: {error_msg}", "classify", user_id)
+            update_process_status(f"Error: {str(e)}", "classify", user_id)
         if sheet_id:
             update_sheet_log(sheet_id, "ERROR", f"Classification webhook failed: {error_msg}")
         return jsonify({"error": error_msg}), 500
@@ -1393,6 +1427,106 @@ def debug_list_training_data():
             "status": "error",
             "error": str(e)
         }), 500
+
+@app.route('/api-key', methods=['GET', 'POST'])
+def manage_api_key():
+    """Get or generate API key for a user."""
+    try:
+        # For GET requests, we need to validate the user
+        if request.method == 'GET':
+            # Check for existing API key in header
+            api_key = request.headers.get('X-API-Key')
+            if api_key:
+                try:
+                    # Validate the API key
+                    user_id = validate_api_key(api_key)
+                    logger.info(f"API key validated for user: {user_id}")
+                    
+                    # Return the API key
+                    return jsonify({
+                        "status": "success",
+                        "user_id": user_id,
+                        "api_key": api_key
+                    })
+                except Exception as e:
+                    logger.error(f"API key validation failed: {e}")
+                    return jsonify({"error": f"API key validation failed: {str(e)}"}), 401
+            
+            # If no API key in header, check for user_id in query params
+            user_id = request.args.get('userId')
+            if not user_id:
+                return jsonify({"error": "Missing userId parameter"}), 400
+                
+            # If user_id is an email, prefix it with google-oauth2|
+            if '@' in user_id and not user_id.startswith('google-oauth2|'):
+                user_id = f"google-oauth2|{user_id}"
+                
+            # Look up user in database
+            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            if not response.data:
+                return jsonify({"error": "User not found"}), 404
+                
+            # Return the API key if it exists
+            user_data = response.data[0]
+            if user_data.get("api_key"):
+                return jsonify({
+                    "status": "success",
+                    "user_id": user_id,
+                    "api_key": user_data["api_key"]
+                })
+            else:
+                return jsonify({
+                    "status": "not_found",
+                    "user_id": user_id,
+                    "message": "No API key found for this user"
+                }), 404
+        
+        # For POST requests, we generate a new API key
+        elif request.method == 'POST':
+            data = request.get_json()
+            if not data or 'userId' not in data:
+                return jsonify({"error": "Missing userId in request body"}), 400
+                
+            user_id = data['userId']
+            
+            # If user_id is an email, prefix it with google-oauth2|
+            if '@' in user_id and not user_id.startswith('google-oauth2|'):
+                user_id = f"google-oauth2|{user_id}"
+            
+            # Generate a new API key (UUID)
+            new_api_key = str(uuid.uuid4())
+            
+            # Check if user exists
+            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            
+            if response.data:
+                # Update existing user
+                supabase.table("account").update({"api_key": new_api_key}).eq("userId", user_id).execute()
+                logger.info(f"Updated API key for user {user_id}")
+            else:
+                # Create new user
+                default_config = {
+                    "userId": user_id,
+                    "categorisationRange": "A:Z",
+                    "columnOrderCategorisation": {
+                        "categoryColumn": "E",
+                        "descriptionColumn": "C"
+                    },
+                    "categorisationTab": None,
+                    "api_key": new_api_key
+                }
+                supabase.table("account").insert(default_config).execute()
+                logger.info(f"Created new user with API key: {user_id}")
+            
+            return jsonify({
+                "status": "success",
+                "user_id": user_id,
+                "api_key": new_api_key
+            })
+            
+    except Exception as e:
+        logger.error(f"Error managing API key: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
