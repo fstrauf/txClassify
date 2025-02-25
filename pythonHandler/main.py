@@ -55,7 +55,8 @@ def home():
             "/classify",
             "/train",
             "/health",
-            "/debug/validate-key"
+            "/debug/validate-key",
+            "/debug/list-training-data"
         ]
     })
 
@@ -315,6 +316,22 @@ def fetch_embeddings(bucket_name: str, file_name: str) -> np.ndarray:
 
         data = np.load(temp_file_path, allow_pickle=True)["arr_0"]
         os.unlink(temp_file_path)
+        
+        # Check if this is index data with the old format and migrate if needed
+        if file_name.endswith('_index.npy') and data.dtype.names and 'Category' in data.dtype.names and 'category' not in data.dtype.names:
+            logger.info(f"Detected old format index data in {file_name}, migrating to new format")
+            # Create a new array with the updated field name
+            new_data = np.array([(item['item_id'], item['Category'], item['description']) for item in data],
+                              dtype=[('item_id', int), ('category', 'U100'), ('description', 'U500')])
+            
+            # Store the migrated data
+            sheet_id = file_name.split('_index.npy')[0]
+            logger.info(f"Storing migrated index data for sheet_id: {sheet_id}")
+            store_embeddings(bucket_name, file_name, new_data)
+            
+            # Return the migrated data
+            return new_data
+            
         return data
     except Exception as e:
         logger.error(f"Error fetching embeddings: {e}")
@@ -562,8 +579,19 @@ def train_model():
         
         # Store training data index with proper dtype
         df["item_id"] = range(len(df))
+        
+        # Log the categories we're training with
+        logger.info(f"Training with categories: {df['Category'].unique().tolist()}")
+        
+        # Store training data with clear separation between category and description
+        # Use a structured array with named fields for clarity
         training_data = np.array(list(zip(df["item_id"], df["Category"], df["description"])), 
-                               dtype=[('item_id', int), ('Category', 'U100'), ('description', 'U500')])
+                              dtype=[('item_id', int), ('category', 'U100'), ('description', 'U500')])
+        
+        # Log the first few entries to verify structure
+        logger.info(f"First training data entry: {training_data[0]}")
+        logger.info(f"Training data dtype: {training_data.dtype}")
+        
         store_embeddings("txclassify", f"{sheet_id}_index.npy", training_data)
         
         # Run prediction
@@ -686,6 +714,18 @@ def training_webhook():
             
             # Store embeddings
             store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
+            
+            # Log information about the stored embeddings
+            logger.info(f"Stored embeddings for sheet_id: {sheet_id} with shape: {embeddings_shape}")
+            
+            # Try to load the index file to verify it exists and has the right structure
+            try:
+                index_data = fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
+                logger.info(f"Verified index data - shape: {index_data.shape}, dtype: {index_data.dtype}")
+                if len(index_data) > 0:
+                    logger.info(f"Sample index entry: {index_data[0]}")
+            except Exception as e:
+                logger.warning(f"Could not verify index data: {e}")
             
             # Clear memory
             del embeddings
@@ -960,14 +1000,19 @@ def classify_webhook():
                 # Add debug logging for the first few matches
                 if i < 3:
                     logger.info(f"Match {i}: trained_data[{idx}] = {trained_data[idx]}")
-                    
-                # Try different ways to access the category field
+                
+                # Extract the category directly from the structured array
+                # This should be the actual category, not the description
                 try:
-                    # First try accessing by field name
-                    category = str(trained_data[idx]['Category'])
+                    # First try accessing by field name (newer format)
+                    category = str(trained_data[idx]['category'])
                 except:
-                    # If that fails, try accessing by index
-                    category = str(trained_data[idx][1])
+                    try:
+                        # Try alternate field name (older format might use 'Category')
+                        category = str(trained_data[idx]['Category'])
+                    except:
+                        # Fallback to index 1 which should be the category field
+                        category = str(trained_data[idx][1])
                 
                 similarity_score = float(similarities[i][idx])  # Get the similarity score
                 
@@ -1234,6 +1279,105 @@ def debug_validate_key():
             
     except Exception as e:
         logger.error(f"Debug validation error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        }), 500
+
+@app.route('/debug/list-training-data', methods=['GET'])
+def debug_list_training_data():
+    """Debug endpoint to list all available training data."""
+    try:
+        # Get API key from headers for authentication
+        api_key = request.headers.get('X-API-Key')
+        if not api_key:
+            logger.error("No API key provided in request headers")
+            return jsonify({
+                "error": "API key is required",
+                "details": "Please provide X-API-Key header"
+            }), 401
+            
+        # Validate API key
+        try:
+            user_id = validate_api_key(api_key)
+            logger.info(f"API key validated for user: {user_id}")
+        except Exception as e:
+            logger.error(f"API key validation failed: {e}")
+            return jsonify({
+                "error": "Invalid API key",
+                "details": str(e)
+            }), 401
+        
+        # List all files in the txclassify bucket
+        try:
+            files = supabase.storage.from_("txclassify").list()
+            
+            # Group files by sheet ID
+            sheet_data = {}
+            for file in files:
+                file_name = file.get('name')
+                if file_name.endswith('.npy'):
+                    if file_name.endswith('_index.npy'):
+                        sheet_id = file_name.replace('_index.npy', '')
+                        if sheet_id not in sheet_data:
+                            sheet_data[sheet_id] = {'index_file': file_name}
+                        else:
+                            sheet_data[sheet_id]['index_file'] = file_name
+                    else:
+                        sheet_id = file_name.replace('.npy', '')
+                        if sheet_id not in sheet_data:
+                            sheet_data[sheet_id] = {'embeddings_file': file_name}
+                        else:
+                            sheet_data[sheet_id]['embeddings_file'] = file_name
+            
+            # Get details for each sheet
+            results = []
+            for sheet_id, files in sheet_data.items():
+                result = {
+                    'sheet_id': sheet_id,
+                    'files': files,
+                    'has_embeddings': 'embeddings_file' in files,
+                    'has_index': 'index_file' in files
+                }
+                
+                # Try to get index data details
+                if 'index_file' in files:
+                    try:
+                        index_data = fetch_embeddings("txclassify", files['index_file'])
+                        result['index_count'] = len(index_data)
+                        result['index_dtype'] = str(index_data.dtype)
+                        if len(index_data) > 0:
+                            result['sample_entry'] = str(index_data[0])
+                    except Exception as e:
+                        result['index_error'] = str(e)
+                
+                # Try to get embeddings details
+                if 'embeddings_file' in files:
+                    try:
+                        embeddings = fetch_embeddings("txclassify", files['embeddings_file'])
+                        result['embeddings_shape'] = embeddings.shape
+                    except Exception as e:
+                        result['embeddings_error'] = str(e)
+                
+                results.append(result)
+            
+            return jsonify({
+                "status": "success",
+                "user_id": user_id,
+                "sheet_count": len(results),
+                "sheets": results
+            })
+            
+        except Exception as e:
+            logger.error(f"Error listing storage files: {e}")
+            return jsonify({
+                "status": "error",
+                "error": "Failed to list storage files",
+                "details": str(e)
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Debug list training data error: {e}")
         return jsonify({
             "status": "error",
             "error": str(e)
