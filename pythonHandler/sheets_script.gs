@@ -1115,7 +1115,36 @@ function handleClassificationResults(result, config, originalSheetName) {
       }
     }
     
-    // Check if we have webhook results
+    // Check if we have results directly in the response
+    if (result.results && Array.isArray(result.results)) {
+      Logger.log("Found results directly in response");
+      var webhookResults = result.results;
+      var categoryCol = result.config ? result.config.categoryColumn : config.categoryCol;
+      var startRow = result.config ? parseInt(result.config.startRow) : parseInt(config.startRow);
+      
+      // Write categories and confidence scores
+      var endRow = startRow + webhookResults.length - 1;
+      
+      Logger.log("Writing " + webhookResults.length + " results to sheet");
+      Logger.log("Start row: " + startRow + ", End row: " + endRow);
+      
+      // Write categories
+      var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
+      categoryRange.setValues(webhookResults.map(r => [r.predicted_category]));
+      
+      // Write confidence scores if they exist
+      if (webhookResults[0].hasOwnProperty('similarity_score')) {
+        var confidenceCol = String.fromCharCode(categoryCol.charCodeAt(0) + 1);
+        var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
+        confidenceRange.setValues(webhookResults.map(r => [r.similarity_score]))
+          .setNumberFormat("0.00%");
+      }
+      
+      updateStatus("Categorisation completed successfully!");
+      return;
+    }
+    
+    // Check if we have webhook results in the older format
     if (!result.result || !result.result.results) {
       Logger.log("No webhook results found in response");
       updateStatus("Categorisation completed, but no results were returned", "Check the Log sheet for details");

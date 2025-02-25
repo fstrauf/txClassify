@@ -338,99 +338,12 @@ def fetch_embeddings(bucket_name: str, file_name: str) -> np.ndarray:
         raise
 
 def update_sheet_log(sheet_id: str, status: str, message: str, details: str = '') -> None:
-    """Update log sheet with status and message."""
+    """Log sheet update without writing directly to the sheet."""
     try:
-        service = build("sheets", "v4", credentials=Credentials.from_service_account_info(
-            json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT")),
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        ))
-
-        # Get or create Log sheet
-        try:
-            sheet_metadata = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
-            log_sheet_exists = any(sheet['properties']['title'] == 'Log' for sheet in sheet_metadata['sheets'])
-            
-            if not log_sheet_exists:
-                # Create Log sheet
-                body = {
-                    'requests': [{
-                        'addSheet': {
-                            'properties': {
-                                'title': 'Log',
-                                'gridProperties': {
-                                    'frozenRowCount': 1
-                                }
-                            }
-                        }
-                    }]
-                }
-                service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body=body).execute()
-                
-                # Add headers
-                headers = [['Timestamp', 'Status', 'Message', 'Details']]
-                service.spreadsheets().values().update(
-                    spreadsheetId=sheet_id,
-                    range='Log!A1:D1',
-                    valueInputOption='RAW',
-                    body={'values': headers}
-                ).execute()
-                
-                # Format headers
-                format_request = {
-                    'requests': [{
-                        'repeatCell': {
-                            'range': {
-                                'sheetId': sheet_metadata['sheets'][-1]['properties']['sheetId'],
-                                'startRowIndex': 0,
-                                'endRowIndex': 1
-                            },
-                            'cell': {
-                                'userEnteredFormat': {
-                                    'backgroundColor': {'red': 0.95, 'green': 0.95, 'blue': 0.95},
-                                    'textFormat': {'bold': True},
-                                    'horizontalAlignment': 'CENTER'
-                                }
-                            },
-                            'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)'
-                        }
-                    }]
-                }
-                service.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body=format_request).execute()
-
-        except Exception as e:
-            logger.error(f"Error checking/creating Log sheet: {e}")
-            return
-
-        # Add new log entry
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        new_row = [[timestamp, status, message, details]]
-        
-        # Get current values to determine insert position
-        result = service.spreadsheets().values().get(
-            spreadsheetId=sheet_id,
-            range='Log!A:A'
-        ).execute()
-        current_rows = len(result.get('values', []))
-        
-        # Insert after header, limited to 1000 rows
-        insert_range = f'Log!A{min(2, current_rows + 1)}:D{min(2, current_rows + 1)}'
-        service.spreadsheets().values().update(
-            spreadsheetId=sheet_id,
-            range=insert_range,
-            valueInputOption='RAW',
-            body={'values': new_row}
-        ).execute()
-        
-        # Keep only last 1000 rows
-        if current_rows > 1000:
-            clear_range = f'Log!A{1001}:D{current_rows}'
-            service.spreadsheets().values().clear(
-                spreadsheetId=sheet_id,
-                range=clear_range
-            ).execute()
-        
+        # Just log the message instead of writing to the sheet
+        logger.info(f"Sheet log update - sheet_id: {sheet_id}, status: {status}, message: {message}, details: {details}")
     except Exception as e:
-        logger.error(f"Error updating sheet log: {e}")
+        logger.error(f"Error logging sheet update: {e}")
 
 def ensure_default_config(user_id: str) -> None:
     """Ensure user has default configuration values."""
@@ -1081,57 +994,31 @@ def classify_webhook():
         
         logger.info(f"Generated {len(results)} predictions")
         
-        # Update sheet with predictions
-        status_msg = f"Writing {len(results)} predictions to sheet '{sheet_name}'"
+        # Instead of writing to the sheet directly, return the results
+        status_msg = f"Generated {len(results)} predictions for sheet '{sheet_name}'"
         update_sheet_log(sheet_id, "INFO", status_msg)
         
         try:
-            service = build("sheets", "v4", credentials=Credentials.from_service_account_info(
-                json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT")),
-                scopes=["https://www.googleapis.com/auth/spreadsheets"]
-            ))
-            
             # Get column configuration from request args
             category_column = request.args.get("categoryColumn", "E")
             start_row = int(request.args.get("startRow", "1"))  # Default to row 1 if not specified
             
-            # Write categories back to sheet starting from the specified row
-            category_range = f"{sheet_name}!{category_column}{start_row}:{category_column}{start_row + len(results) - 1}"
-            logger.info(f"Writing categories to range: {category_range}")
+            # Store webhook result with results data
+            result = {
+                "prediction_id": request.args.get("prediction_id", "unknown"),
+                "results": results
+            }
             
-            # Log the first few categories being written
-            logger.info(f"First few categories being written: {[cat['predicted_category'] for cat in results[:3]]}")
-            
-            service.spreadsheets().values().update(
-                spreadsheetId=sheet_id,
-                range=category_range,
-                valueInputOption="USER_ENTERED",
-                body={"values": [[cat["predicted_category"]] for cat in results]}
-            ).execute()
-            
-            # Write confidence scores in the next column
-            confidence_column = chr(ord(category_column) + 1)
-            confidence_range = f"{sheet_name}!{confidence_column}{start_row}:{confidence_column}{start_row + len(results) - 1}"
-            logger.info(f"Writing confidence scores to range: {confidence_range}")
-            
-            service.spreadsheets().values().update(
-                spreadsheetId=sheet_id,
-                range=confidence_range,
-                valueInputOption="USER_ENTERED",
-                body={"values": [[f"{cat['similarity_score']:.2%}"] for cat in results]}
-            ).execute()
-            
-            # Store webhook result with minimal data
             try:
-                result = {
+                supabase.table("webhook_results").insert({
                     "prediction_id": request.args.get("prediction_id", "unknown"),
                     "results": {
                         "user_id": user_id,
                         "status": "success",
-                        "count": len(results)
+                        "count": len(results),
+                        "data": results
                     }
-                }
-                supabase.table("webhook_results").insert(result).execute()
+                }).execute()
                 logger.info(f"Stored webhook result for sheet_id: {sheet_id}")
             except Exception as e:
                 logger.warning(f"Error storing webhook result: {e}")
@@ -1139,10 +1026,20 @@ def classify_webhook():
             status_msg = "Classification completed successfully"
             update_process_status("completed", "classify", user_id)
             update_sheet_log(sheet_id, "SUCCESS", status_msg)
-            return jsonify({"status": "success"})
+            
+            # Return the results to be handled by the Google Apps Script
+            return jsonify({
+                "status": "success", 
+                "results": results,
+                "config": {
+                    "categoryColumn": category_column,
+                    "startRow": start_row,
+                    "sheetName": sheet_name
+                }
+            })
             
         except Exception as e:
-            error_msg = f"Error writing to sheet: {str(e)}"
+            error_msg = f"Error processing results: {str(e)}"
             logger.error(error_msg)
             update_sheet_log(sheet_id, "ERROR", error_msg)
             return jsonify({"error": error_msg}), 500
