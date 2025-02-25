@@ -1082,21 +1082,41 @@ def get_prediction_status(prediction_id):
                 webhook_data = webhook_results.data[0]
                 
                 # Extract the actual results from the webhook data
-                results_data = None
+                results_data = []
                 if webhook_data.get("results") and webhook_data["results"].get("data"):
                     results_data = webhook_data["results"]["data"]
+                    logger.info(f"Extracted {len(results_data)} results from webhook data")
+                
+                # Get configuration from predictions_db if available
+                category_column = "E"  # Default
+                start_row = "1"  # Default
+                sheet_name = "Sheet1"  # Default
+                spreadsheet_id = None
+                
+                if prediction_id in predictions_db:
+                    pred_data = predictions_db[prediction_id]
+                    category_column = pred_data.get("category_column", category_column)
+                    start_row = pred_data.get("start_row", start_row)
+                    sheet_name = pred_data.get("sheet_name", sheet_name)
+                    spreadsheet_id = pred_data.get("spreadsheet_id", spreadsheet_id)
                 
                 # Return a response that includes the actual results
                 return jsonify({
                     "status": "completed",
+                    "message": "Classification completed successfully",
                     "results": results_data,  # Include the actual results array
                     "config": {
-                        "categoryColumn": predictions_db.get(prediction_id, {}).get("category_column", "E"),
-                        "startRow": predictions_db.get(prediction_id, {}).get("start_row", "1"),
-                        "sheetName": predictions_db.get(prediction_id, {}).get("sheet_name", "new_transactions"),
-                        "spreadsheetId": predictions_db.get(prediction_id, {}).get("spreadsheet_id")
+                        "categoryColumn": category_column,
+                        "startRow": start_row,
+                        "sheetName": sheet_name,
+                        "spreadsheetId": spreadsheet_id
                     },
-                    "result": webhook_data  # Keep the original result for backward compatibility
+                    "result": {
+                        "results": {
+                            "status": "success",
+                            "data": results_data
+                        }
+                    }  # Keep the original result format for backward compatibility
                 })
         except Exception as e:
             logger.warning(f"Error checking webhook results: {e}")
@@ -1155,31 +1175,19 @@ def get_prediction_status(prediction_id):
             
             return jsonify(response_data)
             
-        except Exception as replicate_error:
-            logger.warning(f"Error fetching prediction from Replicate: {replicate_error}")
-            # Return a more graceful error that won't cause the client to keep retrying
-            response_data = {
-                "status": "unknown",
-                "message": "Unable to determine prediction status",
-                "error": str(replicate_error)
-            }
-            
-            # Cache the error response
-            replicate_cache[prediction_id] = {
-                "timestamp": current_time,
-                "response": response_data
-            }
-            
-            return jsonify(response_data), 200  # Return 200 instead of 500 to prevent constant retries
+        except Exception as e:
+            logger.warning(f"Error fetching prediction from Replicate: {e}")
+            return jsonify({
+                "status": "error",
+                "message": str(e)
+            }), 500
             
     except Exception as e:
         logger.error(f"Error getting prediction status: {e}")
-        # Return a more graceful error that won't cause the client to keep retrying
         return jsonify({
             "status": "error",
-            "message": "Error checking prediction status",
-            "error": str(e)
-        }), 200  # Return 200 instead of 500 to prevent constant retries
+            "message": str(e)
+        }), 500
 
 @app.route('/debug/validate-key', methods=['GET'])
 def debug_validate_key():
