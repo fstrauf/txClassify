@@ -846,19 +846,26 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         # Store prediction ID for reference
         predictions_db[prediction_id]["replicate_prediction_id"] = prediction.id
         
-        # Wait for embeddings with exponential backoff
+        # Optimize the waiting strategy - use shorter initial checks
         attempt = 0
-        max_attempts = 60  # Maximum number of attempts (10 minutes with exponential backoff)
-        base_delay = 5  # Start with 5 seconds delay
+        max_attempts = 60  # Maximum number of attempts
+        
+        # Start with shorter checks for the first few attempts
+        initial_delays = [2, 3, 5, 10, 15]  # First few checks are faster
         
         while prediction.status != "succeeded" and attempt < max_attempts:
             if prediction.status == "failed":
                 predictions_db[prediction_id]["status"] = "failed"
                 predictions_db[prediction_id]["error"] = prediction.error
                 return
+            
+            # Use initial delays for first few attempts, then exponential backoff
+            if attempt < len(initial_delays):
+                delay = initial_delays[attempt]
+            else:
+                # Cap at 60 seconds for later attempts
+                delay = min(20 * (1.5 ** (attempt - len(initial_delays))), 60)
                 
-            # Calculate delay with exponential backoff (capped at 60 seconds)
-            delay = min(base_delay * (2 ** attempt), 60)
             logger.info(f"Waiting {delay} seconds before checking prediction status again (attempt {attempt+1}/{max_attempts})")
             time.sleep(delay)
             
@@ -868,6 +875,18 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
             
             # Update progress information
             predictions_db[prediction_id]["status_message"] = f"Waiting for embeddings (attempt {attempt}/{max_attempts})"
+            
+            # If we've been waiting for a while, check if webhook results are already available
+            if attempt > 5:
+                try:
+                    webhook_results = supabase.table("webhook_results").select("id").eq("prediction_id", prediction_id).execute()
+                    if webhook_results.data:
+                        logger.info(f"Found webhook results while waiting for embeddings (attempt {attempt})")
+                        predictions_db[prediction_id]["status"] = "completed"
+                        predictions_db[prediction_id]["status_message"] = "Classification completed successfully"
+                        return
+                except Exception as e:
+                    logger.warning(f"Error checking webhook results during waiting: {e}")
         
         if attempt >= max_attempts:
             predictions_db[prediction_id]["status"] = "failed"
@@ -1063,18 +1082,7 @@ def classify_webhook():
 def get_prediction_status(prediction_id):
     """Get the status of a prediction."""
     try:
-        # First check if we have this prediction in our local dictionary
-        if prediction_id in predictions_db:
-            logger.info(f"Found prediction {prediction_id} in local predictions_db")
-            prediction_data = predictions_db[prediction_id]
-            return jsonify({
-                "status": prediction_data.get("status", "processing"),
-                "message": prediction_data.get("status_message", "Processing in progress"),
-                "processed_transactions": prediction_data.get("processed_transactions", 0),
-                "total_transactions": prediction_data.get("total_transactions", 0)
-            })
-            
-        # Check if we have a completed webhook in Supabase
+        # First check if we have a completed webhook in Supabase - prioritize this check
         try:
             webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
             if webhook_results.data:
@@ -1120,6 +1128,56 @@ def get_prediction_status(prediction_id):
                 })
         except Exception as e:
             logger.warning(f"Error checking webhook results: {e}")
+        
+        # Then check if we have this prediction in our local dictionary
+        if prediction_id in predictions_db:
+            logger.info(f"Found prediction {prediction_id} in local predictions_db")
+            prediction_data = predictions_db[prediction_id]
+            
+            # If status is waiting_for_webhook, check Supabase again with a direct query
+            # This helps in cases where the webhook has completed but we missed it
+            if prediction_data.get("status") == "waiting_for_webhook":
+                try:
+                    # Quick check for webhook results
+                    webhook_check = supabase.table("webhook_results").select("id").eq("prediction_id", prediction_id).execute()
+                    if webhook_check.data:
+                        # We found a result, get the full data
+                        webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
+                        webhook_data = webhook_results.data[0]
+                        
+                        # Extract results and return them
+                        results_data = []
+                        if webhook_data.get("results") and webhook_data["results"].get("data"):
+                            results_data = webhook_data["results"]["data"]
+                            logger.info(f"Found webhook results on second check: {len(results_data)} results")
+                        
+                        return jsonify({
+                            "status": "completed",
+                            "message": "Classification completed successfully",
+                            "results": results_data,
+                            "config": {
+                                "categoryColumn": prediction_data.get("category_column", "E"),
+                                "startRow": prediction_data.get("start_row", "1"),
+                                "sheetName": prediction_data.get("sheet_name", "Sheet1"),
+                                "spreadsheetId": prediction_data.get("spreadsheet_id")
+                            },
+                            "result": {
+                                "results": {
+                                    "status": "success",
+                                    "data": results_data
+                                }
+                            }
+                        })
+                except Exception as e:
+                    logger.warning(f"Error on second webhook check: {e}")
+            
+            # Return the status from predictions_db
+            return jsonify({
+                "status": prediction_data.get("status", "processing"),
+                "message": prediction_data.get("status_message", "Processing in progress"),
+                "processed_transactions": prediction_data.get("processed_transactions", 0),
+                "total_transactions": prediction_data.get("total_transactions", 0)
+            })
         
         # Check if we have a cached response that's less than 1 minute old
         current_time = datetime.now()

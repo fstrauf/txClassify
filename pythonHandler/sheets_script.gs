@@ -919,6 +919,7 @@ function categoriseTransactions(config) {
         'OPERATION_TYPE': 'categorise',
         'START_TIME': new Date().getTime().toString(),
         'ORIGINAL_SHEET_NAME': originalSheetName,
+        'LAST_CHECK_TIME': '0',
         'CONFIG': JSON.stringify({
           categoryCol: config.categoryCol,
           startRow: config.startRow,
@@ -931,15 +932,29 @@ function categoriseTransactions(config) {
       Logger.log("Storing properties: " + JSON.stringify(properties));
       userProperties.setProperties(properties);
       
-      // Create a trigger to check status every 5 minutes instead of every minute
+      // Create a trigger to check status more frequently at first
+      // For small transaction counts (< 10), check every minute
+      // For larger transaction counts, check every 2 minutes
+      var checkInterval = transactions.length < 10 ? 1 : 2;
+      
       var trigger = ScriptApp.newTrigger('checkOperationStatus')
         .timeBased()
-        .everyMinutes(5)
+        .everyMinutes(checkInterval)
         .create();
       
       var triggerId = trigger.getUniqueId();
-      Logger.log("Created trigger with ID: " + triggerId);
+      Logger.log("Created trigger with ID: " + triggerId + " to check every " + checkInterval + " minute(s)");
       userProperties.setProperty('TRIGGER_ID', triggerId);
+      
+      // For immediate feedback, schedule a quick first check after 15 seconds
+      var quickCheckTrigger = ScriptApp.newTrigger('quickFirstCheck')
+        .timeBased()
+        .after(15000) // 15 seconds
+        .create();
+      
+      var quickCheckTriggerId = quickCheckTrigger.getUniqueId();
+      userProperties.setProperty('QUICK_CHECK_TRIGGER_ID', quickCheckTriggerId);
+      Logger.log("Created quick check trigger with ID: " + quickCheckTriggerId);
       
       ui.alert('Categorisation has started! The sheet will update automatically when complete.\n\nYou can close this window.');
       return;
@@ -949,6 +964,21 @@ function categoriseTransactions(config) {
     updateStatus("Error: " + error.toString());
     ui.alert('Error: ' + error.toString());
   }
+}
+
+// Function for quick first check
+function quickFirstCheck() {
+  var userProperties = PropertiesService.getUserProperties();
+  var triggerId = userProperties.getProperty('QUICK_CHECK_TRIGGER_ID');
+  
+  // Always clean up this trigger since it's one-time only
+  if (triggerId) {
+    cleanupTrigger(triggerId);
+    userProperties.deleteProperty('QUICK_CHECK_TRIGGER_ID');
+  }
+  
+  // Run the regular check
+  checkOperationStatus();
 }
 
 // Helper function to write classification results to a sheet
@@ -1073,6 +1103,8 @@ function checkOperationStatus() {
   var originalSheetName = userProperties.getProperty('ORIGINAL_SHEET_NAME');
   var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
   var retryCount = parseInt(userProperties.getProperty('RETRY_COUNT') || '0');
+  var lastCheckTime = parseInt(userProperties.getProperty('LAST_CHECK_TIME') || '0');
+  var currentTime = new Date().getTime();
   
   Logger.log("Starting checkOperationStatus");
   Logger.log("PredictionId: " + predictionId);
@@ -1090,18 +1122,51 @@ function checkOperationStatus() {
   
   try {
     // Check if we've been running for more than 30 minutes
-    if (new Date().getTime() - startTime > 30 * 60 * 1000) {
+    if (currentTime - startTime > 30 * 60 * 1000) {
       updateStatus(`Error: ${operationType} timed out after 30 minutes`);
       cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
     }
     
+    // Implement dynamic polling frequency - check more frequently at the beginning
+    var minutesElapsed = Math.floor((currentTime - startTime) / (60 * 1000));
+    var shouldCheck = true;
+    
+    // If we've checked recently, maybe skip this check based on elapsed time
+    if (lastCheckTime > 0) {
+      var timeSinceLastCheck = currentTime - lastCheckTime;
+      
+      // In the first minute, check every 10 seconds
+      if (minutesElapsed < 1 && timeSinceLastCheck < 10000) {
+        shouldCheck = false;
+      }
+      // In minutes 1-3, check every 30 seconds
+      else if (minutesElapsed < 3 && timeSinceLastCheck < 30000) {
+        shouldCheck = false;
+      }
+      // After 3 minutes, check every minute
+      else if (timeSinceLastCheck < 60000) {
+        shouldCheck = false;
+      }
+    }
+    
+    if (!shouldCheck) {
+      Logger.log("Skipping check due to dynamic polling frequency");
+      return;
+    }
+    
+    // Update last check time
+    userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
+    
     var serviceConfig = getServiceConfig();
-    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, {
+    var options = {
       headers: { 'X-API-Key': serviceConfig.apiKey },
-      muteHttpExceptions: true
-    });
+      muteHttpExceptions: true,
+      timeout: 10000 // 10 second timeout to prevent hanging
+    };
+    
+    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, options);
     
     // Check HTTP response code
     var responseCode = response.getResponseCode();
@@ -1116,7 +1181,6 @@ function checkOperationStatus() {
         return;
       }
       
-      var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
       updateStatus(`${operationType} in progress... (${minutesElapsed} min) - Temporary connection issue (retry ${retryCount}/5)`);
       return;
     }
@@ -1161,6 +1225,9 @@ function checkOperationStatus() {
         if (result.config) {
           if (result.config.categoryColumn) config.categoryCol = result.config.categoryColumn;
           if (result.config.startRow) config.startRow = result.config.startRow;
+          
+          // Update the stored config
+          userProperties.setProperty('CONFIG', JSON.stringify(config));
         }
         
         // Try to write results again
@@ -1173,8 +1240,33 @@ function checkOperationStatus() {
         }
       }
       
+      // If status is completed but we couldn't write results, try one more direct check
+      try {
+        Logger.log("Status is completed but no results found, trying direct check");
+        var directOptions = {
+          headers: { 'X-API-Key': serviceConfig.apiKey },
+          muteHttpExceptions: true,
+          timeout: 15000 // Longer timeout for direct check
+        };
+        
+        var directResponse = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, directOptions);
+        if (directResponse.getResponseCode() === 200) {
+          var directResult = JSON.parse(directResponse.getContentText());
+          
+          // Try to write results from direct check
+          if (writeResultsToSheet(directResult, config, sheet)) {
+            Logger.log("Successfully wrote results from direct check");
+            updateStatus("Categorisation completed successfully!");
+            cleanupTrigger(triggerId);
+            userProperties.deleteAllProperties();
+            return;
+          }
+        }
+      } catch (directError) {
+        Logger.log("Error in direct check: " + directError);
+      }
+      
       // Wait for webhook results
-      var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
       updateStatus(`${operationType === "categorise" ? "Categorisation" : "Training"} completed, processing results... (${minutesElapsed} min)`);
       return;
     } else if (result.status === "failed") {
@@ -1195,13 +1287,11 @@ function checkOperationStatus() {
       }
       
       // Continue for a few retries in case it's a temporary issue
-      var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
       updateStatus(`${operationType} in progress... (${minutesElapsed} min) - Waiting for status (retry ${retryCount}/3)`);
       return;
     }
     
     // Still processing, update status
-    var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
     var statusMessage = `${operationType === "categorise" ? "Categorisation" : "Training"} in progress... (${minutesElapsed} min)`;
     
     if (result.status) {
@@ -1224,7 +1314,7 @@ function checkOperationStatus() {
     
     // Only cleanup on non-temporary errors
     if (error.toString().includes("Address unavailable") || error.toString().includes("Failed to fetch")) {
-      var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
+      var minutesElapsed = Math.floor((currentTime - startTime) / (60 * 1000));
       updateStatus(`${operationType} in progress... (${minutesElapsed} min) - temporary connection issue`);
       return;
     }
