@@ -581,7 +581,9 @@ def train_model():
         df["item_id"] = range(len(df))
         
         # Log the categories we're training with
-        logger.info(f"Training with categories: {df['Category'].unique().tolist()}")
+        unique_categories = df['Category'].unique().tolist()
+        logger.info(f"Training with {len(unique_categories)} unique categories: {unique_categories}")
+        logger.info(f"Category column length: {df['Category'].str.len().describe()}")
         
         # Store training data with clear separation between category and description
         # Use a structured array with named fields for clarity
@@ -970,6 +972,12 @@ def classify_webhook():
                 logger.info(f"First training data point: {trained_data[0]}")
                 logger.info(f"Training data dtype: {trained_data.dtype}")
                 logger.info(f"Training data shape: {trained_data.shape}")
+                
+                # Log a few sample categories to verify content
+                sample_categories = [trained_data[i]['category'] if 'category' in trained_data.dtype.names else 
+                                    trained_data[i]['Category'] if 'Category' in trained_data.dtype.names else 
+                                    trained_data[i][1] for i in range(min(5, len(trained_data)))]
+                logger.info(f"Sample categories: {sample_categories}")
             
             if len(trained_embeddings) == 0 or len(trained_data) == 0:
                 error_msg = "No training data found"
@@ -1003,16 +1011,16 @@ def classify_webhook():
                 
                 # Extract the category directly from the structured array
                 # This should be the actual category, not the description
-                try:
-                    # First try accessing by field name (newer format)
+                category = None
+                
+                # Try different field names and positions to get the category
+                if 'category' in trained_data.dtype.names:
                     category = str(trained_data[idx]['category'])
-                except:
-                    try:
-                        # Try alternate field name (older format might use 'Category')
-                        category = str(trained_data[idx]['Category'])
-                    except:
-                        # Fallback to index 1 which should be the category field
-                        category = str(trained_data[idx][1])
+                elif 'Category' in trained_data.dtype.names:
+                    category = str(trained_data[idx]['Category'])
+                else:
+                    # Fallback to index 1 which should be the category field
+                    category = str(trained_data[idx][1])
                 
                 similarity_score = float(similarities[i][idx])  # Get the similarity score
                 
