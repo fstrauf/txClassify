@@ -54,9 +54,7 @@ def home():
         "endpoints": [
             "/classify",
             "/train",
-            "/health",
-            "/debug/validate-key",
-            "/debug/list-training-data"
+            "/health"
         ]
     })
 
@@ -587,12 +585,17 @@ def train_model():
         
         # Store training data with clear separation between category and description
         # Use a structured array with named fields for clarity
+        # IMPORTANT: We're using df["Category"] for the category field, not df["Narrative"]
         training_data = np.array(list(zip(df["item_id"], df["Category"], df["description"])), 
                               dtype=[('item_id', int), ('category', 'U100'), ('description', 'U500')])
         
         # Log the first few entries to verify structure
         logger.info(f"First training data entry: {training_data[0]}")
         logger.info(f"Training data dtype: {training_data.dtype}")
+        
+        # Log a few sample entries to verify we're storing the correct category
+        for i in range(min(5, len(training_data))):
+            logger.info(f"Training entry {i}: id={training_data[i]['item_id']}, category='{training_data[i]['category']}', description='{training_data[i]['description']}'")
         
         store_embeddings("txclassify", f"{sheet_id}_index.npy", training_data)
         
