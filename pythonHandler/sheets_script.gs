@@ -314,6 +314,8 @@ function showTrainingDialog() {
 function setupApiKey() {
   var ui = SpreadsheetApp.getUi();
   var properties = PropertiesService.getScriptProperties();
+  var existingApiKey = properties.getProperty('API_KEY') || '';
+  var userEmail = Session.getEffectiveUser().getEmail();
   
   var html = HtmlService.createHtmlOutput(`
     <style>
@@ -328,6 +330,7 @@ function setupApiKey() {
         border: none; 
         border-radius: 3px; 
         cursor: pointer;
+        margin-right: 10px;
       }
       button:disabled {
         background: #ccc;
@@ -348,25 +351,72 @@ function setupApiKey() {
         margin-top: 10px; 
         display: none; 
       }
+      .success {
+        color: green;
+        margin-top: 10px;
+        display: none;
+      }
+      .web-app-link {
+        display: block;
+        text-align: center;
+        margin: 20px 0;
+        color: #4285f4;
+        text-decoration: underline;
+        font-weight: bold;
+      }
+      .current-key {
+        background: #f0f8ff;
+        padding: 10px;
+        border-radius: 4px;
+        border: 1px solid #cce5ff;
+        margin-bottom: 15px;
+        word-break: break-all;
+        font-family: monospace;
+      }
+      .key-status {
+        font-weight: bold;
+        margin-bottom: 5px;
+      }
     </style>
     <div class="instructions">
-      <strong>How to get your API Key:</strong>
+      <strong>API Key Management:</strong>
+      <p>Your API key is used to authenticate with the categorization service.</p>
       <ol>
-        <li>Go to expensesorted.com and sign up for an account</li>
-        <li>After signing up, go to your account settings</li>
-        <li>Find and copy your API key</li>
+        <li>Get your API key from the ExpenseSorted web application</li>
+        <li>Copy the API key and paste it below</li>
+        <li>Click "Save API Key" to configure this spreadsheet</li>
       </ol>
     </div>
+    
+    ${existingApiKey ? `
+    <div class="current-key">
+      <div class="key-status">Current API Key:</div>
+      ${existingApiKey}
+    </div>
+    ` : ''}
+    
     <div class="form-group">
       <label>API Key:</label>
-      <input type="text" id="apiKey" placeholder="Enter your API key">
+      <input type="text" id="apiKey" placeholder="Enter your API key" value="${existingApiKey}">
       <div id="error" class="error"></div>
+      <div id="success" class="success"></div>
     </div>
-    <button onclick="submitApiKey()">Save API Key</button>
+    
+    <button onclick="saveApiKey()">Save API Key</button>
+    
+    <a href="https://expensesorted.com/api-key" target="_blank" class="web-app-link">
+      Get or Generate API Key from ExpenseSorted Web App
+    </a>
+    
     <script>
-      function submitApiKey() {
+      function saveApiKey() {
         var apiKey = document.getElementById('apiKey').value.trim();
         var errorDiv = document.getElementById('error');
+        var successDiv = document.getElementById('success');
+        
+        // Hide any previous messages
+        errorDiv.style.display = 'none';
+        successDiv.style.display = 'none';
         
         if (!apiKey) {
           errorDiv.textContent = 'API key is required';
@@ -376,7 +426,11 @@ function setupApiKey() {
         
         google.script.run
           .withSuccessHandler(function() {
-            google.script.host.close();
+            successDiv.textContent = 'API key saved successfully!';
+            successDiv.style.display = 'block';
+            setTimeout(function() {
+              google.script.host.close();
+            }, 1500);
           })
           .withFailureHandler(function(error) {
             errorDiv.textContent = error.message || 'An error occurred';
@@ -386,10 +440,10 @@ function setupApiKey() {
       }
     </script>
   `)
-    .setWidth(400)
-    .setHeight(350);
+    .setWidth(500)
+    .setHeight(450);
   
-  SpreadsheetApp.getUi().showModalDialog(html, 'Setup API Key');
+  SpreadsheetApp.getUi().showModalDialog(html, 'API Key Management');
 }
 
 // Helper function to save the API key
