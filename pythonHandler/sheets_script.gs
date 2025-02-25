@@ -1144,6 +1144,8 @@ function checkOperationStatus() {
     // Try to write results to sheet using the helper function
     if (writeResultsToSheet(result, config, sheet)) {
       // Results were successfully written, clean up
+      Logger.log("Results successfully written to sheet, cleaning up");
+      updateStatus("Categorisation completed successfully!");
       cleanupTrigger(triggerId);
       userProperties.deleteAllProperties();
       return;
@@ -1151,6 +1153,26 @@ function checkOperationStatus() {
     
     // Handle different status types
     if (result.status === "completed") {
+      // Check if we have results directly in the response
+      if (result.results && Array.isArray(result.results) && result.results.length > 0) {
+        Logger.log("Found results directly in the status response, writing to sheet");
+        
+        // Update config with values from the response if available
+        if (result.config) {
+          if (result.config.categoryColumn) config.categoryCol = result.config.categoryColumn;
+          if (result.config.startRow) config.startRow = result.config.startRow;
+        }
+        
+        // Try to write results again
+        if (writeResultsToSheet(result, config, sheet)) {
+          Logger.log("Successfully wrote results from status response");
+          updateStatus("Categorisation completed successfully!");
+          cleanupTrigger(triggerId);
+          userProperties.deleteAllProperties();
+          return;
+        }
+      }
+      
       // Wait for webhook results
       var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
       updateStatus(`${operationType === "categorise" ? "Categorisation" : "Training"} completed, processing results... (${minutesElapsed} min)`);
