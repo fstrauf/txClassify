@@ -4,13 +4,11 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import replicate
-from supabase import create_client, Client
+from supabase import create_client
 import tempfile
 from sklearn.metrics.pairwise import cosine_similarity
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
 import re
 import logging
 import gc
@@ -19,8 +17,6 @@ import uuid
 import time
 from typing import List
 from threading import Thread
-from functools import lru_cache
-from datetime import datetime, timedelta
 
 # Dictionary to store prediction data
 predictions_db = {}
