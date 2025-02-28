@@ -11,7 +11,7 @@ export default function Testimonials() {
       role: "Business Owner"
     },
     {
-      quote: "The Google Sheets integration is seamless. It just works with my existing setup.",
+      quote: "The Google Sheets™ integration is seamless. It just works with my existing setup.",
       author: "Michael R.",
       role: "Freelancer"
     }

@@ -22,7 +22,7 @@ export default function Instructions() {
         />
       </div>
       <p className="text-gray-700">
-        Next, get the Expense Sorted extension from the Google Sheets Extension Marketplace
+        Next, get the Expense Sorted extension from the Google Sheets™ Extension Marketplace
       </p>
       <div className="mt-6">
                   <Image
