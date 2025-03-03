@@ -94,7 +94,7 @@ export default function GetItHereButton() {
           <p className="text-green-600 mb-4">Thanks! Here's your spreadsheet:</p>
           <a
             className="inline-flex items-center px-8 py-4 rounded-xl bg-primary text-white font-semibold hover:bg-primary-dark transition-all duration-200 shadow-soft hover:shadow-glow"
-            href="https://docs.google.com/spreadsheets/d/1Buon6FEg7JGJMjuZgNgIrm5XyfP38JeaOJTNv6YQSHA/edit#gid=1128667954"
+            href="https://docs.google.com/spreadsheets/d/1zwvIEWCynocHpl3WGN7FToHsUuNaYStKjcZwh9ivAx4/edit?gid=432578983#gid=432578983"
             target="_blank"
             rel="noopener noreferrer"
           >
