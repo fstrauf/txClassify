@@ -22,7 +22,14 @@ export default function Instructions() {
         />
       </div>
       <p className="text-gray-700">
-        Next, get the Expense Sorted extension from the Google Sheets™ Extension Marketplace
+        Next, get the <a 
+          href="https://workspace.google.com/u/0/marketplace/app/expense_sorted/456363921097?flow_type=2"
+          className="text-primary hover:text-primary-dark underline"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Expense Sorted extension
+        </a> from the Google Sheets™ Extension Marketplace
       </p>
       <div className="mt-6">
                   <Image
