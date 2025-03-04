@@ -110,10 +110,9 @@ export default function ApiKeyManager({ userId }: ApiKeyManagerProps) {
         <h2 className="text-xl font-semibold text-gray-900 mb-4">How to use your API key:</h2>
         <ol className="list-decimal list-inside space-y-3 text-gray-700">
           <li>Copy your API key</li>
-          <li>Open your Google Sheets™ document</li>
-          <li>Go to Extensions &gt; Apps Script</li>
+          <li>Open the template of your Google Sheet</li>
+          <li>Go to Extensions &gt; Expense Sorted &gt; Configure API Key</li>
           <li>Add your API key to the configuration</li>
-          <li>Save and reload your sheet</li>
         </ol>
       </div>
     </div>
