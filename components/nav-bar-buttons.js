@@ -19,6 +19,12 @@ export const NavBarButtons = () => {
       )}
       {user && (
         <div className="flex items-center gap-3">
+          <Link
+            href="/example"
+            className="text-primary hover:text-primary-dark transition-colors duration-200"
+          >
+            Database Example
+          </Link>
           <LogoutButton />
           <Link 
             href="/profile" 
