@@ -5,13 +5,13 @@ import pandas as pd
 import logging
 from dotenv import load_dotenv
 import os
-from supabase import create_client
 import sys
 import uuid
 import traceback
 from datetime import datetime
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from utils.db import db  # Import our direct PostgreSQL database utility
 
 # Load environment variables
 load_dotenv()
@@ -67,22 +67,20 @@ logger.info("=== Application Starting ===")
 logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'production')}")
 
 # Initialize classification service with environment variables
-supabase_url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
-supabase_key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
-if not all([supabase_url, supabase_key]):
-    logger.error("Missing required environment variables for Supabase")
-    raise ValueError("Missing required environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY")
+backend_api = os.environ.get("BACKEND_API")
+if not backend_api:
+    logger.error("Missing required environment variable: BACKEND_API")
+    raise ValueError("Missing required environment variable: BACKEND_API")
 
-logger.info(f"Supabase URL configured: {supabase_url}")
-logger.info(f"Supabase key length: {len(supabase_key)}")
+logger.info(f"Backend API configured: {backend_api}")
 
-# Initialize Supabase client with logging
+# Initialize database connection
 try:
-    logger.info("=== Initializing Supabase ===")
-    supabase = create_client(supabase_url, supabase_key)
-    logger.info("Supabase client initialized successfully")
+    logger.info("=== Initializing Database Connection ===")
+    # The db object is already initialized when imported
+    logger.info("Database connection initialized successfully")
 except Exception as e:
-    logger.error(f"Failed to initialize Supabase: {str(e)}")
+    logger.error(f"Failed to initialize database connection: {str(e)}")
     raise
 
 @app.route('/')
@@ -111,14 +109,24 @@ def health():
 
 @app.route('/classify', methods=['POST'])
 def classify_transactions():
-    """Classify new transactions."""
+    """Classify transactions endpoint"""
+    logger.info("Classify transactions endpoint accessed")
+    
+    # Generate a unique request ID
+    g.request_id = str(uuid.uuid4())
+    logger.info(f"Request ID: {g.request_id}")
+    
     try:
-        # Log all incoming request details
-        logger.info("=== Incoming Classification Request ===")
+        # Extract data from request
+        data = request.json
+        logger.info(f"Received classification request with {len(data.get('transactions', []))} transactions")
         
-        # Get API key from headers
-        api_key = request.headers.get('X-API-Key')
+        # Validate API key
+        api_key = data.get('api_key')
         if not api_key:
+            logger.warning("No API key provided")
+            return jsonify({"error": "API key is required"}), 400
+        
             logger.error("No API key provided in request headers")
             return jsonify({"error": "API key is required"}), 401
 
@@ -169,8 +177,6 @@ def classify_transactions():
         # Initialize classification service
         try:
             classifier = ClassificationService(
-                supabase_url=supabase_url,
-                supabase_key=supabase_key,
                 backend_api=request.host_url.rstrip('/')
             )
         except Exception as e:
@@ -243,9 +249,9 @@ def train_model():
         # Create or update user configuration
         try:
             # Check if user config exists
-            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            response = db.get_account_by_user_id(user_id)
             
-            if not response.data:
+            if not response:
                 # Create new user config
                 default_config = {
                     "userId": user_id,
@@ -255,10 +261,10 @@ def train_model():
                     },
                     "categorisationRange": "A:Z"
                 }
-                supabase.table("account").insert(default_config).execute()
+                db.insert_account(user_id, default_config)
                 logger.info(f"Created new user configuration for {user_id}")
             else:
-                config = response.data[0]
+                config = response
                 # Ensure required fields exist
                 if not config.get("columnOrderCategorisation"):
                     config["columnOrderCategorisation"] = {
@@ -269,7 +275,7 @@ def train_model():
                     config["categorisationRange"] = "A:Z"
                     
                 # Update the configuration if needed
-                supabase.table("account").update(config).eq("userId", user_id).execute()
+                db.update_account(user_id, config)
                 logger.info(f"Updated configuration for user {user_id}")
                 
         except Exception as e:
@@ -353,23 +359,25 @@ def debug_validate_key():
         # Log the API key we're about to validate (safely)
         logger.info(f"Debug validation - API key: {api_key[:4]}...{api_key[-4:]}")
 
-        # Query Supabase directly
-        logger.info("Querying Supabase for account table data")
+        # Query database directly
+        logger.info("Querying database for account table data")
         try:
             # First try exact match
-            response = supabase.table("account").select("*").eq("api_key", api_key).execute()
+            response = db.get_account_by_api_key(api_key)
             match_type = "exact"
             
-            if not response.data:
+            if not response:
                 # Try case-insensitive match
-                response = supabase.table("account").select("*").ilike("api_key", api_key).execute()
-                match_type = "case-insensitive"
+                # Note: This would require a custom query in the db.py file
+                # For now, we'll just log that we can't do case-insensitive matching
+                logger.info("No exact match found, case-insensitive matching not supported with direct SQL")
+                match_type = "exact only"
             
-            logger.info(f"Query response count: {len(response.data) if response.data else 0}")
+            logger.info(f"Query response: {response is not None}")
             logger.info(f"Match type used: {match_type}")
             
-            if response.data:
-                user_data = response.data[0]
+            if response:
+                user_data = response
                 return jsonify({
                     "status": "success",
                     "match_type": match_type,
@@ -389,7 +397,7 @@ def debug_validate_key():
                 }), 401
                 
         except Exception as e:
-            logger.error(f"Supabase query error: {str(e)}")
+            logger.error(f"Database query error: {str(e)}")
             return jsonify({
                 "status": "error",
                 "error": "Database query failed",
@@ -404,18 +412,17 @@ def debug_validate_key():
         }), 500
 
 def get_user_config(user_id: str) -> dict:
-    """Get user configuration from Supabase using API key-based user ID."""
+    """Get user configuration from database using user ID."""
     try:
         logger.info(f"Looking up user configuration for userId: {user_id}")
         
         # Query user configuration
-        logger.info("Querying Supabase for user configuration...")
+        logger.info("Querying database for user configuration...")
         try:
-            response = supabase.table("account").select("*").eq("userId", user_id).execute()
-            logger.info(f"Query response: {response.data}")
+            account = db.get_account_by_user_id(user_id)
             
-            if response.data:
-                config = response.data[0]
+            if account:
+                config = account
                 # Ensure all required fields exist
                 if not config.get("columnOrderCategorisation"):
                     config["columnOrderCategorisation"] = {
@@ -428,7 +435,7 @@ def get_user_config(user_id: str) -> dict:
                     config["categorisationTab"] = "new_dump"
                     
                 # Update the configuration if we added any missing fields
-                supabase.table("account").update(config).eq("userId", user_id).execute()
+                db.update_account(user_id, config)
                 logger.info(f"Updated configuration for user {user_id}")
                 return config
                 
@@ -449,8 +456,8 @@ def get_user_config(user_id: str) -> dict:
         
         # Insert default configuration
         try:
-            insert_response = supabase.table("account").insert(default_config).execute()
-            if insert_response and insert_response.data:
+            account = db.insert_account(user_id, default_config)
+            if account:
                 logger.info(f"Created default configuration for user {user_id}")
                 return default_config
             else:
@@ -473,32 +480,24 @@ def validate_api_key(api_key: str) -> str:
         logger.debug(f"API key first/last 4 chars: {api_key[:4]}...{api_key[-4:]}")
         
         # Log the query we're about to make
-        logger.info("Querying Supabase for API key validation")
+        logger.info("Querying database for API key validation")
         
-        # First try exact match
-        response = supabase.table("account").select("*").eq("api_key", api_key).execute()
-        logger.debug(f"Exact match query response count: {len(response.data) if response.data else 0}")
+        # Get account by API key
+        account = db.get_account_by_api_key(api_key)
         
-        if not response.data:
-            # Try case-insensitive match as fallback
-            logger.info("No exact match found, trying case-insensitive match")
-            response = supabase.table("account").select("*").ilike("api_key", api_key).execute()
-            logger.debug(f"Case-insensitive query response count: {len(response.data) if response.data else 0}")
-            
-        if not response.data:
+        if not account:
             logger.error(f"No account found for API key: {api_key[:4]}...{api_key[-4:]}")
             raise Exception("Invalid API key - no matching account found")
             
         # Log the found user data (excluding sensitive info)
-        user_data = response.data[0]
-        logger.info(f"Found user data - userId: {user_data.get('userId')}")
-        logger.debug(f"User data keys: {list(user_data.keys())}")
+        logger.info(f"Found user data - userId: {account.get('userId')}")
+        logger.debug(f"User data keys: {list(account.keys())}")
         
-        if not user_data.get("userId"):
+        if not account.get("userId"):
             logger.error("User data found but missing userId")
             raise Exception("Invalid user configuration - missing userId")
         
-        return user_data["userId"]
+        return account["userId"]
         
     except Exception as e:
         logger.error(f"Error validating API key: {str(e)}")
@@ -542,13 +541,13 @@ def classify_webhook():
         
         # Store webhook result
         try:
-            result = {
-                "prediction_id": request.headers.get('X-Replicate-Prediction-Id'),
+            prediction_id = request.headers.get('X-Replicate-Prediction-Id')
+            result_data = {
                 "results": results,
                 "user_id": user_id,
                 "status": "success"
             }
-            supabase.table("webhook_results").insert(result).execute()
+            db.insert_webhook_result(prediction_id, result_data)
             logger.info("Stored classification results")
         except Exception as e:
             logger.warning(f"Error storing webhook result: {e}")

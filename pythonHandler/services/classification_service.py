@@ -8,19 +8,20 @@ import replicate
 import tempfile
 from typing import List, Dict, Any, Tuple
 import logging
-from supabase import create_client, Client
 import re
 import time
+import asyncio
 from urllib.parse import parse_qs, urlparse
 import gc
+from utils.prisma_client import prisma_client
 
 logger = logging.getLogger(__name__)
 
 class ClassificationService:
-    def __init__(self, supabase_url: str, supabase_key: str, backend_api: str):
-        self.supabase = create_client(supabase_url, supabase_key)
+    def __init__(self, backend_api: str):
         self.backend_api = backend_api
         self.bucket_name = "txclassify"
+        # We'll need to implement file storage differently
 
     def train(self, training_data: pd.DataFrame, sheet_id: str, user_id: str) -> None:
         """Train the classifier with descriptions and their categories."""
@@ -703,38 +704,41 @@ class ClassificationService:
             raise
 
     def save_embeddings(self, file_name: str, embeddings_array: np.ndarray) -> None:
-        """Save embeddings to Supabase storage."""
+        """Save embeddings to file storage."""
+        # For now, we'll save to local file system
+        # In production, this should be replaced with a proper file storage solution
+        os.makedirs("storage", exist_ok=True)
+        storage_path = os.path.join("storage", file_name)
+        
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
             np.savez_compressed(temp_file, embeddings_array)
             file_path = temp_file.name
 
         try:
-            with open(file_path, "rb") as f:
-                self.supabase.storage.from_(self.bucket_name).upload(
-                    file_name,
-                    f,
-                    file_options={"x-upsert": "true"}
-                )
-                logger.info(f"Successfully uploaded embeddings to {file_name}")
+            # Copy the temp file to our storage location
+            import shutil
+            shutil.copy(file_path, storage_path)
+            logger.info(f"Successfully saved embeddings to {storage_path}")
 
         except Exception as e:
-            logger.error(f"Error uploading embeddings: {str(e)}")
-            raise Exception(f"Failed to upload embeddings: {str(e)}")
+            logger.error(f"Error saving embeddings: {str(e)}")
+            raise Exception(f"Failed to save embeddings: {str(e)}")
 
         finally:
             os.unlink(file_path)
 
-    def fetch_embeddings(self, file_name: str) -> np.ndarray:
-        """Fetch embeddings from Supabase storage."""
-        with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
-            response = self.supabase.storage.from_(self.bucket_name).download(file_name)
-            temp_file.write(response)
-            temp_file.flush()
-
+    def fetch_embeddings(self, bucket_name: str, file_name: str) -> np.ndarray:
+        """Fetch embeddings from file storage."""
+        storage_path = os.path.join("storage", file_name)
+        
+        if not os.path.exists(storage_path):
+            raise FileNotFoundError(f"Embeddings file not found: {storage_path}")
+            
         try:
-            return np.load(temp_file.name, allow_pickle=True)["arr_0"]
-        finally:
-            os.unlink(temp_file.name)
+            return np.load(storage_path, allow_pickle=True)["arr_0"]
+        except Exception as e:
+            logger.error(f"Error loading embeddings: {str(e)}")
+            raise Exception(f"Failed to load embeddings: {str(e)}")
 
     def store_training_data(self, df: pd.DataFrame, sheet_id: str) -> None:
         """Store training data index."""
@@ -773,126 +777,55 @@ class ClassificationService:
         return datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
     def store_temp_training_data(self, training_data: list, training_key: str) -> str:
-        """Store training data temporarily in Supabase Storage."""
+        """Store temporary training data."""
         try:
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w') as temp_file:
-                # Write JSON data
-                json.dump(training_data, temp_file, ensure_ascii=False)
-                temp_file_path = temp_file.name
+            # Convert training data to JSON string
+            training_data_json = json.dumps(training_data)
             
-            try:
-                # Upload to Supabase Storage with retries
-                max_retries = 3
-                retry_delay = 1  # seconds
-                
-                for attempt in range(max_retries):
-                    try:
-                        with open(temp_file_path, 'rb') as f:
-                            self.supabase.storage.from_(self.bucket_name).upload(
-                                f"{training_key}.json",
-                                f,
-                                file_options={"x-upsert": "true"}
-                            )
-                        logger.info(f"Successfully stored temporary training data with key: {training_key}")
-                        break
-                    except Exception as upload_error:
-                        if attempt == max_retries - 1:
-                            raise
-                        logger.warning(f"Upload attempt {attempt + 1} failed: {str(upload_error)}")
-                        time.sleep(retry_delay)
-                
-            finally:
-                # Clean up temporary file
-                if os.path.exists(temp_file_path):
-                    os.unlink(temp_file_path)
+            # Store in a local file for now
+            os.makedirs("temp_storage", exist_ok=True)
+            file_path = os.path.join("temp_storage", f"{training_key}.json")
             
+            with open(file_path, 'w') as f:
+                f.write(training_data_json)
+                
+            logger.info(f"Stored temporary training data with key: {training_key}")
             return training_key
             
         except Exception as e:
-            logger.error(f"Error storing temp training data: {str(e)}")
-            raise
+            logger.error(f"Error storing temporary training data: {str(e)}")
+            raise Exception(f"Failed to store temporary training data: {str(e)}")
 
     def get_temp_training_data(self, training_key: str) -> list:
-        """Retrieve temporary training data from Supabase Storage."""
+        """Get temporary training data."""
         try:
-            # Download to temporary file with retries
-            max_retries = 3
-            retry_delay = 1  # seconds
-            last_error = None
+            file_path = os.path.join("temp_storage", f"{training_key}.json")
             
-            for attempt in range(max_retries):
-                try:
-                    with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w+b') as temp_file:
-                        response = self.supabase.storage.from_(self.bucket_name).download(
-                            f"{training_key}.json"
-                        )
-                        temp_file.write(response)
-                        temp_file.flush()
-                        temp_file_path = temp_file.name
-                        
-                        # Load the data
-                        with open(temp_file_path, 'r') as f:
-                            training_data = json.load(f)
-                        
-                        # Clean up temporary file
-                        os.unlink(temp_file_path)
-                        
-                        return training_data
-                except Exception as download_error:
-                    last_error = download_error
-                    if attempt < max_retries - 1:
-                        logger.warning(f"Download attempt {attempt + 1} failed: {str(download_error)}")
-                        time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-                    
-            raise Exception(f"Failed to retrieve training data after {max_retries} attempts: {str(last_error)}")
-                    
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Temporary training data not found for key: {training_key}")
+                
+            with open(file_path, 'r') as f:
+                training_data_json = f.read()
+                
+            training_data = json.loads(training_data_json)
+            logger.info(f"Retrieved temporary training data with key: {training_key}")
+            return training_data
+            
         except Exception as e:
-            logger.error(f"Error retrieving temp training data: {e}")
-            raise
+            logger.error(f"Error retrieving temporary training data: {str(e)}")
+            raise Exception(f"Failed to retrieve temporary training data: {str(e)}")
 
     def cleanup_temp_training_data(self, training_key: str) -> None:
-        """Clean up temporary training data from Supabase Storage."""
+        """Clean up temporary training data."""
         try:
-            # Double check if the file exists before attempting to delete
-            try:
-                # Try to download the file first to verify it exists
-                self.supabase.storage.from_(self.bucket_name).download(f"{training_key}.json")
+            file_path = os.path.join("temp_storage", f"{training_key}.json")
+            
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"Cleaned up temporary training data with key: {training_key}")
+            else:
+                logger.warning(f"No temporary training data found for key: {training_key}")
                 
-                # If we get here, the file exists, so we can delete it
-                self.supabase.storage.from_(self.bucket_name).remove([f"{training_key}.json"])
-                logger.info(f"Cleaned up temporary training data for key: {training_key}")
-                
-            except Exception as e:
-                if "Object not found" in str(e):
-                    logger.info(f"Temporary data {training_key} already cleaned up")
-                else:
-                    logger.warning(f"Error checking/cleaning temporary data: {e}")
-            
         except Exception as e:
-            logger.warning(f"Failed to clean up temporary training data: {e}")
-            # Don't raise the exception - cleanup failures shouldn't break the process
-
-    def store_embeddings(self, embeddings: np.ndarray, training_data: list, sheet_id: str = None) -> None:
-        """Store embeddings with their corresponding categories."""
-        try:
-            if len(embeddings) != len(training_data):
-                raise ValueError(f"Mismatch between embeddings ({len(embeddings)}) and training data ({len(training_data)})")
-            
-            # Extract categories and descriptions
-            categories = [item['Category'] for item in training_data]
-            descriptions = [item['Narrative'] for item in training_data]
-            
-            # Store training data
-            self._store_training_data(
-                embeddings=embeddings,
-                descriptions=descriptions,
-                categories=categories,
-                sheet_id=sheet_id
-            )
-            
-            logger.info(f"Successfully stored all embeddings")
-            
-        except Exception as e:
-            logger.error(f"Error storing embeddings: {e}")
-            raise 
+            logger.error(f"Error cleaning up temporary training data: {str(e)}")
+            # Don't raise an exception here, just log the error 
