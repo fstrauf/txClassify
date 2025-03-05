@@ -1373,6 +1373,7 @@ function pollOperationStatus() {
     var originalSheetName = userProperties.getProperty('ORIGINAL_SHEET_NAME');
     var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
     var currentTime = new Date().getTime();
+    var lastCheckTime = parseInt(userProperties.getProperty('LAST_CHECK_TIME') || '0');
     
     // If no prediction ID, return error
     if (!predictionId) {
@@ -1381,6 +1382,10 @@ function pollOperationStatus() {
     
     // Check if we've been running for more than 30 minutes
     if (currentTime - startTime > 30 * 60 * 1000) {
+      // Log timeout error
+      updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} timed out after 30 minutes`, 
+                   `Prediction ID: ${predictionId}`);
+      
       userProperties.deleteAllProperties();
       return { 
         error: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} timed out after 30 minutes`,
@@ -1393,6 +1398,8 @@ function pollOperationStatus() {
     try {
       serviceConfig = getServiceConfig();
     } catch (configError) {
+      updateStatus(`Error getting service configuration: ${configError.toString()}`, 
+                   `Prediction ID: ${predictionId}`);
       return { error: configError.toString() };
     }
     
@@ -1407,6 +1414,13 @@ function pollOperationStatus() {
     try {
       response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, options);
     } catch (fetchError) {
+      // Only log connection issues every 10 seconds to avoid flooding the log
+      if (currentTime - lastCheckTime > 10000) {
+        updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (temporary connection issue)`, 
+                     `Prediction ID: ${predictionId}`);
+        userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
+      }
+      
       return { 
         message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (temporary connection issue)`,
         status: "in_progress" 
@@ -1416,6 +1430,13 @@ function pollOperationStatus() {
     // Check HTTP response code
     var responseCode = response.getResponseCode();
     if (responseCode !== 200) {
+      // Only log non-200 responses every 10 seconds
+      if (currentTime - lastCheckTime > 10000) {
+        updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (service returned ${responseCode})`, 
+                     `Prediction ID: ${predictionId}`);
+        userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
+      }
+      
       return { 
         message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (service returned ${responseCode})`,
         status: "in_progress" 
@@ -1427,6 +1448,13 @@ function pollOperationStatus() {
     try {
       result = JSON.parse(response.getContentText());
     } catch (parseError) {
+      // Only log parsing errors every 10 seconds
+      if (currentTime - lastCheckTime > 10000) {
+        updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (parsing response)`, 
+                     `Prediction ID: ${predictionId}`);
+        userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
+      }
+      
       return { 
         message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (parsing response)`,
         status: "in_progress" 
@@ -1444,6 +1472,9 @@ function pollOperationStatus() {
     if (result.status === "completed") {
       // Try to write results to sheet
       if (operationType === 'categorise' && writeResultsToSheet(result, config, sheet)) {
+        updateStatus("Categorisation completed successfully!", 
+                     `Prediction ID: ${predictionId}, Processed: ${result.processed_transactions || 'all'} transactions`);
+        
         userProperties.deleteAllProperties();
         return { 
           status: "completed",
@@ -1452,9 +1483,12 @@ function pollOperationStatus() {
       } else if (operationType === 'train') {
         // Update training stats
         updateStats('Last Training Time', new Date().toLocaleString());
-        updateStats('Training Data Size', sheet.getLastRow() - 1);
+        updateStats('Training Data Size', userProperties.getProperty('TRAINING_SIZE') || 'Unknown');
         updateStats('Training Sheet', sheet.getName());
         updateStats('Model Status', 'Ready');
+        
+        updateStatus("Training completed successfully!", 
+                     `Prediction ID: ${predictionId}, Training size: ${userProperties.getProperty('TRAINING_SIZE') || 'Unknown'}`);
         
         userProperties.deleteAllProperties();
         return { 
@@ -1463,6 +1497,9 @@ function pollOperationStatus() {
         };
       }
     } else if (result.status === "failed") {
+      updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} failed: ${result.error || "Unknown error"}`, 
+                   `Prediction ID: ${predictionId}`);
+      
       userProperties.deleteAllProperties();
       return { 
         error: result.error || "Unknown error",
@@ -1486,6 +1523,16 @@ function pollOperationStatus() {
     if (result.processed_transactions && result.total_transactions) {
       progressInfo.processed_transactions = result.processed_transactions;
       progressInfo.total_transactions = result.total_transactions;
+      
+      // Calculate progress percentage
+      var progressPercent = Math.round((result.processed_transactions / result.total_transactions) * 100);
+      statusMessage += ` - ${progressPercent}% complete (${result.processed_transactions}/${result.total_transactions})`;
+    }
+    
+    // Only log status updates every 10 seconds to avoid flooding the log
+    if (currentTime - lastCheckTime > 10000) {
+      updateStatus(statusMessage, `Prediction ID: ${predictionId}`);
+      userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
     }
     
     return { 
@@ -1495,6 +1542,8 @@ function pollOperationStatus() {
     };
   } catch (error) {
     Logger.log("Error in pollOperationStatus: " + error);
+    updateStatus(`Error in operation status polling: ${error.toString()}`, 
+                 `Prediction ID: ${userProperties ? userProperties.getProperty('PREDICTION_ID') : 'Unknown'}`);
     return { error: error.toString() };
   }
 } 
