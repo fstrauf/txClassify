@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import replicate
-from supabase import create_client
 import tempfile
 from sklearn.metrics.pairwise import cosine_similarity
 import re
@@ -17,6 +16,8 @@ import uuid
 import time
 from typing import List
 from threading import Thread
+from pythonHandler.utils.prisma_client import prisma_client
+import psycopg2
 
 # Dictionary to store prediction data
 predictions_db = {}
@@ -60,31 +61,48 @@ def home():
 def health():
     """Health check endpoint"""
     logger.info("Health check endpoint accessed")
-    return jsonify({
+    
+    health_status = {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat()
-    })
-
-# Initialize Supabase client with logging
-try:
-    logger.info("=== Initializing Supabase ===")
-    supabase_url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
-    supabase_key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+        "timestamp": datetime.now().isoformat(),
+        "components": {
+            "app": "healthy"
+        }
+    }
     
-    if not all([supabase_url, supabase_key]):
-        logger.error("Missing required environment variables for Supabase")
-        raise ValueError("Missing required environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    # Check database connection
+    try:
+        # Use psycopg2 to check database connection
+        conn = psycopg2.connect(
+            host=os.environ.get("PGHOST_UNPOOLED"),
+            database=os.environ.get("PGDATABASE"),
+            user=os.environ.get("PGUSER"),
+            password=os.environ.get("PGPASSWORD"),
+            sslmode="require",
+            connect_timeout=5
+        )
+        
+        # Execute a simple query
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            result = cur.fetchone()
+            
+        # Close the connection
+        conn.close()
+        
+        if result and result[0] == 1:
+            health_status["components"]["database"] = "healthy"
+        else:
+            health_status["components"]["database"] = "unhealthy"
+            health_status["status"] = "degraded"
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
+        health_status["components"]["database"] = "unhealthy"
+        health_status["status"] = "degraded"
+        health_status["database_error"] = str(e)
     
-    logger.info(f"Supabase URL configured: {supabase_url}")
-    logger.info(f"Supabase key length: {len(supabase_key)}")
-    
-    supabase = create_client(supabase_url, supabase_key)
-    logger.info("Supabase client initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize Supabase: {str(e)}")
-    raise
-
-BACKEND_API = os.environ.get("BACKEND_API")
+    # Return health status
+    return jsonify(health_status)
 
 def validate_api_key(api_key: str) -> str:
     """Validate API key and return user ID if valid."""
@@ -95,32 +113,38 @@ def validate_api_key(api_key: str) -> str:
         logger.debug(f"API key first/last 4 chars: {api_key[:4]}...{api_key[-4:]}")
         
         # Log the query we're about to make
-        logger.info("Querying Supabase for API key validation")
+        logger.info("Querying database for API key validation")
         
-        # First try exact match
-        response = supabase.table("account").select("*").eq("api_key", api_key).execute()
-        logger.debug(f"Exact match query response count: {len(response.data) if response.data else 0}")
+        # Use psycopg2 to execute the query
+        conn = psycopg2.connect(
+            host=os.environ.get("PGHOST_UNPOOLED"),
+            database=os.environ.get("PGDATABASE"),
+            user=os.environ.get("PGUSER"),
+            password=os.environ.get("PGPASSWORD"),
+            sslmode="require",
+            connect_timeout=5
+        )
         
-        if not response.data:
-            # Try case-insensitive match as fallback
-            logger.info("No exact match found, trying case-insensitive match")
-            response = supabase.table("account").select("*").ilike("api_key", api_key).execute()
-            logger.debug(f"Case-insensitive query response count: {len(response.data) if response.data else 0}")
-            
-        if not response.data:
+        # Execute query to find account by API key
+        with conn.cursor() as cur:
+            cur.execute("SELECT \"userId\" FROM \"account\" WHERE api_key = %s", (api_key,))
+            result = cur.fetchone()
+        
+        # Close the connection
+        conn.close()
+        
+        if not result:
             logger.error(f"No account found for API key: {api_key[:4]}...{api_key[-4:]}")
             raise Exception("Invalid API key - no matching account found")
-            
-        # Log the found user data (excluding sensitive info)
-        user_data = response.data[0]
-        logger.info(f"Found user data - userId: {user_data.get('userId')}")
-        logger.debug(f"User data keys: {list(user_data.keys())}")
         
-        if not user_data.get("userId"):
+        # Log the found user data (excluding sensitive info)
+        logger.info(f"Found user data - userId: {result[0]}")
+        
+        if not result[0]:
             logger.error("User data found but missing userId")
             raise Exception("Invalid user configuration - missing userId")
         
-        return user_data["userId"]
+        return result[0]
         
     except Exception as e:
         logger.error(f"Error validating API key: {str(e)}")
@@ -194,52 +218,58 @@ def run_prediction(mode: str, sheet_id: str, user_id: str, descriptions: list, s
         logger.error(f"Error running prediction: {e}")
         raise
 
-def store_embeddings(bucket_name: str, file_name: str, data: np.ndarray) -> None:
-    """Store embeddings in Supabase storage."""
+def store_embeddings(file_name: str, data: np.ndarray) -> None:
+    """Store embeddings in database using Prisma."""
     try:
+        # Convert numpy array to bytes
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
             np.savez_compressed(temp_file, data)
             temp_file_path = temp_file.name
 
+        # Read the compressed data as bytes
         with open(temp_file_path, "rb") as f:
-            supabase.storage.from_(bucket_name).upload(
-                file_name,
-                f,
-                file_options={"x-upsert": "true"}
-            )
-
+            data_bytes = f.read()
+        
+        # Clean up temp file
         os.unlink(temp_file_path)
+        
+        # Store in database using Prisma synchronous wrapper
+        result = prisma_client.sync_store_embedding(file_name, data_bytes)
+        
+        if not result:
+            raise Exception("Failed to store embedding in database")
+            
+        logger.info(f"Successfully stored embedding: {file_name}")
     except Exception as e:
         logger.error(f"Error storing embeddings: {e}")
         raise
 
-def fetch_embeddings(bucket_name: str, file_name: str) -> np.ndarray:
-    """Fetch embeddings from Supabase storage."""
+def fetch_embeddings(file_name: str) -> np.ndarray:
+    """Fetch embeddings from database using Prisma."""
     try:
+        # Fetch from database using Prisma synchronous wrapper
+        data_bytes = prisma_client.sync_fetch_embedding(file_name)
+        
+        if not data_bytes:
+            raise Exception(f"No embedding found for file: {file_name}")
+        
+        # Create a temporary file to load the numpy array
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
-            response = supabase.storage.from_(bucket_name).download(file_name)
-            temp_file.write(response)
+            temp_file.write(data_bytes)
             temp_file_path = temp_file.name
-
-        data = np.load(temp_file_path, allow_pickle=True)["arr_0"]
+        
+        # Load the numpy array from the temporary file
+        data = np.load(temp_file_path)
+        
+        # Clean up temp file
         os.unlink(temp_file_path)
         
-        # Check if this is index data with the old format and migrate if needed
-        if file_name.endswith('_index.npy') and data.dtype.names and 'Category' in data.dtype.names and 'category' not in data.dtype.names:
-            logger.info(f"Detected old format index data in {file_name}, migrating to new format")
-            # Create a new array with the updated field name
-            new_data = np.array([(item['item_id'], item['Category'], item['description']) for item in data],
-                              dtype=[('item_id', int), ('category', 'U100'), ('description', 'U500')])
-            
-            # Store the migrated data
-            sheet_id = file_name.split('_index.npy')[0]
-            logger.info(f"Storing migrated index data for sheet_id: {sheet_id}")
-            store_embeddings(bucket_name, file_name, new_data)
-            
-            # Return the migrated data
-            return new_data
-            
-        return data
+        # Get the array from the npz file (first array)
+        array_name = list(data.keys())[0]
+        result = data[array_name]
+        
+        logger.info(f"Successfully fetched embedding: {file_name}")
+        return result
     except Exception as e:
         logger.error(f"Error fetching embeddings: {e}")
         raise
@@ -685,7 +715,7 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
 
         # Clean and prepare descriptions
         descriptions = [clean_text(t["description"]) for t in transactions if t.get("description")]
-        
+       
         # Get embeddings for new descriptions
         model = replicate.models.get("replicate/all-mpnet-base-v2")
         version = model.versions.get("b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305")
@@ -770,7 +800,7 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         # If we're using webhooks, we don't need to process the results here
         # The webhook will handle it
         predictions_db[prediction_id]["status"] = "waiting_for_webhook"
-        predictions_db[prediction_id]["status_message"] = "Embeddings completed, waiting for webhook processing"
+        predictions_db[prediction_id]["status_message"] = "Embeddings completed, waiting for webhook to process results"
         logger.info(f"Embeddings completed for prediction {prediction_id}, waiting for webhook to process results")
 
     except Exception as e:
@@ -1154,25 +1184,40 @@ def manage_api_key():
             if '@' in user_id and not user_id.startswith('google-oauth2|'):
                 user_id = f"google-oauth2|{user_id}"
                 
-            # Look up user in database
-            response = supabase.table("account").select("*").eq("userId", user_id).execute()
-            if not response.data:
-                return jsonify({"error": "User not found"}), 404
+            # Use psycopg2 to execute the query
+            conn = psycopg2.connect(
+                host=os.environ.get("PGHOST_UNPOOLED"),
+                database=os.environ.get("PGDATABASE"),
+                user=os.environ.get("PGUSER"),
+                password=os.environ.get("PGPASSWORD"),
+                sslmode="require",
+                connect_timeout=5
+            )
+            
+            # Execute query to find account by user ID
+            with conn.cursor() as cur:
+                cur.execute('SELECT "userId", api_key FROM "account" WHERE "userId" = %s', (user_id,))
+                result = cur.fetchone()
                 
-            # Return the API key if it exists
-            user_data = response.data[0]
-            if user_data.get("api_key"):
-                return jsonify({
-                    "status": "success",
-                    "user_id": user_id,
-                    "api_key": user_data["api_key"]
-                })
-            else:
-                return jsonify({
-                    "status": "not_found",
-                    "user_id": user_id,
-                    "message": "No API key found for this user"
-                }), 404
+                # Close the connection
+                conn.close()
+                
+                if not result:
+                    return jsonify({"error": "User not found"}), 404
+                
+                # Return the API key if it exists
+                if result[1]:  # api_key is the second column
+                    return jsonify({
+                        "status": "success",
+                        "user_id": user_id,
+                        "api_key": result[1]
+                    })
+                else:
+                    return jsonify({
+                        "status": "not_found",
+                        "user_id": user_id,
+                        "message": "No API key found for this user"
+                    }), 404
         
         # For POST requests, we generate a new API key
         elif request.method == 'POST':
@@ -1189,27 +1234,43 @@ def manage_api_key():
             # Generate a new API key (UUID)
             new_api_key = str(uuid.uuid4())
             
-            # Check if user exists
-            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            # Use psycopg2 to execute the query
+            conn = psycopg2.connect(
+                host=os.environ.get("PGHOST_UNPOOLED"),
+                database=os.environ.get("PGDATABASE"),
+                user=os.environ.get("PGUSER"),
+                password=os.environ.get("PGPASSWORD"),
+                sslmode="require",
+                connect_timeout=5
+            )
             
-            if response.data:
-                # Update existing user
-                supabase.table("account").update({"api_key": new_api_key}).eq("userId", user_id).execute()
-                logger.info(f"Updated API key for user {user_id}")
-            else:
-                # Create new user
-                default_config = {
-                    "userId": user_id,
-                    "categorisationRange": "A:Z",
-                    "columnOrderCategorisation": {
+            # Check if user exists and update or create accordingly
+            with conn.cursor() as cur:
+                cur.execute('SELECT "userId" FROM "account" WHERE "userId" = %s', (user_id,))
+                user_exists = cur.fetchone() is not None
+                
+                if user_exists:
+                    # Update existing account
+                    cur.execute('UPDATE "account" SET api_key = %s WHERE "userId" = %s', (new_api_key, user_id))
+                    logger.info(f"Updated API key for user {user_id}")
+                else:
+                    # Create new account with default config
+                    default_config = json.dumps({
                         "categoryColumn": "E",
                         "descriptionColumn": "C"
-                    },
-                    "categorisationTab": None,
-                    "api_key": new_api_key
-                }
-                supabase.table("account").insert(default_config).execute()
-                logger.info(f"Created new user with API key: {user_id}")
+                    })
+                    
+                    cur.execute(
+                        'INSERT INTO "account" ("userId", api_key, "categorisationRange", "categorisationTab", "columnOrderCategorisation") VALUES (%s, %s, %s, %s, %s)',
+                        (user_id, new_api_key, "A:Z", None, default_config)
+                    )
+                    logger.info(f"Created new user with API key: {user_id}")
+                
+                # Commit the transaction
+                conn.commit()
+            
+            # Close the connection
+            conn.close()
             
             return jsonify({
                 "status": "success",

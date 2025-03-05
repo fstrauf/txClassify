@@ -1,21 +1,18 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
   previewFeatures = ["metrics"]
 }
 
 generator python {
   provider             = "prisma-client-py"
   interface            = "asyncio"
-  recursive_type_depth = 5
+  recursive_type_depth = "5"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider     = "postgresql"
+  url          = env("DATABASE_URL")
+  directUrl    = env("DIRECT_URL")
   relationMode = "foreignKeys"
 }
 
@@ -37,4 +34,15 @@ model Account {
   api_key                   String? @unique
 
   @@map("account")
+}
+
+model Embedding {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  file_name  String    @unique
+  data       String    @db.Text
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at DateTime? @updatedAt @db.Timestamptz(6)
+
+  @@index([file_name], map: "idx_embedding_file_name")
+  @@map("embeddings")
 }
