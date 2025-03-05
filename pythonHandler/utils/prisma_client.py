@@ -3,6 +3,7 @@ import logging
 import asyncio
 from prisma import Prisma
 from prisma.errors import PrismaError
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,97 @@ class PrismaClient:
                 logger.info("Disconnected from database")
             except PrismaError as e:
                 logger.error(f"Error disconnecting from database: {str(e)}")
+    
+    # Synchronous wrapper methods
+    def sync_connect(self):
+        """Synchronous wrapper for connect."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.connect())
+        finally:
+            loop.close()
+    
+    def sync_disconnect(self):
+        """Synchronous wrapper for disconnect."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.disconnect())
+        finally:
+            loop.close()
+    
+    def sync_get_account_by_user_id(self, user_id):
+        """Synchronous wrapper for get_account_by_user_id."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.get_account_by_user_id(user_id))
+        finally:
+            loop.close()
+    
+    def sync_get_account_by_api_key(self, api_key):
+        """Synchronous wrapper for get_account_by_api_key."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.get_account_by_api_key(api_key))
+        finally:
+            loop.close()
+    
+    def sync_insert_account(self, user_id, data):
+        """Synchronous wrapper for insert_account."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.insert_account(user_id, data))
+        finally:
+            loop.close()
+    
+    def sync_update_account(self, user_id, data):
+        """Synchronous wrapper for update_account."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.update_account(user_id, data))
+        finally:
+            loop.close()
+    
+    def sync_insert_webhook_result(self, prediction_id, results):
+        """Synchronous wrapper for insert_webhook_result."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.insert_webhook_result(prediction_id, results))
+        finally:
+            loop.close()
+    
+    def sync_get_webhook_result(self, prediction_id):
+        """Synchronous wrapper for get_webhook_result."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.get_webhook_result(prediction_id))
+        finally:
+            loop.close()
+    
+    def sync_store_embedding(self, file_name, data_bytes):
+        """Synchronous wrapper for store_embedding."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.store_embedding(file_name, data_bytes))
+        finally:
+            loop.close()
+    
+    def sync_fetch_embedding(self, file_name):
+        """Synchronous wrapper for fetch_embedding."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.fetch_embedding(file_name))
+        finally:
+            loop.close()
     
     # Account methods
     async def get_account_by_user_id(self, user_id):
@@ -211,6 +303,59 @@ class PrismaClient:
             return None
         except PrismaError as e:
             logger.error(f"Error getting webhook result: {str(e)}")
+            raise
+            
+    # Embedding methods
+    async def store_embedding(self, file_name, data_bytes):
+        """Store embedding data in the database."""
+        try:
+            # Convert bytes to base64 string for storage
+            data_base64 = base64.b64encode(data_bytes).decode('utf-8')
+            
+            # Check if embedding already exists
+            existing = await self.client.embedding.find_unique(
+                where={"file_name": file_name}
+            )
+            
+            if existing:
+                # Update existing embedding
+                embedding = await self.client.embedding.update(
+                    where={"file_name": file_name},
+                    data={"data": data_base64}
+                )
+            else:
+                # Create new embedding
+                embedding = await self.client.embedding.create(
+                    data={
+                        "file_name": file_name,
+                        "data": data_base64
+                    }
+                )
+            
+            if embedding:
+                logger.info(f"Successfully stored embedding: {file_name}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error storing embedding: {str(e)}")
+            raise
+    
+    async def fetch_embedding(self, file_name):
+        """Fetch embedding data from the database."""
+        try:
+            embedding = await self.client.embedding.find_unique(
+                where={"file_name": file_name}
+            )
+            
+            if embedding and embedding.data:
+                # Convert base64 string back to bytes
+                data_bytes = base64.b64decode(embedding.data)
+                logger.info(f"Successfully fetched embedding: {file_name}")
+                return data_bytes
+            logger.warning(f"No embedding found for file: {file_name}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching embedding: {str(e)}")
             raise
 
 # Create a singleton instance
