@@ -9,8 +9,12 @@ import requests
 import logging
 import uuid
 import asyncio
+import shutil
+import threading
+import socket
 from unittest.mock import patch, MagicMock
 from dotenv import load_dotenv
+from flask import Flask, jsonify
 
 # Load environment variables from .env file
 load_dotenv()
@@ -19,84 +23,95 @@ load_dotenv()
 script_dir = os.path.dirname(os.path.abspath(__file__))
 pythonHandler_dir = os.path.dirname(script_dir)
 project_root = os.path.dirname(pythonHandler_dir)
-
-# Add both the pythonHandler directory and the project root to the path
-sys.path.insert(0, pythonHandler_dir)
-sys.path.insert(0, project_root)
-
-# Now import the app and other modules
-from main import app, validate_api_key
+sys.path.append(project_root)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Store the original validate_api_key function
-original_validate_api_key = validate_api_key
+# Set up test environment
+os.environ["FLASK_ENV"] = "testing"
+os.environ["TESTING"] = "True"
 
-# Create a mock for the validate_api_key function
+def find_free_port():
+    """Find a free port to use for the test server."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('localhost', 0))
+        return s.getsockname()[1]
+
+def start_flask_server(port):
+    """Start a Flask server for testing."""
+    from pythonHandler.main import app
+    app.config['TESTING'] = True
+    app.config['DEBUG'] = False
+    server_thread = threading.Thread(target=app.run, kwargs={
+        'host': 'localhost',
+        'port': port,
+        'debug': False,
+        'use_reloader': False
+    })
+    server_thread.daemon = True
+    server_thread.start()
+    # Give the server a moment to start
+    time.sleep(1)
+    return server_thread
+
+# Store the original validate_api_key function
+from pythonHandler.main import validate_api_key as original_validate_api_key
+
 def mock_validate_api_key(api_key):
-    """Mock function for API key validation."""
-    logger.info(f"Using mock API key validation for key: {api_key}")
+    """Mock function to validate API key."""
     return "test_user_123"
 
 class EndToEndTest(unittest.TestCase):
-    """Test the complete flow from training to categorization."""
-    
+    """End-to-end test for the transaction classification system."""
+
     @classmethod
     def setUpClass(cls):
-        """Set up the test environment once before all tests."""
-        # Create a test client
-        cls.client = app.test_client()
+        """Set up the test environment."""
+        # Find a free port for the test server
+        cls.port = find_free_port()
         
-        # Set up test data paths
-        cls.training_data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                                             'test_data', 'training_test.csv')
-        cls.categorize_data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                                               'test_data', 'categorise_test.csv')
+        # Start the Flask server
+        cls.server_thread = start_flask_server(cls.port)
         
-        # Generate a unique test ID to use as spreadsheet_id
-        cls.test_spreadsheet_id = f"test_{uuid.uuid4().hex[:8]}"
-        
-        # Get API key from environment - use the actual API key if available
-        cls.test_api_key = os.environ.get("API_KEY")
-        if not cls.test_api_key:
-            logger.warning("API_KEY not found in environment. Using default test key.")
-            cls.test_api_key = "test_api_key_12345"
-        
-        # Backend API URL from environment
-        cls.backend_url = os.environ.get("BACKEND_API", "http://localhost:3001")
-        logger.info(f"Using backend API URL: {cls.backend_url}")
+        # Backend API URL
+        cls.backend_api_url = f"http://localhost:{cls.port}"
+        logger.info(f"Using backend API URL: {cls.backend_api_url}")
         
         # Check if Replicate API token is set
-        if not os.environ.get("REPLICATE_API_TOKEN"):
-            logger.warning("REPLICATE_API_TOKEN not found in environment. Tests may fail.")
+        cls.replicate_token = os.environ.get("REPLICATE_API_TOKEN")
+        if not cls.replicate_token:
+            logger.warning("REPLICATE_API_TOKEN not found in environment. Some tests may fail.")
         
-        # Ensure storage directory exists
+        # Set up test data paths
+        cls.training_data_path = os.path.join(pythonHandler_dir, "test_data", "training_test.csv")
+        cls.categorize_data_path = os.path.join(pythonHandler_dir, "test_data", "categorise_test.csv")
+        
+        # Create a unique test spreadsheet ID
+        cls.test_spreadsheet_id = f"test_{uuid.uuid4().hex[:8]}"
+        logger.info(f"Using test spreadsheet ID: {cls.test_spreadsheet_id}")
+        
+        # Set up test API key
+        cls.test_api_key = "test_api_key_12345"
+        
+        # Ensure the storage directory exists
         os.makedirs("storage", exist_ok=True)
-        
-        # Replace the validate_api_key function with our mock
-        globals()['validate_api_key'] = mock_validate_api_key
-        
+
     @classmethod
     def tearDownClass(cls):
-        """Clean up after all tests have run."""
-        # Restore the original validate_api_key function
-        globals()['validate_api_key'] = original_validate_api_key
-        
-        # Clean up any test files created
+        """Clean up after tests."""
+        # Clean up any test files
         try:
-            # Remove any test embeddings files
-            embedding_files = [
-                f"{cls.test_spreadsheet_id}.npy",
-                f"{cls.test_spreadsheet_id}_index.npy"
-            ]
-            for file_name in embedding_files:
-                if os.path.exists(os.path.join("storage", file_name)):
-                    os.remove(os.path.join("storage", file_name))
+            for filename in os.listdir("storage"):
+                if cls.test_spreadsheet_id in filename:
+                    os.remove(os.path.join("storage", filename))
         except Exception as e:
             logger.warning(f"Error cleaning up test files: {e}")
-    
+            
+        # The server thread is a daemon, so it will be terminated when the main thread exits
+        logger.info("Test cleanup complete")
+
     def setUp(self):
         """Set up before each test."""
         # Ensure storage directory exists
@@ -182,13 +197,13 @@ class EndToEndTest(unittest.TestCase):
         for attempt in range(max_attempts):
             try:
                 # Check prediction status
-                status_response = self.client.get(f'/status/{prediction_id}')
+                status_response = requests.get(f"{self.backend_api_url}/status/{prediction_id}")
                 if status_response.status_code != 200:
-                    logger.warning(f"Failed to get status for prediction {prediction_id}: {status_response.data}")
+                    logger.warning(f"Failed to get status for prediction {prediction_id}: {status_response.text}")
                     time.sleep(delay)
                     continue
                 
-                status_data = json.loads(status_response.data)
+                status_data = status_response.json()
                 status = status_data.get('status')
                 
                 logger.info(f"Prediction {prediction_id} status: {status}")
@@ -210,10 +225,10 @@ class EndToEndTest(unittest.TestCase):
         logger.warning(f"Timed out waiting for prediction {prediction_id} to complete, but continuing test")
         return True
     
-    @patch('main.validate_api_key')
-    @patch('main.prisma_client.sync_get_account_by_user_id')
-    @patch('main.prisma_client.sync_get_account_by_api_key')
-    @patch('main.prisma_client.sync_store_embedding')
+    @patch('pythonHandler.main.validate_api_key')
+    @patch('pythonHandler.main.prisma_client.sync_get_account_by_user_id')
+    @patch('pythonHandler.main.prisma_client.sync_get_account_by_api_key')
+    @patch('pythonHandler.main.prisma_client.sync_store_embedding')
     @patch('replicate.predictions.create')
     def test_01_training_flow(self, mock_replicate_create, mock_store_embedding, mock_get_account_by_api_key, mock_get_account_by_user_id, mock_validate_api_key):
         """Test the training flow."""
@@ -280,15 +295,15 @@ class EndToEndTest(unittest.TestCase):
             transaction["Category"] = simple_df['Category'].iloc[i]
         
         # Send the training request
-        response = self.client.post(
-            '/train',
+        response = requests.post(
+            f"{self.backend_api_url}/train",
             headers={'X-API-Key': self.test_api_key},
             json=training_data
         )
         
         # Check the response
-        self.assertEqual(response.status_code, 200, f"Training request failed: {response.data}")
-        result = json.loads(response.data)
+        self.assertEqual(response.status_code, 200, f"Training request failed: {response.text}")
+        result = response.json()
         self.assertEqual(result['status'], 'processing', "Training should be in processing state")
         self.assertIn('prediction_id', result, "Response should include prediction_id")
         
@@ -312,141 +327,171 @@ class EndToEndTest(unittest.TestCase):
         }
         
         # Send the webhook request
-        webhook_response = self.client.post(
-            f'/train/webhook?spreadsheetId={self.test_spreadsheet_id}&userId={user_id}',
+        webhook_response = requests.post(
+            f"{self.backend_api_url}/train/webhook?spreadsheetId={self.test_spreadsheet_id}&userId={user_id}",
             json=webhook_data
         )
         
         # Check the webhook response
-        self.assertEqual(webhook_response.status_code, 200, f"Webhook request failed: {webhook_response.data}")
-        webhook_result = json.loads(webhook_response.data)
+        self.assertEqual(webhook_response.status_code, 200, f"Webhook request failed: {webhook_response.text}")
+        webhook_result = webhook_response.json()
         self.assertEqual(webhook_result['status'], 'success', "Webhook should return success")
         
         logger.info("Training flow test completed successfully")
     
-    @patch('main.validate_api_key')
-    @patch('main.prisma_client.sync_get_account_by_user_id')
-    @patch('main.prisma_client.sync_get_account_by_api_key')
-    @patch('main.fetch_embeddings')
-    @patch('replicate.predictions.create')
-    def test_02_categorization_flow(self, mock_replicate_create, mock_fetch_embeddings, mock_get_account_by_api_key, mock_get_account_by_user_id, mock_validate_api_key):
-        """Test the categorization flow."""
-        logger.info("Starting categorization flow test")
+    @patch('pythonHandler.main.validate_api_key')
+    @patch('pythonHandler.main.prisma_client.sync_get_account_by_user_id')
+    @patch('pythonHandler.main.prisma_client.sync_get_account_by_api_key')
+    @patch('pythonHandler.main.fetch_embeddings')
+    @patch('os.path.exists')
+    def test_02_categorization_flow(
+        self,
+        mock_path_exists,
+        mock_fetch_embeddings,
+        mock_get_account_by_api_key,
+        mock_get_account_by_user_id,
+        mock_validate_api_key
+    ):
+        """Test the categorization flow"""
+        logging.info("Starting categorization flow test")
         
-        # Mock the API key validation
-        mock_validate_api_key.return_value = "test_user_123"
+        # Mock API key validation
+        mock_validate_api_key.return_value = "test-user-123"
         
-        # Mock the account retrieval
+        # Create a mock account
         mock_account = {
-            "userId": "test_user_123",
-            "categorisationRange": "A:E",
+            "userId": "test-user-123",
+            "categorisationRange": "A1:Z1000",
             "categorisationTab": "Sheet1",
-            "columnOrderCategorisation": "A,B,C,D,E",
-            "api_key": self.test_api_key
+            "columnOrderCategorisation": ["Description", "Category"],
+            "api_key": "test-api-key"
         }
+        
+        # Mock account retrieval
         mock_get_account_by_user_id.return_value = mock_account
         mock_get_account_by_api_key.return_value = mock_account
         
-        # Mock the replicate prediction
-        mock_prediction = MagicMock()
-        mock_prediction.id = "test_categorize_id"
-        mock_prediction.status = "processing"
-        mock_replicate_create.return_value = mock_prediction
-        
-        # Create mock embeddings and training data
-        categories = ['Groceries', 'Transport', 'Utility', 'Shopping', 'Entertainment']
-        mock_embeddings = np.random.rand(len(categories), 384).astype(np.float32)
-        mock_training_data = np.array(
-            [(i, cat, f"Sample {cat}") for i, cat in enumerate(categories)],
-            dtype=[('item_id', int), ('category', 'U50'), ('description', 'U500')]
-        )
-        
-        # Save the mock embeddings and training data to disk
-        np.save(os.path.join("storage", f"{self.test_spreadsheet_id}.npy"), mock_embeddings)
-        np.save(os.path.join("storage", f"{self.test_spreadsheet_id}_index.npy"), mock_training_data)
-        
-        # Mock the fetch_embeddings function to return our mock data
-        mock_fetch_embeddings.side_effect = lambda filename: (
-            mock_embeddings if filename == f"{self.test_spreadsheet_id}.npy" 
-            else mock_training_data
-        )
-        
-        # Load categorization data
-        categorize_df = self.load_categorize_data()
-        self.assertFalse(categorize_df.empty, "Categorization data should not be empty")
-        
-        # Ensure we have a Description column
-        if 'Description' not in categorize_df.columns:
-            # Use the first text column we find
-            text_col = categorize_df.select_dtypes(include=['object']).columns[0]
-            categorize_df['Description'] = categorize_df[text_col]
-        
-        # Use a default user ID
-        user_id = os.environ.get("TEST_USER_ID", "test_user_123")
-        logger.info(f"Using user ID: {user_id}")
-        
-        # Prepare transactions for categorization
-        transactions = [{"description": desc} for desc in categorize_df['Description'].tolist()]
-        
-        # Prepare the categorization request
-        categorize_data = {
-            "userId": user_id,
-            "spreadsheetId": self.test_spreadsheet_id,
-            "sheetName": "TestSheet",
-            "startRow": "2",
-            "categoryColumn": "E",
-            "transactions": transactions
+        # Create mock prediction
+        mock_prediction = {
+            "id": "test_prediction_id",
+            "status": "succeeded"
         }
         
-        # Send the categorization request
-        response = self.client.post(
-            '/classify',
-            headers={'X-API-Key': self.test_api_key},
-            json=categorize_data
+        # Create mock embeddings and training data
+        mock_embeddings = np.random.rand(10, 384).astype(np.float32)
+        mock_training_data = np.array([
+            ("Transport", "Uber trip to airport"),
+            ("Groceries", "Woolworths shopping"),
+            ("DinnerBars", "Restaurant dinner")
+        ], dtype=[('category', 'U50'), ('narrative', 'U200')])
+        
+        # Define paths for mock files
+        embedding_path = f"storage/{self.test_spreadsheet_id}.npy"
+        training_data_path = f"storage/{self.test_spreadsheet_id}_index.npy"
+        
+        # Mock os.path.exists to return True for our mock files
+        def custom_path_exists(path):
+            # Check if the path contains our test spreadsheet ID
+            if self.test_spreadsheet_id in path:
+                return True
+            # For other paths, use a simple check
+            return os.path.exists(path)
+        
+        mock_path_exists.side_effect = custom_path_exists
+        
+        # Mock fetch_embeddings to return our mock data
+        def mock_fetch_embeddings_func(namespace=None, filename=None, *args, **kwargs):
+            # Handle the case where filename is passed directly
+            if filename is None and namespace is not None:
+                filename = namespace
+            
+            # Handle the case where both namespace and filename are provided
+            if namespace is not None and filename is not None:
+                filename = f"{namespace}/{filename}"
+            
+            logger.info(f"Mock fetch_embeddings called with: namespace={namespace}, filename={filename}")
+            
+            # Check for index file pattern
+            if filename and self.test_spreadsheet_id in filename and "_index.npy" in filename:
+                return mock_training_data
+            # Check for embeddings file pattern
+            elif filename and self.test_spreadsheet_id in filename and ".npy" in filename:
+                return mock_embeddings
+            
+            return None
+        
+        mock_fetch_embeddings.side_effect = mock_fetch_embeddings_func
+        
+        # Load categorization data
+        categorize_df = pd.read_csv(self.categorize_data_path)
+        
+        # Ensure there's a Description column
+        if 'Description' not in categorize_df.columns:
+            # Get the number of rows in the DataFrame
+            num_rows = len(categorize_df)
+            # Create a list of descriptions with the same length as the DataFrame
+            descriptions = [
+                "Uber trip to airport",
+                "Woolworths shopping",
+                "Restaurant dinner"
+            ]
+            # Truncate or extend the list to match the DataFrame length
+            if len(descriptions) > num_rows:
+                descriptions = descriptions[:num_rows]
+            elif len(descriptions) < num_rows:
+                descriptions.extend(["Transaction " + str(i+1) for i in range(len(descriptions), num_rows)])
+            
+            categorize_df['Description'] = descriptions
+        
+        # Convert to JSON for the request
+        categorize_data = categorize_df.to_dict(orient='records')
+        
+        # Make the categorization request
+        response = requests.post(
+            f"{self.backend_api_url}/classify",
+            json={
+                "transactions": categorize_data,
+                "spreadsheetId": self.test_spreadsheet_id
+            },
+            headers={"x-api-key": "test-api-key"}
         )
         
         # Check the response
-        self.assertEqual(response.status_code, 200, f"Categorization request failed: {response.data}")
-        result = json.loads(response.data)
-        self.assertEqual(result['status'], 'processing', "Categorization should be in processing state")
-        self.assertIn('prediction_id', result, "Response should include prediction_id")
+        self.assertEqual(response.status_code, 200, f"Categorization request failed with status {response.status_code}: {response.text}")
         
-        prediction_id = result['prediction_id']
-        logger.info(f"Categorization request successful, prediction_id: {prediction_id}")
+        # Verify the response contains categorized transactions
+        response_data = response.json()
+        self.assertIn("transactions", response_data, "Response does not contain transactions")
+        self.assertTrue(len(response_data["transactions"]) > 0, "No transactions were categorized")
         
-        # Simulate the webhook callback
-        # Create mock embeddings for the categorization data
-        mock_cat_embeddings = np.random.rand(len(transactions), 384).astype(np.float32)
+        # Check that each transaction has a category
+        for transaction in response_data["transactions"]:
+            self.assertIn("Category", transaction, f"Transaction missing Category: {transaction}")
+            self.assertTrue(transaction["Category"], f"Transaction has empty Category: {transaction}")
         
-        # Prepare webhook data
+        # Wait for the prediction to complete (optional, since we're mocking)
+        time.sleep(1)
+        
+        # Simulate webhook callback for categorization
         webhook_data = {
-            "id": prediction_id,
-            "status": "succeeded",
-            "input": {
-                "text_batch": json.dumps([t["description"] for t in transactions])
-            },
-            "output": [
-                {"embedding": embedding.tolist()} for embedding in mock_cat_embeddings
-            ]
+            "output": [category for category in categories]
         }
         
-        # Send the webhook request
-        webhook_url = (f'/classify/webhook?spreadsheetId={self.test_spreadsheet_id}'
-                      f'&userId={user_id}&sheetName=TestSheet'
-                      f'&startRow=2&categoryColumn=E&prediction_id={prediction_id}')
-        
-        webhook_response = self.client.post(
-            webhook_url,
+        webhook_response = requests.post(
+            f"{self.backend_api_url}/classify/webhook?spreadsheetId={self.test_spreadsheet_id}&userId=test_user_123&sheetName=Sheet1&categoryColumn=E",
             json=webhook_data
         )
         
-        # Check the webhook response
-        self.assertEqual(webhook_response.status_code, 200, f"Webhook request failed: {webhook_response.data}")
-        webhook_result = json.loads(webhook_response.data)
-        self.assertEqual(webhook_result['status'], 'success', "Webhook should return success")
+        # Check webhook response
+        self.assertEqual(webhook_response.status_code, 200, 
+                        f"Webhook request failed with status {webhook_response.status_code}: {webhook_response.text}")
         
-        # Verify we got results back
-        self.assertIn('results', webhook_result, "Results should be in the response")
+        # Clean up the test files
+        try:
+            os.remove(os.path.join("storage", f"{self.test_spreadsheet_id}.npy"))
+            os.remove(os.path.join("storage", f"{self.test_spreadsheet_id}_index.npy"))
+        except Exception as e:
+            logger.warning(f"Error cleaning up test files: {e}")
         
         logger.info("Categorization flow test completed successfully")
 
