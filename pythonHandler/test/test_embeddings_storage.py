@@ -73,11 +73,11 @@ def test_wrapper_functions():
     
     # Store embedding
     logger.info("Storing test embedding...")
-    main.store_embeddings("txclassify", "test_wrapper.npy", test_data)
+    main.store_embeddings("test_wrapper.npy", test_data)
     
     # Fetch embedding
     logger.info("Fetching test embedding...")
-    fetched_data = main.fetch_embeddings("txclassify", "test_wrapper.npy")
+    fetched_data = main.fetch_embeddings("test_wrapper.npy")
     
     # Verify data
     logger.info(f"Original data: {test_data}")
@@ -99,11 +99,11 @@ def test_structured_data():
     
     # Store embedding
     logger.info("Storing structured test embedding...")
-    main.store_embeddings("txclassify", "test_structured.npy", test_data)
+    main.store_embeddings("test_structured.npy", test_data)
     
     # Fetch embedding
     logger.info("Fetching structured test embedding...")
-    fetched_data = main.fetch_embeddings("txclassify", "test_structured.npy")
+    fetched_data = main.fetch_embeddings("test_structured.npy")
     
     # Verify data
     logger.info(f"Original data: {test_data}")

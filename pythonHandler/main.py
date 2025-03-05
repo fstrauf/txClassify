@@ -18,6 +18,10 @@ from typing import List
 from threading import Thread
 from pythonHandler.utils.prisma_client import prisma_client
 import psycopg2
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Dictionary to store prediction data
 predictions_db = {}
@@ -36,6 +40,10 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app with logging
 app = Flask(__name__)
 CORS(app)
+
+# Define backend API URL for webhooks
+BACKEND_API = os.environ.get("BACKEND_API", "http://localhost:5001")
+logger.info(f"Backend API URL: {BACKEND_API}")
 
 # Log startup information
 logger.info("=== Main Application Starting ===")
@@ -344,9 +352,9 @@ def train_model():
         # Create or update user configuration
         try:
             # Check if user config exists
-            response = supabase.table("account").select("*").eq("userId", user_id).execute()
+            account = prisma_client.sync_get_account_by_user_id(user_id)
             
-            if not response.data:
+            if not account:
                 # Create new user config
                 default_config = {
                     "userId": user_id,
@@ -358,13 +366,12 @@ def train_model():
                     "categorisationTab": None,
                     "api_key": api_key if api_key else None
                 }
-                supabase.table("account").insert(default_config).execute()
+                prisma_client.sync_insert_account(user_id, default_config)
                 logger.info(f"Created new user configuration for {user_id}")
             else:
                 # Update API key if it's provided and different from stored one
-                existing_config = response.data[0]
-                if api_key and (not existing_config.get("api_key") or existing_config.get("api_key") != api_key):
-                    supabase.table("account").update({"api_key": api_key}).eq("userId", user_id).execute()
+                if api_key and (not account.get("api_key") or account.get("api_key") != api_key):
+                    prisma_client.sync_update_account(user_id, {"api_key": api_key})
                     logger.info(f"Updated API key for user {user_id}")
                 logger.info(f"Found existing user configuration for {user_id}")
                 
@@ -431,7 +438,7 @@ def train_model():
         for i in range(min(5, len(training_data))):
             logger.info(f"Training entry {i}: id={training_data[i]['item_id']}, category='{training_data[i]['category']}', description='{training_data[i]['description']}'")
         
-        store_embeddings("txclassify", f"{sheet_id}_index.npy", training_data)
+        store_embeddings(f"{sheet_id}_index.npy", training_data)
         
         # Run prediction
         prediction = run_prediction("train", sheet_id, user_id, df["description"].tolist(), sheet_name=data.get('sheetName'), category_column=data.get('categoryColumn'))
@@ -463,8 +470,8 @@ def training_webhook():
 
         # Ensure user account exists
         try:
-            response = supabase.table("account").select("*").eq("userId", user_id).execute()
-            if not response.data:
+            account = prisma_client.sync_get_account_by_user_id(user_id)
+            if not account:
                 # Create new account with all fields from schema
                 default_config = {
                     "userId": user_id,
@@ -476,7 +483,7 @@ def training_webhook():
                     "categorisationTab": None,  # Set to None as it's being deprecated
                     "api_key": None  # Include api_key field but set to None
                 }
-                supabase.table("account").insert(default_config).execute()
+                prisma_client.sync_insert_account(user_id, default_config)
                 logger.info(f"Created new account for user {user_id}")
         except Exception as e:
             logger.warning(f"Error checking/creating user account: {e}")
@@ -520,8 +527,8 @@ def training_webhook():
 
         # Check if we've already processed this webhook
         try:
-            webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
-            if webhook_results.data:
+            webhook_result = prisma_client.sync_get_webhook_result(prediction_id)
+            if webhook_result:
                 logger.info(f"Webhook already processed for prediction_id: {prediction_id}")
                 return jsonify({"status": "success", "message": "Already processed"}), 200
         except Exception as e:
@@ -552,14 +559,14 @@ def training_webhook():
             logger.info(f"Successfully processed embeddings with shape: {embeddings_shape}")
             
             # Store embeddings
-            store_embeddings("txclassify", f"{sheet_id}.npy", embeddings)
+            store_embeddings(f"{sheet_id}.npy", embeddings)
             
             # Log information about the stored embeddings
             logger.info(f"Stored embeddings for sheet_id: {sheet_id} with shape: {embeddings_shape}")
             
             # Try to load the index file to verify it exists and has the right structure
             try:
-                index_data = fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
+                index_data = fetch_embeddings(f"{sheet_id}_index.npy")
                 logger.info(f"Verified index data - shape: {index_data.shape}, dtype: {index_data.dtype}")
                 if len(index_data) > 0:
                     logger.info(f"Sample index entry: {index_data[0]}")
@@ -578,14 +585,11 @@ def training_webhook():
         # Store webhook result with minimal data
         try:
             result = {
-                "prediction_id": prediction_id,
-                "results": {
-                    "user_id": user_id,
-                    "status": "success",
-                    "embeddings_shape": embeddings_shape
-                }
+                "user_id": user_id,
+                "status": "success",
+                "embeddings_shape": str(embeddings_shape)  # Convert to string for JSON serialization
             }
-            supabase.table("webhook_results").insert(result).execute()
+            prisma_client.sync_insert_webhook_result(prediction_id, result)
             logger.info(f"Stored webhook result for prediction_id: {prediction_id}")
         except Exception as e:
             logger.warning(f"Error storing webhook result: {e}")
@@ -643,11 +647,11 @@ def classify_transactions():
             
             # Update API key in user account if needed
             try:
-                response = supabase.table("account").select("*").eq("userId", user_id).execute()
-                if response.data:
-                    existing_config = response.data[0]
+                response = prisma_client.sync_get_account_by_user_id(user_id)
+                if response:
+                    existing_config = response
                     if not existing_config.get("api_key") or existing_config.get("api_key") != api_key:
-                        supabase.table("account").update({"api_key": api_key}).eq("userId", user_id).execute()
+                        prisma_client.sync_update_account(user_id, {"api_key": api_key})
                         logger.info(f"Updated API key for user {user_id}")
             except Exception as e:
                 logger.warning(f"Error updating API key in user account: {e}")
@@ -705,8 +709,8 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         spreadsheet_id = predictions_db[prediction_id]["spreadsheet_id"]
         sheet_name = predictions_db[prediction_id].get("sheet_name", "new_transactions")
         
-        trained_embeddings = fetch_embeddings("txclassify", f"{spreadsheet_id}.npy")
-        trained_data = fetch_embeddings("txclassify", f"{spreadsheet_id}_index.npy")
+        trained_embeddings = fetch_embeddings(f"{spreadsheet_id}.npy")
+        trained_data = fetch_embeddings(f"{spreadsheet_id}_index.npy")
         
         if len(trained_embeddings) == 0 or len(trained_data) == 0:
             predictions_db[prediction_id]["status"] = "failed"
@@ -783,8 +787,8 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
             # If we've been waiting for a while, check if webhook results are already available
             if attempt > 5:
                 try:
-                    webhook_results = supabase.table("webhook_results").select("id").eq("prediction_id", prediction_id).execute()
-                    if webhook_results.data:
+                    webhook_result = prisma_client.sync_get_webhook_result(prediction_id)
+                    if webhook_result:
                         logger.info(f"Found webhook results while waiting for embeddings (attempt {attempt})")
                         predictions_db[prediction_id]["status"] = "completed"
                         predictions_db[prediction_id]["status_message"] = "Classification completed successfully"
@@ -930,23 +934,15 @@ def classify_webhook():
         update_sheet_log(sheet_id, "INFO", status_msg)
         
         try:
-            # Get column configuration from request args
-            category_column = request.args.get("categoryColumn", "E")
-            start_row = int(request.args.get("startRow", "1"))  # Default to row 1 if not specified
-            
             # Store webhook result with results data
             prediction_id = request.args.get("prediction_id", "unknown")
             
             try:
-                supabase.table("webhook_results").insert({
-                    "prediction_id": prediction_id,
-                    "results": {
-                        "user_id": user_id,
-                        "status": "success",
-                        "count": len(results),
-                        "data": results
-                    }
-                }).execute()
+                prisma_client.sync_insert_webhook_result(prediction_id, {
+                    "user_id": user_id,
+                    "status": "success",
+                    "data": results  # Store results directly in the data field
+                })
                 logger.info(f"Stored webhook result for sheet_id: {sheet_id}")
             except Exception as e:
                 logger.warning(f"Error storing webhook result: {e}")
@@ -986,17 +982,26 @@ def classify_webhook():
 def get_prediction_status(prediction_id):
     """Get the status of a prediction."""
     try:
-        # First check if we have a completed webhook in Supabase - prioritize this check
         try:
-            webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
-            if webhook_results.data:
+            webhook_result = prisma_client.sync_get_webhook_result(prediction_id)
+            if webhook_result:
                 logger.info(f"Found completed webhook results for prediction {prediction_id}")
-                webhook_data = webhook_results.data[0]
+                webhook_data = webhook_result
                 
                 # Extract the actual results from the webhook data
                 results_data = []
-                if webhook_data.get("results") and webhook_data["results"].get("data"):
-                    results_data = webhook_data["results"]["data"]
+                if webhook_data.get("results"):
+                    # Handle different result structures
+                    if isinstance(webhook_data["results"], dict):
+                        if webhook_data["results"].get("data"):
+                            # Old structure: {"data": [...]}
+                            results_data = webhook_data["results"]["data"]
+                        elif webhook_data["results"].get("status") and webhook_data["results"].get("data"):
+                            # Another structure: {"status": "success", "data": [...]}
+                            results_data = webhook_data["results"]["data"]
+                    elif isinstance(webhook_data["results"], list):
+                        # New structure: direct list
+                        results_data = webhook_data["results"]
                     logger.info(f"Extracted {len(results_data)} results from webhook data")
                 
                 # Get configuration from predictions_db if available
@@ -1038,21 +1043,29 @@ def get_prediction_status(prediction_id):
             logger.info(f"Found prediction {prediction_id} in local predictions_db")
             prediction_data = predictions_db[prediction_id]
             
-            # If status is waiting_for_webhook, check Supabase again with a direct query
             # This helps in cases where the webhook has completed but we missed it
             if prediction_data.get("status") == "waiting_for_webhook":
                 try:
                     # Quick check for webhook results
-                    webhook_check = supabase.table("webhook_results").select("id").eq("prediction_id", prediction_id).execute()
-                    if webhook_check.data:
+                    webhook_check = prisma_client.sync_get_webhook_result(prediction_id)
+                    if webhook_check:
                         # We found a result, get the full data
-                        webhook_results = supabase.table("webhook_results").select("*").eq("prediction_id", prediction_id).execute()
-                        webhook_data = webhook_results.data[0]
+                        webhook_data = webhook_check
                         
                         # Extract results and return them
                         results_data = []
-                        if webhook_data.get("results") and webhook_data["results"].get("data"):
-                            results_data = webhook_data["results"]["data"]
+                        if webhook_data.get("results"):
+                            # Handle different result structures
+                            if isinstance(webhook_data["results"], dict):
+                                if webhook_data["results"].get("data"):
+                                    # Old structure: {"data": [...]}
+                                    results_data = webhook_data["results"]["data"]
+                                elif webhook_data["results"].get("status") and webhook_data["results"].get("data"):
+                                    # Another structure: {"status": "success", "data": [...]}
+                                    results_data = webhook_data["results"]["data"]
+                            elif isinstance(webhook_data["results"], list):
+                                # New structure: direct list
+                                results_data = webhook_data["results"]
                             logger.info(f"Found webhook results on second check: {len(results_data)} results")
                         
                         return jsonify({
