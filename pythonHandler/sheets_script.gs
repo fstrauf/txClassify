@@ -704,139 +704,6 @@ function updateStats(metric, value) {
   sheet.getRange(rowIndex, 2).setValue(value);
 }
 
-function checkTrainingStatus() {
-  try {
-    var userProperties = PropertiesService.getUserProperties();
-    var predictionId = userProperties.getProperty('PREDICTION_ID');
-    var triggerId = userProperties.getProperty('TRIGGER_ID');
-    var startTime = parseInt(userProperties.getProperty('START_TIME'));
-    var retryCount = parseInt(userProperties.getProperty('RETRY_COUNT') || '0');
-    var maxRetries = 5;  // Maximum number of consecutive failed attempts
-    
-    if (!predictionId || !triggerId) {
-      Logger.log("Missing predictionId or triggerId - cleaning up");
-      cleanupTrigger(triggerId);
-      return;
-    }
-    
-    var minutesElapsed = Math.floor((new Date().getTime() - startTime) / (60 * 1000));
-    if (minutesElapsed > 30) {  // 30 minutes timeout
-      updateStatus("Error: Training timed out after 30 minutes");
-      updateStats('Model Status', 'Error: Training timed out');
-      cleanupTrigger(triggerId);
-      userProperties.deleteAllProperties();
-      return;
-    }
-    
-    var config = getServiceConfig();
-    var response = null;
-    var fetchError = null;
-    
-    try {
-      var options = {
-        headers: {
-          'X-API-Key': config.apiKey,
-          'Accept': 'application/json'
-        },
-        muteHttpExceptions: true
-      };
-      
-      response = UrlFetchApp.fetch(config.serviceUrl + '/status/' + predictionId, options);
-      var responseCode = response.getResponseCode();
-      
-      if (responseCode !== 200) {
-        throw new Error(`Unexpected response code: ${responseCode}`);
-      }
-    } catch (e) {
-      fetchError = e;
-      retryCount++;
-      userProperties.setProperty('RETRY_COUNT', retryCount.toString());
-      
-      if (retryCount >= maxRetries) {
-        updateStatus("Error: Service unavailable after multiple retries");
-        updateStats('Model Status', 'Error: Service unavailable');
-        cleanupTrigger(triggerId);
-        userProperties.deleteAllProperties();
-        return;
-      }
-      
-      var backoffMinutes = Math.min(retryCount, 5);
-      updateStatus(`Service temporarily unavailable. Retrying in ${backoffMinutes} minute(s)... (Attempt ${retryCount}/${maxRetries})`);
-      return;
-    }
-    
-    // Reset retry count on successful fetch
-    if (retryCount > 0) {
-      userProperties.setProperty('RETRY_COUNT', '0');
-    }
-    
-    var responseText = response.getContentText();
-    if (!responseText) {
-      updateStatus(`Training in progress... (${minutesElapsed} min)`);
-      updateStats('Model Status', 'Training in progress');
-      return;
-    }
-    
-    try {
-      var result = JSON.parse(responseText);
-      var statusMessage = `Training in progress... (${minutesElapsed} min)`;
-      
-      if (result.status) {
-        statusMessage += ` - ${result.status}`;
-        updateStats('Model Status', result.status);
-      }
-      if (result.message) {
-        statusMessage += `\n${result.message}`;
-      }
-      
-      updateStatus(statusMessage);
-      
-      if (result.status === "completed") {
-        // Update all stats
-        var sheet = SpreadsheetApp.getActiveSheet();
-        updateStats('Last Training Time', new Date().toLocaleString());
-        updateStats('Training Data Size', sheet.getLastRow() - 1);  // Subtract header row
-        updateStats('Training Sheet', sheet.getName());
-        updateStats('Model Status', 'Ready');
-        
-        updateStatus("Training completed successfully!");
-        cleanupTrigger(triggerId);
-        userProperties.deleteAllProperties();
-      } else if (result.status === "failed") {
-        updateStats('Model Status', 'Error: Training failed');
-        updateStatus(`Error: Training failed - ${result.error || "Unknown error"}`);
-        cleanupTrigger(triggerId);
-        userProperties.deleteAllProperties();
-      }
-      
-    } catch (parseError) {
-      Logger.log("Error parsing response: " + parseError);
-      updateStatus(`Training in progress... (${minutesElapsed} min) - Waiting for response`);
-      updateStats('Model Status', 'Training in progress');
-    }
-    
-  } catch (error) {
-    Logger.log("Error checking training status: " + error);
-    cleanupTrigger(triggerId);
-    userProperties.deleteAllProperties();
-    updateStatus("Error: " + error.toString());
-    updateStats('Model Status', 'Error: ' + error.toString());
-  }
-}
-
-// Helper function to clean up triggers
-function cleanupTrigger(triggerId) {
-  if (triggerId) {
-    var triggers = ScriptApp.getProjectTriggers();
-    for (var i = 0; i < triggers.length; i++) {
-      if (triggers[i].getUniqueId() === triggerId) {
-        ScriptApp.deleteTrigger(triggers[i]);
-        break;
-      }
-    }
-  }
-}
-
 // Main classification function
 function categoriseTransactions(config) {
   var sheet = SpreadsheetApp.getActiveSheet();
@@ -932,31 +799,124 @@ function categoriseTransactions(config) {
       Logger.log("Storing properties: " + JSON.stringify(properties));
       userProperties.setProperties(properties);
       
-      // Create a trigger to check status more frequently at first
-      // For small transaction counts (< 10), check every minute
-      // For larger transaction counts, check every 2 minutes
-      var checkInterval = transactions.length < 10 ? 1 : 2;
+      // Create a polling UI that will check status automatically
+      var pollingHtml = HtmlService.createHtmlOutput(`
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; }
+          #status { margin: 20px 0; padding: 10px; background: #f5f5f5; border-radius: 4px; }
+          .progress-container { 
+            width: 100%; 
+            background-color: #f1f1f1; 
+            border-radius: 4px;
+            margin: 10px 0;
+          }
+          .progress-bar {
+            width: 0%;
+            height: 20px;
+            background-color: #4CAF50;
+            border-radius: 4px;
+            text-align: center;
+            line-height: 20px;
+            color: white;
+          }
+          .success { color: green; }
+          .error { color: red; }
+          .info { color: blue; }
+        </style>
+        <h3>Categorisation Status</h3>
+        <div id="status">Initializing...</div>
+        <div class="progress-container">
+          <div id="progress-bar" class="progress-bar">0%</div>
+        </div>
+        <p id="message">Starting categorisation process...</p>
+        <script>
+          // Poll for status every 2 seconds
+          var pollInterval = 2000;
+          var startTime = new Date().getTime();
+          var maxTime = 30 * 60 * 1000; // 30 minutes timeout
+          var completed = false;
+          
+          function updateProgress(percent) {
+            document.getElementById('progress-bar').style.width = percent + '%';
+            document.getElementById('progress-bar').innerText = percent + '%';
+          }
+          
+          function checkStatus() {
+            if (completed) return;
+            
+            var elapsedTime = new Date().getTime() - startTime;
+            if (elapsedTime > maxTime) {
+              document.getElementById('status').innerHTML = '<span class="error">Error: Operation timed out after 30 minutes</span>';
+              document.getElementById('message').innerText = 'Please try again or contact support.';
+              completed = true;
+              return;
+            }
+            
+            google.script.run
+              .withSuccessHandler(function(result) {
+                if (!result) {
+                  // No result yet, keep polling
+                  document.getElementById('status').innerText = 'Processing...';
+                  setTimeout(checkStatus, pollInterval);
+                  return;
+                }
+                
+                if (result.error) {
+                  document.getElementById('status').innerHTML = '<span class="error">Error: ' + result.error + '</span>';
+                  document.getElementById('message').innerText = 'Please try again or contact support.';
+                  completed = true;
+                  return;
+                }
+                
+                if (result.status === 'completed') {
+                  document.getElementById('status').innerHTML = '<span class="success">Categorisation completed successfully!</span>';
+                  document.getElementById('message').innerText = 'You can close this window.';
+                  updateProgress(100);
+                  completed = true;
+                  
+                  // Close the dialog after 3 seconds
+                  setTimeout(function() {
+                    google.script.host.close();
+                  }, 3000);
+                  return;
+                }
+                
+                // Update progress information
+                var progressPercent = 0;
+                if (result.processed_transactions && result.total_transactions) {
+                  progressPercent = Math.round((result.processed_transactions / result.total_transactions) * 100);
+                } else {
+                  // Estimate progress based on time (up to 90%)
+                  var minutesElapsed = elapsedTime / (60 * 1000);
+                  progressPercent = Math.min(90, Math.round(minutesElapsed * 10)); // Roughly 10% per minute up to 90%
+                }
+                updateProgress(progressPercent);
+                
+                // Update status message
+                var statusMessage = result.message || 'Processing...';
+                document.getElementById('status').innerText = statusMessage;
+                
+                // Continue polling
+                setTimeout(checkStatus, pollInterval);
+              })
+              .withFailureHandler(function(error) {
+                document.getElementById('status').innerHTML = '<span class="error">Error checking status: ' + error + '</span>';
+                document.getElementById('message').innerText = 'Will try again in a few seconds...';
+                
+                // Continue polling despite error
+                setTimeout(checkStatus, pollInterval * 2); // Double the interval on error
+              })
+              .pollOperationStatus();
+          }
+          
+          // Start polling immediately
+          checkStatus();
+        </script>
+      `)
+        .setWidth(450)
+        .setHeight(300);
       
-      var trigger = ScriptApp.newTrigger('checkOperationStatus')
-        .timeBased()
-        .everyMinutes(checkInterval)
-        .create();
-      
-      var triggerId = trigger.getUniqueId();
-      Logger.log("Created trigger with ID: " + triggerId + " to check every " + checkInterval + " minute(s)");
-      userProperties.setProperty('TRIGGER_ID', triggerId);
-      
-      // For immediate feedback, schedule a quick first check after 15 seconds
-      var quickCheckTrigger = ScriptApp.newTrigger('quickFirstCheck')
-        .timeBased()
-        .after(15000) // 15 seconds
-        .create();
-      
-      var quickCheckTriggerId = quickCheckTrigger.getUniqueId();
-      userProperties.setProperty('QUICK_CHECK_TRIGGER_ID', quickCheckTriggerId);
-      Logger.log("Created quick check trigger with ID: " + quickCheckTriggerId);
-      
-      ui.alert('Categorisation has started! The sheet will update automatically when complete.\n\nYou can close this window.');
+      SpreadsheetApp.getUi().showModalDialog(pollingHtml, 'Categorisation Progress');
       return;
     }
   } catch (error) {
@@ -964,21 +924,6 @@ function categoriseTransactions(config) {
     updateStatus("Error: " + error.toString());
     ui.alert('Error: ' + error.toString());
   }
-}
-
-// Function for quick first check
-function quickFirstCheck() {
-  var userProperties = PropertiesService.getUserProperties();
-  var triggerId = userProperties.getProperty('QUICK_CHECK_TRIGGER_ID');
-  
-  // Always clean up this trigger since it's one-time only
-  if (triggerId) {
-    cleanupTrigger(triggerId);
-    userProperties.deleteProperty('QUICK_CHECK_TRIGGER_ID');
-  }
-  
-  // Run the regular check
-  checkOperationStatus();
 }
 
 // Helper function to write classification results to a sheet
@@ -1090,238 +1035,6 @@ function writeResultsToSheet(result, config, sheet) {
     Logger.log("Error stack: " + error.stack);
     updateStatus("Error writing results to sheet: " + error.toString());
     return false;
-  }
-}
-
-// Update the status check function to use the helper function
-function checkOperationStatus() {
-  var userProperties = PropertiesService.getUserProperties();
-  var predictionId = userProperties.getProperty('PREDICTION_ID');
-  var triggerId = userProperties.getProperty('TRIGGER_ID');
-  var operationType = userProperties.getProperty('OPERATION_TYPE');
-  var startTime = parseInt(userProperties.getProperty('START_TIME'));
-  var originalSheetName = userProperties.getProperty('ORIGINAL_SHEET_NAME');
-  var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
-  var retryCount = parseInt(userProperties.getProperty('RETRY_COUNT') || '0');
-  var lastCheckTime = parseInt(userProperties.getProperty('LAST_CHECK_TIME') || '0');
-  var currentTime = new Date().getTime();
-  
-  Logger.log("Starting checkOperationStatus");
-  Logger.log("PredictionId: " + predictionId);
-  Logger.log("TriggerId: " + triggerId);
-  Logger.log("OperationType: " + operationType);
-  Logger.log("Original Sheet Name: " + originalSheetName);
-  Logger.log("Config: " + JSON.stringify(config));
-  Logger.log("Retry Count: " + retryCount);
-  
-  if (!predictionId || !triggerId) {
-    Logger.log("Missing predictionId or triggerId - cleaning up");
-    cleanupTrigger(triggerId);
-    return;
-  }
-  
-  try {
-    // Check if we've been running for more than 30 minutes
-    if (currentTime - startTime > 30 * 60 * 1000) {
-      updateStatus(`Error: ${operationType} timed out after 30 minutes`);
-      cleanupTrigger(triggerId);
-      userProperties.deleteAllProperties();
-      return;
-    }
-    
-    // Implement dynamic polling frequency - check more frequently at the beginning
-    var minutesElapsed = Math.floor((currentTime - startTime) / (60 * 1000));
-    var shouldCheck = true;
-    
-    // If we've checked recently, maybe skip this check based on elapsed time
-    if (lastCheckTime > 0) {
-      var timeSinceLastCheck = currentTime - lastCheckTime;
-      
-      // In the first minute, check every 10 seconds
-      if (minutesElapsed < 1 && timeSinceLastCheck < 10000) {
-        shouldCheck = false;
-      }
-      // In minutes 1-3, check every 30 seconds
-      else if (minutesElapsed < 3 && timeSinceLastCheck < 30000) {
-        shouldCheck = false;
-      }
-      // After 3 minutes, check every minute
-      else if (timeSinceLastCheck < 60000) {
-        shouldCheck = false;
-      }
-    }
-    
-    if (!shouldCheck) {
-      Logger.log("Skipping check due to dynamic polling frequency");
-      return;
-    }
-    
-    // Update last check time
-    userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
-    
-    var serviceConfig = getServiceConfig();
-    var options = {
-      headers: { 'X-API-Key': serviceConfig.apiKey },
-      muteHttpExceptions: true,
-      timeout: 10000 // 10 second timeout to prevent hanging
-    };
-    
-    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, options);
-    
-    // Check HTTP response code
-    var responseCode = response.getResponseCode();
-    if (responseCode !== 200) {
-      retryCount++;
-      userProperties.setProperty('RETRY_COUNT', retryCount.toString());
-      
-      if (retryCount >= 5) {
-        updateStatus(`Error: ${operationType} failed after multiple retries`);
-        cleanupTrigger(triggerId);
-        userProperties.deleteAllProperties();
-        return;
-      }
-      
-      updateStatus(`${operationType} in progress... (${minutesElapsed} min) - Temporary connection issue (retry ${retryCount}/5)`);
-      return;
-    }
-    
-    var result = JSON.parse(response.getContentText());
-    Logger.log("Status response: " + JSON.stringify(result));
-    
-    // Reset retry count on successful response
-    if (retryCount > 0) {
-      userProperties.setProperty('RETRY_COUNT', '0');
-    }
-    
-    // Get the original sheet by name
-    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = spreadsheet.getSheetByName(originalSheetName);
-    if (!sheet) {
-      Logger.log("Sheet not found by name, trying active sheet");
-      sheet = SpreadsheetApp.getActiveSheet();
-      if (sheet.getName() !== originalSheetName) {
-        Logger.log("Warning: Using active sheet instead of original sheet");
-        updateStatus("Warning: Using active sheet instead of original sheet", "Original sheet: " + originalSheetName);
-      }
-    }
-    
-    // Try to write results to sheet using the helper function
-    if (writeResultsToSheet(result, config, sheet)) {
-      // Results were successfully written, clean up
-      Logger.log("Results successfully written to sheet, cleaning up");
-      updateStatus("Categorisation completed successfully!");
-      cleanupTrigger(triggerId);
-      userProperties.deleteAllProperties();
-      return;
-    }
-    
-    // Handle different status types
-    if (result.status === "completed") {
-      // Check if we have results directly in the response
-      if (result.results && Array.isArray(result.results) && result.results.length > 0) {
-        Logger.log("Found results directly in the status response, writing to sheet");
-        
-        // Update config with values from the response if available
-        if (result.config) {
-          if (result.config.categoryColumn) config.categoryCol = result.config.categoryColumn;
-          if (result.config.startRow) config.startRow = result.config.startRow;
-          
-          // Update the stored config
-          userProperties.setProperty('CONFIG', JSON.stringify(config));
-        }
-        
-        // Try to write results again
-        if (writeResultsToSheet(result, config, sheet)) {
-          Logger.log("Successfully wrote results from status response");
-          updateStatus("Categorisation completed successfully!");
-          cleanupTrigger(triggerId);
-          userProperties.deleteAllProperties();
-          return;
-        }
-      }
-      
-      // If status is completed but we couldn't write results, try one more direct check
-      try {
-        Logger.log("Status is completed but no results found, trying direct check");
-        var directOptions = {
-          headers: { 'X-API-Key': serviceConfig.apiKey },
-          muteHttpExceptions: true,
-          timeout: 15000 // Longer timeout for direct check
-        };
-        
-        var directResponse = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, directOptions);
-        if (directResponse.getResponseCode() === 200) {
-          var directResult = JSON.parse(directResponse.getContentText());
-          
-          // Try to write results from direct check
-          if (writeResultsToSheet(directResult, config, sheet)) {
-            Logger.log("Successfully wrote results from direct check");
-            updateStatus("Categorisation completed successfully!");
-            cleanupTrigger(triggerId);
-            userProperties.deleteAllProperties();
-            return;
-          }
-        }
-      } catch (directError) {
-        Logger.log("Error in direct check: " + directError);
-      }
-      
-      // Wait for webhook results
-      updateStatus(`${operationType === "categorise" ? "Categorisation" : "Training"} completed, processing results... (${minutesElapsed} min)`);
-      return;
-    } else if (result.status === "failed") {
-      updateStatus(`Error: ${operationType} failed - ` + (result.error || "Unknown error"));
-      cleanupTrigger(triggerId);
-      userProperties.deleteAllProperties();
-      return;
-    } else if (result.status === "not_found" || result.status === "unknown" || result.status === "error") {
-      // Handle error statuses that indicate we should stop checking
-      retryCount++;
-      userProperties.setProperty('RETRY_COUNT', retryCount.toString());
-      
-      if (retryCount >= 3) {
-        updateStatus(`Error: ${operationType} failed - ${result.message || result.error || "Unknown error"}`);
-        cleanupTrigger(triggerId);
-        userProperties.deleteAllProperties();
-        return;
-      }
-      
-      // Continue for a few retries in case it's a temporary issue
-      updateStatus(`${operationType} in progress... (${minutesElapsed} min) - Waiting for status (retry ${retryCount}/3)`);
-      return;
-    }
-    
-    // Still processing, update status
-    var statusMessage = `${operationType === "categorise" ? "Categorisation" : "Training"} in progress... (${minutesElapsed} min)`;
-    
-    if (result.status) {
-      statusMessage += ` - ${result.status}`;
-    }
-    if (result.message) {
-      statusMessage += `\n${result.message}`;
-    }
-    
-    // Add progress information if available
-    if (result.processed_transactions && result.total_transactions) {
-      statusMessage += ` (${result.processed_transactions}/${result.total_transactions})`;
-    }
-    
-    updateStatus(statusMessage);
-    
-  } catch (error) {
-    Logger.log(`Error checking ${operationType} status: ` + error);
-    Logger.log("Error details: " + error.stack);
-    
-    // Only cleanup on non-temporary errors
-    if (error.toString().includes("Address unavailable") || error.toString().includes("Failed to fetch")) {
-      var minutesElapsed = Math.floor((currentTime - startTime) / (60 * 1000));
-      updateStatus(`${operationType} in progress... (${minutesElapsed} min) - temporary connection issue`);
-      return;
-    }
-    
-    cleanupTrigger(triggerId);
-    userProperties.deleteAllProperties();
-    updateStatus("Error: " + error.toString());
   }
 }
 
@@ -1504,24 +1217,139 @@ function trainModel(config) {
     if (result.prediction_id) {
       updateStatus("Training in progress...");
       
-      // Create a trigger to check status every minute
-      var trigger = ScriptApp.newTrigger('checkTrainingStatus')
-        .timeBased()
-        .everyMinutes(1)
-        .create();
-      
-      // Store prediction ID and trigger ID in user properties
+      // Store prediction ID and other properties in user properties
       var userProperties = PropertiesService.getUserProperties();
+      
+      // Clear any existing properties
+      userProperties.deleteAllProperties();
+      
+      // Store new properties
       userProperties.setProperties({
         'PREDICTION_ID': result.prediction_id,
-        'TRIGGER_ID': trigger.getUniqueId(),
         'START_TIME': new Date().getTime().toString(),
         'TRAINING_SIZE': transactions.length.toString(),
-        'RETRY_COUNT': '0',  // Initialize retry count
-        'ORIGINAL_SHEET_NAME': originalSheetName  // Store original sheet name
+        'ORIGINAL_SHEET_NAME': originalSheetName,
+        'OPERATION_TYPE': 'train'
       });
       
-      ui.alert('Training has started! The sheet will update automatically when training is complete.\n\nYou can close this window.');
+      // Create a polling UI that will check status automatically
+      var pollingHtml = HtmlService.createHtmlOutput(`
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; }
+          #status { margin: 20px 0; padding: 10px; background: #f5f5f5; border-radius: 4px; }
+          .progress-container { 
+            width: 100%; 
+            background-color: #f1f1f1; 
+            border-radius: 4px;
+            margin: 10px 0;
+          }
+          .progress-bar {
+            width: 0%;
+            height: 20px;
+            background-color: #4CAF50;
+            border-radius: 4px;
+            text-align: center;
+            line-height: 20px;
+            color: white;
+          }
+          .success { color: green; }
+          .error { color: red; }
+          .info { color: blue; }
+        </style>
+        <h3>Training Status</h3>
+        <div id="status">Initializing...</div>
+        <div class="progress-container">
+          <div id="progress-bar" class="progress-bar">0%</div>
+        </div>
+        <p id="message">Starting training process...</p>
+        <script>
+          // Poll for status every 2 seconds
+          var pollInterval = 2000;
+          var startTime = new Date().getTime();
+          var maxTime = 30 * 60 * 1000; // 30 minutes timeout
+          var completed = false;
+          
+          function updateProgress(percent) {
+            document.getElementById('progress-bar').style.width = percent + '%';
+            document.getElementById('progress-bar').innerText = percent + '%';
+          }
+          
+          function checkStatus() {
+            if (completed) return;
+            
+            var elapsedTime = new Date().getTime() - startTime;
+            if (elapsedTime > maxTime) {
+              document.getElementById('status').innerHTML = '<span class="error">Error: Operation timed out after 30 minutes</span>';
+              document.getElementById('message').innerText = 'Please try again or contact support.';
+              completed = true;
+              return;
+            }
+            
+            google.script.run
+              .withSuccessHandler(function(result) {
+                if (!result) {
+                  // No result yet, keep polling
+                  document.getElementById('status').innerText = 'Processing...';
+                  setTimeout(checkStatus, pollInterval);
+                  return;
+                }
+                
+                if (result.error) {
+                  document.getElementById('status').innerHTML = '<span class="error">Error: ' + result.error + '</span>';
+                  document.getElementById('message').innerText = 'Please try again or contact support.';
+                  completed = true;
+                  return;
+                }
+                
+                if (result.status === 'completed') {
+                  document.getElementById('status').innerHTML = '<span class="success">Training completed successfully!</span>';
+                  document.getElementById('message').innerText = 'You can close this window.';
+                  updateProgress(100);
+                  completed = true;
+                  
+                  // Close the dialog after 3 seconds
+                  setTimeout(function() {
+                    google.script.host.close();
+                  }, 3000);
+                  return;
+                }
+                
+                // Update progress information
+                var progressPercent = 0;
+                if (result.processed_transactions && result.total_transactions) {
+                  progressPercent = Math.round((result.processed_transactions / result.total_transactions) * 100);
+                } else {
+                  // Estimate progress based on time (up to 90%)
+                  var minutesElapsed = elapsedTime / (60 * 1000);
+                  progressPercent = Math.min(90, Math.round(minutesElapsed * 10)); // Roughly 10% per minute up to 90%
+                }
+                updateProgress(progressPercent);
+                
+                // Update status message
+                var statusMessage = result.message || 'Processing...';
+                document.getElementById('status').innerText = statusMessage;
+                
+                // Continue polling
+                setTimeout(checkStatus, pollInterval);
+              })
+              .withFailureHandler(function(error) {
+                document.getElementById('status').innerHTML = '<span class="error">Error checking status: ' + error + '</span>';
+                document.getElementById('message').innerText = 'Will try again in a few seconds...';
+                
+                // Continue polling despite error
+                setTimeout(checkStatus, pollInterval * 2); // Double the interval on error
+              })
+              .pollOperationStatus();
+          }
+          
+          // Start polling immediately
+          checkStatus();
+        </script>
+      `)
+        .setWidth(450)
+        .setHeight(300);
+      
+      SpreadsheetApp.getUi().showModalDialog(pollingHtml, 'Training Progress');
       return;
     } else {
       updateStatus("Error: No prediction ID received");
@@ -1532,5 +1360,141 @@ function trainModel(config) {
     Logger.log("Training error: " + error.toString());
     updateStatus("Error: " + error.toString());
     ui.alert('Error: ' + error.toString());
+  }
+}
+
+// Function to handle client-side polling for operation status
+function pollOperationStatus() {
+  try {
+    var userProperties = PropertiesService.getUserProperties();
+    var predictionId = userProperties.getProperty('PREDICTION_ID');
+    var operationType = userProperties.getProperty('OPERATION_TYPE');
+    var startTime = parseInt(userProperties.getProperty('START_TIME'));
+    var originalSheetName = userProperties.getProperty('ORIGINAL_SHEET_NAME');
+    var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
+    var currentTime = new Date().getTime();
+    
+    // If no prediction ID, return error
+    if (!predictionId) {
+      return { error: "No operation in progress" };
+    }
+    
+    // Check if we've been running for more than 30 minutes
+    if (currentTime - startTime > 30 * 60 * 1000) {
+      userProperties.deleteAllProperties();
+      return { 
+        error: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} timed out after 30 minutes`,
+        status: "timeout" 
+      };
+    }
+    
+    // Get service config
+    var serviceConfig;
+    try {
+      serviceConfig = getServiceConfig();
+    } catch (configError) {
+      return { error: configError.toString() };
+    }
+    
+    // Call the service to check status
+    var options = {
+      headers: { 'X-API-Key': serviceConfig.apiKey },
+      muteHttpExceptions: true,
+      timeout: 10000 // 10 second timeout
+    };
+    
+    var response;
+    try {
+      response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, options);
+    } catch (fetchError) {
+      return { 
+        message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (temporary connection issue)`,
+        status: "in_progress" 
+      };
+    }
+    
+    // Check HTTP response code
+    var responseCode = response.getResponseCode();
+    if (responseCode !== 200) {
+      return { 
+        message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (service returned ${responseCode})`,
+        status: "in_progress" 
+      };
+    }
+    
+    // Parse the response
+    var result;
+    try {
+      result = JSON.parse(response.getContentText());
+    } catch (parseError) {
+      return { 
+        message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (parsing response)`,
+        status: "in_progress" 
+      };
+    }
+    
+    // Get the original sheet by name
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = spreadsheet.getSheetByName(originalSheetName);
+    if (!sheet) {
+      sheet = SpreadsheetApp.getActiveSheet();
+    }
+    
+    // Handle completed status
+    if (result.status === "completed") {
+      // Try to write results to sheet
+      if (operationType === 'categorise' && writeResultsToSheet(result, config, sheet)) {
+        userProperties.deleteAllProperties();
+        return { 
+          status: "completed",
+          message: "Categorisation completed successfully!" 
+        };
+      } else if (operationType === 'train') {
+        // Update training stats
+        updateStats('Last Training Time', new Date().toLocaleString());
+        updateStats('Training Data Size', sheet.getLastRow() - 1);
+        updateStats('Training Sheet', sheet.getName());
+        updateStats('Model Status', 'Ready');
+        
+        userProperties.deleteAllProperties();
+        return { 
+          status: "completed",
+          message: "Training completed successfully!" 
+        };
+      }
+    } else if (result.status === "failed") {
+      userProperties.deleteAllProperties();
+      return { 
+        error: result.error || "Unknown error",
+        status: "failed" 
+      };
+    }
+    
+    // Still in progress, return status information
+    var minutesElapsed = Math.floor((currentTime - startTime) / (60 * 1000));
+    var statusMessage = `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (${minutesElapsed} min)`;
+    
+    if (result.status) {
+      statusMessage += ` - ${result.status}`;
+    }
+    if (result.message) {
+      statusMessage += ` - ${result.message}`;
+    }
+    
+    // Add progress information if available
+    var progressInfo = {};
+    if (result.processed_transactions && result.total_transactions) {
+      progressInfo.processed_transactions = result.processed_transactions;
+      progressInfo.total_transactions = result.total_transactions;
+    }
+    
+    return { 
+      status: "in_progress",
+      message: statusMessage,
+      ...progressInfo
+    };
+  } catch (error) {
+    Logger.log("Error in pollOperationStatus: " + error);
+    return { error: error.toString() };
   }
 } 
