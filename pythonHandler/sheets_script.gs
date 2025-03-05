@@ -822,6 +822,7 @@ function categoriseTransactions(config) {
           .success { color: green; }
           .error { color: red; }
           .info { color: blue; }
+          .warning { color: orange; }
         </style>
         <h3>Categorisation Status</h3>
         <div id="status">Initializing...</div>
@@ -835,6 +836,8 @@ function categoriseTransactions(config) {
           var startTime = new Date().getTime();
           var maxTime = 30 * 60 * 1000; // 30 minutes timeout
           var completed = false;
+          var errorCount = 0;
+          var maxErrors = 5; // Maximum consecutive errors before showing a warning
           
           function updateProgress(percent) {
             document.getElementById('progress-bar').style.width = percent + '%';
@@ -861,7 +864,10 @@ function categoriseTransactions(config) {
                   return;
                 }
                 
-                if (result.error) {
+                // Reset error count on successful response
+                errorCount = 0;
+                
+                if (result.error && result.status !== "in_progress") {
                   document.getElementById('status').innerHTML = '<span class="error">Error: ' + result.error + '</span>';
                   document.getElementById('message').innerText = 'Please try again or contact support.';
                   completed = true;
@@ -896,15 +902,30 @@ function categoriseTransactions(config) {
                 var statusMessage = result.message || 'Processing...';
                 document.getElementById('status').innerText = statusMessage;
                 
+                // If there's an error but we're still in progress, show it as a warning
+                if (result.error && result.status === "in_progress") {
+                  document.getElementById('message').innerHTML = '<span class="warning">Note: ' + result.error + '</span>';
+                }
+                
                 // Continue polling
                 setTimeout(checkStatus, pollInterval);
               })
               .withFailureHandler(function(error) {
-                document.getElementById('status').innerHTML = '<span class="error">Error checking status: ' + error + '</span>';
-                document.getElementById('message').innerText = 'Will try again in a few seconds...';
+                // Increment error count
+                errorCount++;
                 
-                // Continue polling despite error
-                setTimeout(checkStatus, pollInterval * 2); // Double the interval on error
+                // If we've had too many consecutive errors, show a warning but keep trying
+                if (errorCount >= maxErrors) {
+                  document.getElementById('status').innerHTML = '<span class="warning">Warning: Multiple errors checking status</span>';
+                  document.getElementById('message').innerHTML = '<span class="warning">The operation may still be in progress. Will continue trying...</span>';
+                } else {
+                  document.getElementById('status').innerHTML = '<span class="warning">Error checking status: ' + error + '</span>';
+                  document.getElementById('message').innerText = 'Will try again in a few seconds...';
+                }
+                
+                // Continue polling despite error, with exponential backoff
+                var backoffInterval = pollInterval * Math.min(4, errorCount);
+                setTimeout(checkStatus, backoffInterval);
               })
               .pollOperationStatus();
           }
@@ -1255,6 +1276,7 @@ function trainModel(config) {
           .success { color: green; }
           .error { color: red; }
           .info { color: blue; }
+          .warning { color: orange; }
         </style>
         <h3>Training Status</h3>
         <div id="status">Initializing...</div>
@@ -1268,6 +1290,8 @@ function trainModel(config) {
           var startTime = new Date().getTime();
           var maxTime = 30 * 60 * 1000; // 30 minutes timeout
           var completed = false;
+          var errorCount = 0;
+          var maxErrors = 5; // Maximum consecutive errors before showing a warning
           
           function updateProgress(percent) {
             document.getElementById('progress-bar').style.width = percent + '%';
@@ -1294,7 +1318,10 @@ function trainModel(config) {
                   return;
                 }
                 
-                if (result.error) {
+                // Reset error count on successful response
+                errorCount = 0;
+                
+                if (result.error && result.status !== "in_progress") {
                   document.getElementById('status').innerHTML = '<span class="error">Error: ' + result.error + '</span>';
                   document.getElementById('message').innerText = 'Please try again or contact support.';
                   completed = true;
@@ -1329,15 +1356,30 @@ function trainModel(config) {
                 var statusMessage = result.message || 'Processing...';
                 document.getElementById('status').innerText = statusMessage;
                 
+                // If there's an error but we're still in progress, show it as a warning
+                if (result.error && result.status === "in_progress") {
+                  document.getElementById('message').innerHTML = '<span class="warning">Note: ' + result.error + '</span>';
+                }
+                
                 // Continue polling
                 setTimeout(checkStatus, pollInterval);
               })
               .withFailureHandler(function(error) {
-                document.getElementById('status').innerHTML = '<span class="error">Error checking status: ' + error + '</span>';
-                document.getElementById('message').innerText = 'Will try again in a few seconds...';
+                // Increment error count
+                errorCount++;
                 
-                // Continue polling despite error
-                setTimeout(checkStatus, pollInterval * 2); // Double the interval on error
+                // If we've had too many consecutive errors, show a warning but keep trying
+                if (errorCount >= maxErrors) {
+                  document.getElementById('status').innerHTML = '<span class="warning">Warning: Multiple errors checking status</span>';
+                  document.getElementById('message').innerHTML = '<span class="warning">The operation may still be in progress. Will continue trying...</span>';
+                } else {
+                  document.getElementById('status').innerHTML = '<span class="warning">Error checking status: ' + error + '</span>';
+                  document.getElementById('message').innerText = 'Will try again in a few seconds...';
+                }
+                
+                // Continue polling despite error, with exponential backoff
+                var backoffInterval = pollInterval * Math.min(4, errorCount);
+                setTimeout(checkStatus, backoffInterval);
               })
               .pollOperationStatus();
           }
@@ -1373,7 +1415,6 @@ function pollOperationStatus() {
     var originalSheetName = userProperties.getProperty('ORIGINAL_SHEET_NAME');
     var config = userProperties.getProperty('CONFIG') ? JSON.parse(userProperties.getProperty('CONFIG')) : null;
     var currentTime = new Date().getTime();
-    var lastCheckTime = parseInt(userProperties.getProperty('LAST_CHECK_TIME') || '0');
     
     // If no prediction ID, return error
     if (!predictionId) {
@@ -1382,13 +1423,11 @@ function pollOperationStatus() {
     
     // Check if we've been running for more than 30 minutes
     if (currentTime - startTime > 30 * 60 * 1000) {
-      // Log timeout error
-      updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} timed out after 30 minutes`, 
-                   `Prediction ID: ${predictionId}`);
-      
+      var timeoutMessage = `${operationType === 'categorise' ? 'Categorisation' : 'Training'} timed out after 30 minutes`;
+      updateStatus(timeoutMessage);
       userProperties.deleteAllProperties();
       return { 
-        error: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} timed out after 30 minutes`,
+        error: timeoutMessage,
         status: "timeout" 
       };
     }
@@ -1398,8 +1437,7 @@ function pollOperationStatus() {
     try {
       serviceConfig = getServiceConfig();
     } catch (configError) {
-      updateStatus(`Error getting service configuration: ${configError.toString()}`, 
-                   `Prediction ID: ${predictionId}`);
+      updateStatus("Error: " + configError.toString());
       return { error: configError.toString() };
     }
     
@@ -1414,15 +1452,10 @@ function pollOperationStatus() {
     try {
       response = UrlFetchApp.fetch(serviceConfig.serviceUrl + '/status/' + predictionId, options);
     } catch (fetchError) {
-      // Only log connection issues every 10 seconds to avoid flooding the log
-      if (currentTime - lastCheckTime > 10000) {
-        updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (temporary connection issue)`, 
-                     `Prediction ID: ${predictionId}`);
-        userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
-      }
-      
+      var connectionMessage = `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (temporary connection issue)`;
+      updateStatus(connectionMessage);
       return { 
-        message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (temporary connection issue)`,
+        message: connectionMessage,
         status: "in_progress" 
       };
     }
@@ -1430,15 +1463,18 @@ function pollOperationStatus() {
     // Check HTTP response code
     var responseCode = response.getResponseCode();
     if (responseCode !== 200) {
-      // Only log non-200 responses every 10 seconds
-      if (currentTime - lastCheckTime > 10000) {
-        updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (service returned ${responseCode})`, 
-                     `Prediction ID: ${predictionId}`);
-        userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
-      }
+      // For 500 errors, the server might be having issues but the operation could still be in progress
+      var httpErrorMessage = `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (service returned ${responseCode})`;
+      updateStatus(httpErrorMessage);
       
+      // For persistent 500 errors, we might need to check if the operation is actually still valid
+      // We'll continue polling but log the issue
+      Logger.log("Server returned error code: " + responseCode + " for prediction ID: " + predictionId);
+      
+      // If we've been getting errors for a while, we might want to check a different endpoint
+      // or use a fallback mechanism, but for now we'll just continue polling
       return { 
-        message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (service returned ${responseCode})`,
+        message: httpErrorMessage,
         status: "in_progress" 
       };
     }
@@ -1448,15 +1484,10 @@ function pollOperationStatus() {
     try {
       result = JSON.parse(response.getContentText());
     } catch (parseError) {
-      // Only log parsing errors every 10 seconds
-      if (currentTime - lastCheckTime > 10000) {
-        updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (parsing response)`, 
-                     `Prediction ID: ${predictionId}`);
-        userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
-      }
-      
+      var parseErrorMessage = `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (parsing response)`;
+      updateStatus(parseErrorMessage);
       return { 
-        message: `${operationType === 'categorise' ? 'Categorisation' : 'Training'} in progress... (parsing response)`,
+        message: parseErrorMessage,
         status: "in_progress" 
       };
     }
@@ -1472,37 +1503,34 @@ function pollOperationStatus() {
     if (result.status === "completed") {
       // Try to write results to sheet
       if (operationType === 'categorise' && writeResultsToSheet(result, config, sheet)) {
-        updateStatus("Categorisation completed successfully!", 
-                     `Prediction ID: ${predictionId}, Processed: ${result.processed_transactions || 'all'} transactions`);
-        
+        var completedMessage = "Categorisation completed successfully!";
+        updateStatus(completedMessage);
         userProperties.deleteAllProperties();
         return { 
           status: "completed",
-          message: "Categorisation completed successfully!" 
+          message: completedMessage 
         };
       } else if (operationType === 'train') {
         // Update training stats
         updateStats('Last Training Time', new Date().toLocaleString());
-        updateStats('Training Data Size', userProperties.getProperty('TRAINING_SIZE') || 'Unknown');
+        updateStats('Training Data Size', sheet.getLastRow() - 1);
         updateStats('Training Sheet', sheet.getName());
         updateStats('Model Status', 'Ready');
         
-        updateStatus("Training completed successfully!", 
-                     `Prediction ID: ${predictionId}, Training size: ${userProperties.getProperty('TRAINING_SIZE') || 'Unknown'}`);
-        
+        var trainingCompletedMessage = "Training completed successfully!";
+        updateStatus(trainingCompletedMessage);
         userProperties.deleteAllProperties();
         return { 
           status: "completed",
-          message: "Training completed successfully!" 
+          message: trainingCompletedMessage 
         };
       }
     } else if (result.status === "failed") {
-      updateStatus(`${operationType === 'categorise' ? 'Categorisation' : 'Training'} failed: ${result.error || "Unknown error"}`, 
-                   `Prediction ID: ${predictionId}`);
-      
+      var errorMessage = result.error || "Unknown error";
+      updateStatus("Error: " + errorMessage);
       userProperties.deleteAllProperties();
       return { 
-        error: result.error || "Unknown error",
+        error: errorMessage,
         status: "failed" 
       };
     }
@@ -1520,20 +1548,15 @@ function pollOperationStatus() {
     
     // Add progress information if available
     var progressInfo = {};
+    var additionalDetails = "";
     if (result.processed_transactions && result.total_transactions) {
       progressInfo.processed_transactions = result.processed_transactions;
       progressInfo.total_transactions = result.total_transactions;
-      
-      // Calculate progress percentage
-      var progressPercent = Math.round((result.processed_transactions / result.total_transactions) * 100);
-      statusMessage += ` - ${progressPercent}% complete (${result.processed_transactions}/${result.total_transactions})`;
+      additionalDetails = `Progress: ${result.processed_transactions}/${result.total_transactions} transactions (${Math.round((result.processed_transactions / result.total_transactions) * 100)}%)`;
     }
     
-    // Only log status updates every 10 seconds to avoid flooding the log
-    if (currentTime - lastCheckTime > 10000) {
-      updateStatus(statusMessage, `Prediction ID: ${predictionId}`);
-      userProperties.setProperty('LAST_CHECK_TIME', currentTime.toString());
-    }
+    // Update the log with the current status
+    updateStatus(statusMessage, additionalDetails);
     
     return { 
       status: "in_progress",
@@ -1542,8 +1565,14 @@ function pollOperationStatus() {
     };
   } catch (error) {
     Logger.log("Error in pollOperationStatus: " + error);
-    updateStatus(`Error in operation status polling: ${error.toString()}`, 
-                 `Prediction ID: ${userProperties ? userProperties.getProperty('PREDICTION_ID') : 'Unknown'}`);
-    return { error: error.toString() };
+    updateStatus("Error in pollOperationStatus: " + error.toString());
+    
+    // Even if we encounter an error, we should return something that allows the UI to continue polling
+    // rather than stopping the process entirely
+    return { 
+      status: "in_progress",
+      message: "Processing... (encountered an error, will retry)",
+      error: error.toString()
+    };
   }
 } 
