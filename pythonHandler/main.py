@@ -820,9 +820,11 @@ def classify_webhook():
         sheet_id = request.args.get("spreadsheetId")
         user_id = request.args.get("userId")
         sheet_name = request.args.get("sheetName")
+        start_row = request.args.get("startRow", "2")  # Default to row 2
+        category_column = request.args.get("categoryColumn", "E")  # Default to column E
         
         # Log all parameters for debugging
-        logger.info(f"Webhook parameters: sheet_id={sheet_id}, user_id={user_id}, sheet_name={sheet_name}")
+        logger.info(f"Webhook parameters: sheet_id={sheet_id}, user_id={user_id}, sheet_name={sheet_name}, start_row={start_row}, category_column={category_column}")
         
         if not all([data, sheet_id, user_id]):
             error_msg = "Missing required parameters: data, spreadsheetId, or userId"
