@@ -2,25 +2,13 @@
  * End-to-end tests for the transaction classification system.
  *
  * This script tests the API endpoints by:
- * 1. Making API calls to the training and categorization endpoints
- * 2. Verifying that the responses are as expected
+ * 1. Setting up a test user with fixed credentials
+ * 2. Making API calls to the training and categorization endpoints
+ * 3. Verifying that the responses are as expected
+ * 4. Cleaning up the test user
  *
- * To run these tests successfully:
- * 1. First, check database connection:
- *    pnpm run test-db
- *
- * 2. Create a test user in the database:
- *    pnpm run setup-test-user
- *
- * 3. Set the TEST_USER_ID and TEST_API_KEY environment variables:
- *    export TEST_USER_ID=test_user_123
- *    export TEST_API_KEY=test_key_abc123
- *
- * 4. Run the tests:
+ * To run these tests:
  *    pnpm test
- *
- * 5. After testing, clean up the test user:
- *    pnpm run cleanup-test-user
  *
  * For Replicate to work properly, use ngrok to expose your webhook endpoint:
  * - Install ngrok: https://ngrok.com/download
@@ -41,24 +29,30 @@ const http = require("http");
 const express = require("express");
 const bodyParser = require("body-parser");
 const csv = require("csv-parser");
+const { PrismaClient } = require("@prisma/client");
 
 // Configuration
 const API_PORT = process.env.API_PORT || 3001;
 const API_URL = process.env.API_URL || `http://localhost:${API_PORT}`;
-const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_123";
-const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key";
+const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
+const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
 const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3002;
 
 // Global variables
 let webhookServer;
 let webhookCallbacks = {};
 let flaskProcess;
+let pendingCallbacks = 0; // Track number of pending callbacks
 
 // Set up logging
 const log = (message) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] ${message}`);
 };
+
+// Log the actual values being used
+log(`Using TEST_USER_ID: ${TEST_USER_ID}`);
+log(`Using TEST_API_KEY: ${TEST_API_KEY ? "***" + TEST_API_KEY.slice(-4) : "Not set"}`);
 
 // Helper function to find a free port
 const findFreePort = async (startPort) => {
@@ -87,14 +81,14 @@ const getNgrokUrl = async (port) => {
       // First try to find a tunnel for our specific port
       for (const tunnel of tunnels) {
         if (tunnel.config.addr.endsWith(port.toString())) {
-          return `${tunnel.public_url}/webhook`;
+          return tunnel.public_url;
         }
       }
 
       // If no specific port tunnel found, use the first available tunnel
       if (tunnels.length > 0) {
         log(`No tunnel found for port ${port}, using first available tunnel: ${tunnels[0].public_url}`);
-        return `${tunnels[0].public_url}/webhook`;
+        return tunnels[0].public_url;
       }
     }
     log(`Ngrok is running but no tunnels found`);
@@ -189,20 +183,35 @@ const startFlaskServer = async (port) => {
 // Start webhook server
 const startWebhookServer = async (port) => {
   const app = express();
-  app.use(bodyParser.json());
+  // Increase the JSON body size limit to 50MB
+  app.use(bodyParser.json({ limit: "50mb" }));
+  app.use(bodyParser.urlencoded({ limit: "50mb", extended: true }));
 
-  app.post("/webhook", (req, res) => {
+  // Handler function for webhook callbacks
+  const handleWebhook = (req, res) => {
     const data = req.body;
-    log(`Webhook received: ${JSON.stringify(data)}`);
+    log(`Webhook received at ${req.path}: ${JSON.stringify(data)}`);
+    log(`Webhook query params: ${JSON.stringify(req.query)}`);
+    log(`Webhook headers: ${JSON.stringify(req.headers)}`);
 
     // If there's a prediction ID, call the callback
     if (data.id && webhookCallbacks[data.id]) {
+      log(`Found callback for prediction ID: ${data.id}`);
       webhookCallbacks[data.id](data);
       delete webhookCallbacks[data.id];
+      pendingCallbacks--;
+      log(`Processed webhook callback. Remaining callbacks: ${pendingCallbacks}`);
+    } else {
+      log(`No callback found for prediction: ${JSON.stringify(data)}`);
     }
 
     res.json({ status: "success" });
-  });
+  };
+
+  // Register the handler for multiple paths
+  app.post("/webhook", handleWebhook);
+  app.post("/train/webhook", handleWebhook);
+  app.post("/classify/webhook", handleWebhook);
 
   return new Promise((resolve) => {
     webhookServer = app.listen(port, () => {
@@ -236,13 +245,23 @@ const loadCategorizationData = () => {
   return new Promise((resolve) => {
     const results = [];
     fs.createReadStream(path.join(__dirname, "pythonHandler", "test_data", "categorise_test.csv"))
-      .pipe(csv())
+      .pipe(
+        csv({
+          headers: false,
+          mapValues: ({ header, index, value }) => {
+            return value.trim();
+          },
+        })
+      )
       .on("data", (data) => {
-        // Add Narrative column as a copy of Description if it doesn't exist
-        if (!data.Narrative && data.Description) {
-          data.Narrative = data.Description;
-        }
-        results.push(data);
+        // Map the columns to the expected field names
+        const mappedData = {
+          Date: data[0],
+          Amount: data[1],
+          description: data[2], // Use lowercase 'description' to match what the backend expects
+          Currency: data[3],
+        };
+        results.push(mappedData);
       })
       .on("end", () => {
         log(`Loaded categorization data with ${results.length} rows`);
@@ -254,9 +273,8 @@ const loadCategorizationData = () => {
         const minimalData = {
           Date: "30/12/2024",
           Amount: "-134.09",
-          Description: "Test transaction",
+          description: "Test transaction", // Use lowercase 'description'
           Currency: "AUD",
-          Narrative: "Test transaction",
         };
         resolve([minimalData]);
       });
@@ -306,16 +324,20 @@ const testTrainingFlow = async (trainingData, webhookUrl) => {
 
       // Set up a promise that will be resolved when the webhook is called
       const webhookPromise = new Promise((resolve) => {
-        // Set a timeout to resolve the promise after 30 seconds if the webhook is not called
+        // Set a timeout to resolve the promise after 60 seconds if the webhook is not called
         const timeoutId = setTimeout(() => {
           log(`Webhook timeout for prediction ID: ${predictionId}`);
           resolve(null);
-        }, 30000);
+        }, 300000); // Increase to 300000 (5 minutes)
+
+        // Increment pending callbacks counter
+        pendingCallbacks++;
+        log(`Adding callback for prediction ID: ${predictionId}. Total pending: ${pendingCallbacks}`);
 
         // Set up the callback
         webhookCallbacks[predictionId] = (data) => {
           clearTimeout(timeoutId);
-          log(`Webhook called for prediction ID: ${predictionId}`);
+          log(`Webhook callback received for prediction ID: ${predictionId}`);
           resolve(data);
         };
       });
@@ -350,21 +372,7 @@ const testTrainingFlow = async (trainingData, webhookUrl) => {
           log(`Run 'pnpm run test-db' to test the database connection.`);
         }
       }
-
-      // For testing purposes, we'll accept various status codes
-      return {
-        success: error.response.status === 200,
-        status: error.response.status,
-        data: error.response.data,
-        spreadsheetId: testSpreadsheetId,
-      };
     }
-
-    return {
-      success: false,
-      error: error.message,
-      spreadsheetId: testSpreadsheetId,
-    };
   }
 };
 
@@ -404,16 +412,20 @@ const testCategorizationFlow = async (categorizationData, spreadsheetId, webhook
 
       // Set up a promise that will be resolved when the webhook is called
       const webhookPromise = new Promise((resolve) => {
-        // Set a timeout to resolve the promise after 30 seconds if the webhook is not called
+        // Set a timeout to resolve the promise after 60 seconds if the webhook is not called
         const timeoutId = setTimeout(() => {
           log(`Webhook timeout for prediction ID: ${predictionId}`);
           resolve(null);
-        }, 30000);
+        }, 300000); // Increase to 300000 (5 minutes)
+
+        // Increment pending callbacks counter
+        pendingCallbacks++;
+        log(`Adding callback for prediction ID: ${predictionId}. Total pending: ${pendingCallbacks}`);
 
         // Set up the callback
         webhookCallbacks[predictionId] = (data) => {
           clearTimeout(timeoutId);
-          log(`Webhook called for prediction ID: ${predictionId}`);
+          log(`Webhook callback received for prediction ID: ${predictionId}`);
           resolve(data);
         };
       });
@@ -439,7 +451,6 @@ const testCategorizationFlow = async (categorizationData, spreadsheetId, webhook
 
       if (error.response.status === 401) {
         log(`API key validation failed. Make sure the test user exists in the database and the API key is correct.`);
-        log(`Run 'pnpm run setup-test-user' to create a test user.`);
       } else if (error.response.status === 500) {
         log(`Server error. Check the Flask server logs for more details.`);
         if (error.response.data.error && error.response.data.error.includes("Client is not connected")) {
@@ -486,6 +497,48 @@ const main = async () => {
     log(`- TEST_USER_ID: ${TEST_USER_ID}`);
     log(`- TEST_API_KEY: ${TEST_API_KEY ? "***" : "Not set"}`);
 
+    // Set up test user
+    log("Setting up test user...");
+    const prisma = new PrismaClient({
+      log: ["error"],
+    });
+
+    try {
+      log(`Setting up test user with ID: ${TEST_USER_ID} and API key: ${TEST_API_KEY}`);
+
+      // Check if the user already exists
+      const existingAccount = await prisma.account.findUnique({
+        where: { userId: TEST_USER_ID },
+      });
+
+      if (existingAccount) {
+        // Update the existing account
+        log(`Test user already exists, updating API key`);
+
+        await prisma.account.update({
+          where: { userId: TEST_USER_ID },
+          data: { api_key: TEST_API_KEY },
+        });
+      } else {
+        // Create a new account
+        log(`Creating new test user`);
+
+        await prisma.account.create({
+          data: {
+            userId: TEST_USER_ID,
+            api_key: TEST_API_KEY,
+            categorisationRange: "A:D",
+            categorisationTab: "Sheet1",
+            columnOrderCategorisation: JSON.stringify(["Date", "Amount", "Description", "Currency"]),
+          },
+        });
+      }
+
+      log("Test user setup complete");
+    } finally {
+      await prisma.$disconnect();
+    }
+
     // Start webhook server first
     const webhookPort = await findFreePort(WEBHOOK_PORT);
     await startWebhookServer(webhookPort);
@@ -494,15 +547,16 @@ const main = async () => {
     let webhookUrl = await startNgrok(webhookPort);
 
     if (webhookUrl) {
-      log(`Using ngrok webhook URL: ${webhookUrl}`);
+      // Remove the /webhook suffix if present, as the Flask server will add the appropriate path
+      webhookUrl = webhookUrl.replace("/webhook", "");
+      log(`Using ngrok base URL: ${webhookUrl}`);
       // Set BACKEND_API environment variable to the ngrok URL base
-      const ngrokUrlBase = webhookUrl.replace("/webhook", "");
-      process.env.BACKEND_API = ngrokUrlBase;
-      log(`Setting BACKEND_API to: ${ngrokUrlBase}`);
+      process.env.BACKEND_API = webhookUrl;
+      log(`Setting BACKEND_API to: ${webhookUrl}`);
     } else {
       // Fallback to local URL with warning
-      webhookUrl = `http://localhost:${webhookPort}/webhook`;
-      log(`Using local webhook URL: ${webhookUrl}`);
+      webhookUrl = `http://localhost:${webhookPort}`;
+      log(`Using local webhook base URL: ${webhookUrl}`);
       log("WARNING: Local webhook URL will not work with Replicate. Tests will likely fail.");
       log("Please ensure ngrok is installed and can be started.");
     }
@@ -519,33 +573,60 @@ const main = async () => {
     const trainingData = await loadTrainingData();
     const categorizationData = await loadCategorizationData();
 
-    // Test training flow
+    // Run tests
     const trainingResult = await testTrainingFlow(trainingData, webhookUrl);
-
-    // Test categorization flow
     const categorizationResult = await testCategorizationFlow(
       categorizationData,
       trainingResult.spreadsheetId,
       webhookUrl
     );
 
-    // Print summary
+    // Print test summary
     log("\n--- Test Summary ---");
     log(`Training: ${trainingResult.success ? "SUCCESS" : "FAILURE"} (Status: ${trainingResult.status})`);
     log(
       `Categorization: ${categorizationResult.success ? "SUCCESS" : "FAILURE"} (Status: ${categorizationResult.status})`
     );
 
+    // Print troubleshooting tips if tests failed
     if (!trainingResult.success || !categorizationResult.success) {
       log("\n--- Troubleshooting ---");
       log("1. Check database connection: pnpm run test-db");
-      log("2. Ensure test user exists: pnpm run setup-test-user");
-      log("3. Verify environment variables are set correctly");
-      log("4. Check Flask server logs for errors");
+      log("2. Verify environment variables are set correctly");
+      log("3. Check Flask server logs for errors");
     }
+
+    // Add a delay before cleanup to ensure all callbacks have time to arrive
+    log("Waiting for any pending webhook callbacks...");
+    await new Promise((resolve) => setTimeout(resolve, 30000)); // 30 second delay
 
     // Cleanup
     cleanup();
+
+    // Clean up test user
+    log("Cleaning up test user...");
+    const cleanupPrisma = new PrismaClient({
+      log: ["error"],
+    });
+
+    try {
+      // Delete the test user
+      await cleanupPrisma.account
+        .delete({
+          where: { userId: TEST_USER_ID },
+        })
+        .catch((e) => {
+          if (e.code === "P2025") {
+            log("Test user not found, nothing to delete");
+          } else {
+            throw e;
+          }
+        });
+
+      log("Test user cleanup complete");
+    } finally {
+      await cleanupPrisma.$disconnect();
+    }
 
     // Exit with appropriate code
     process.exit(trainingResult.success && categorizationResult.success ? 0 : 1);
@@ -556,20 +637,91 @@ const main = async () => {
     // Cleanup
     cleanup();
 
+    // Try to clean up test user
+    try {
+      log("Cleaning up test user after error...");
+      const cleanupPrisma = new PrismaClient({
+        log: ["error"],
+      });
+
+      await cleanupPrisma.account
+        .delete({
+          where: { userId: TEST_USER_ID },
+        })
+        .catch((e) => {
+          if (e.code === "P2025") {
+            log("Test user not found, nothing to delete");
+          }
+        });
+
+      await cleanupPrisma.$disconnect();
+      log("Test user cleanup complete");
+    } catch (cleanupError) {
+      log(`Error during cleanup: ${cleanupError.message}`);
+    }
+
     process.exit(1);
   }
 };
 
 // Handle process termination
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
   log("Process interrupted");
   cleanup();
+
+  // Try to clean up test user
+  try {
+    log("Cleaning up test user after interruption...");
+    const cleanupPrisma = new PrismaClient({
+      log: ["error"],
+    });
+
+    await cleanupPrisma.account
+      .delete({
+        where: { userId: TEST_USER_ID },
+      })
+      .catch((e) => {
+        if (e.code === "P2025") {
+          log("Test user not found, nothing to delete");
+        }
+      });
+
+    await cleanupPrisma.$disconnect();
+    log("Test user cleanup complete");
+  } catch (cleanupError) {
+    log(`Error during cleanup: ${cleanupError.message}`);
+  }
+
   process.exit(1);
 });
 
-process.on("SIGTERM", () => {
+process.on("SIGTERM", async () => {
   log("Process terminated");
   cleanup();
+
+  // Try to clean up test user
+  try {
+    log("Cleaning up test user after termination...");
+    const cleanupPrisma = new PrismaClient({
+      log: ["error"],
+    });
+
+    await cleanupPrisma.account
+      .delete({
+        where: { userId: TEST_USER_ID },
+      })
+      .catch((e) => {
+        if (e.code === "P2025") {
+          log("Test user not found, nothing to delete");
+        }
+      });
+
+    await cleanupPrisma.$disconnect();
+    log("Test user cleanup complete");
+  } catch (cleanupError) {
+    log(`Error during cleanup: ${cleanupError.message}`);
+  }
+
   process.exit(1);
 });
 

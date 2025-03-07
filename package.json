@@ -7,9 +7,6 @@
   "scripts": {
     "test": "node test-api-endpoints.js",
     "start": "node index.js",
-    "setup-test-user": "node setup-test-user.js",
-    "cleanup-test-user": "node cleanup-test-user.js",
-    "test-with-setup": "pnpm run setup-test-user && pnpm test && pnpm run cleanup-test-user",
     "test-db": "node test-db-connection.js",
     "debug-test": "NODE_OPTIONS='--inspect' node test-api-endpoints.js"
   },
@@ -21,5 +18,12 @@
     "csv-parser": "^3.0.0",
     "dotenv": "^16.3.1",
     "express": "^4.18.2"
+  },
+  "comments": {
+    "scripts": {
+      "test": "Runs the full test suite with a fixed test user (creates and cleans up the test user automatically)",
+      "test-db": "Tests the database connection",
+      "debug-test": "Runs the tests with Node.js inspector enabled for debugging"
+    }
   }
 }

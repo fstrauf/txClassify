@@ -231,8 +231,16 @@ class PrismaClient:
             raise
 
     # Embedding methods
-    def store_embedding(self, file_name, data_bytes):
-        """Store embedding data in the database."""
+    def store_embedding(self, embedding_id, data_bytes):
+        """Store embedding data in the database.
+
+        Args:
+            embedding_id: The identifier for the embeddings
+            data_bytes: The binary data to store
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             # Ensure client is connected
             if not hasattr(self.client, "_engine") or not self.client._engine:
@@ -242,48 +250,58 @@ class PrismaClient:
             data_base64 = base64.b64encode(data_bytes).decode("utf-8")
 
             # Check if embedding already exists
-            existing = self.client.embedding.find_unique(where={"file_name": file_name})
+            existing = self.client.embedding.find_unique(
+                where={"embedding_id": embedding_id}
+            )
 
             if existing:
                 # Update existing embedding
                 embedding = self.client.embedding.update(
-                    where={"file_name": file_name}, data={"data": data_base64}
+                    where={"embedding_id": embedding_id}, data={"data": data_base64}
                 )
             else:
                 # Create new embedding
                 embedding = self.client.embedding.create(
-                    data={"file_name": file_name, "data": data_base64}
+                    data={"embedding_id": embedding_id, "data": data_base64}
                 )
 
             if embedding:
-                logger.info(f"Successfully stored embedding: {file_name}")
+                logger.info(f"Successfully stored embedding: {embedding_id}")
                 return True
             return False
         except Exception as e:
             logger.error(f"Error storing embedding: {str(e)}")
-            raise
+            return False
 
-    def fetch_embedding(self, file_name):
-        """Fetch embedding data from the database."""
+    def fetch_embedding(self, embedding_id):
+        """Fetch embedding data from the database.
+
+        Args:
+            embedding_id: The identifier for the embeddings to fetch
+
+        Returns:
+            bytes: The binary data, or None if not found
+        """
         try:
             # Ensure client is connected
             if not hasattr(self.client, "_engine") or not self.client._engine:
                 self.connect()
 
             embedding = self.client.embedding.find_unique(
-                where={"file_name": file_name}
+                where={"embedding_id": embedding_id}
             )
 
             if embedding and embedding.data:
                 # Convert base64 string back to bytes
                 data_bytes = base64.b64decode(embedding.data)
-                logger.info(f"Successfully fetched embedding: {file_name}")
+                logger.info(f"Successfully fetched embedding: {embedding_id}")
                 return data_bytes
-            logger.warning(f"No embedding found for file: {file_name}")
-            return None
+            else:
+                logger.warning(f"No embedding found for ID: {embedding_id}")
+                return None
         except Exception as e:
             logger.error(f"Error fetching embedding: {str(e)}")
-            raise
+            return None
 
 
 # Create a singleton instance
