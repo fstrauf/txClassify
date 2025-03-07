@@ -14,8 +14,8 @@ const { PrismaClient } = require("@prisma/client");
 const crypto = require("crypto");
 
 // Configuration
-const TEST_USER_ID = process.env.TEST_USER_ID || `test_user_${crypto.randomBytes(4).toString("hex")}`;
-const TEST_API_KEY = process.env.TEST_API_KEY || `test_key_${crypto.randomBytes(8).toString("hex")}`;
+const TEST_USER_ID = "test_user_fixed";
+const TEST_API_KEY = "test_api_key_fixed";
 
 // Set up logging
 const log = (message) => {

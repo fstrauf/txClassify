@@ -37,7 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize Flask app with logging
+# Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
@@ -68,7 +68,7 @@ def shutdown_db_connection(exception=None):
         # as it causes issues with subsequent requests
         if os.environ.get("FLASK_ENV") != "testing":
             prisma_client.disconnect()
-            logger.info("Disconnected from database")
+        logger.info("Disconnected from database")
     except Exception as e:
         logger.error(f"Error disconnecting from database: {e}")
 
@@ -269,9 +269,19 @@ def run_prediction(
         raise
 
 
-def store_embeddings(file_name: str, data: np.ndarray) -> None:
-    """Store embeddings in database using Prisma."""
+def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
+    """Store embeddings in database using Prisma.
+
+    Args:
+        data: The numpy array containing the embeddings
+        embedding_id: The identifier for the embeddings (e.g., spreadsheet_id or spreadsheet_id_index)
+
+    Returns:
+        bool: True if the embeddings were successfully stored, False otherwise
+    """
     try:
+        logger.info(f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}")
+
         # Convert numpy array to bytes
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
             np.savez_compressed(temp_file, data)
@@ -280,51 +290,64 @@ def store_embeddings(file_name: str, data: np.ndarray) -> None:
         # Read the compressed data as bytes
         with open(temp_file_path, "rb") as f:
             data_bytes = f.read()
+            logger.info(f"Read {len(data_bytes)} bytes from temporary file")
 
         # Clean up temp file
         os.unlink(temp_file_path)
 
-        # Store in database using Prisma synchronous wrapper
-        result = prisma_client.store_embedding(file_name, data_bytes)
-
-        if not result:
-            raise Exception("Failed to store embedding in database")
-
-        logger.info(f"Successfully stored embedding: {file_name}")
+        # Store in database using Prisma
+        result = prisma_client.store_embedding(embedding_id, data_bytes)
+        logger.info(f"Embedding storage result: {result}")
+        return result
     except Exception as e:
         logger.error(f"Error storing embeddings: {e}")
-        raise
+        return False
 
 
-def fetch_embeddings(file_name: str) -> np.ndarray:
-    """Fetch embeddings from database using Prisma."""
+def fetch_embeddings(embedding_id: str) -> np.ndarray:
+    """Fetch embeddings from database.
+
+    Args:
+        embedding_id: The identifier for the embeddings to fetch
+
+    Returns:
+        np.ndarray: The embeddings as a numpy array, or empty array if not found
+    """
     try:
-        # Fetch from database using Prisma synchronous wrapper
-        data_bytes = prisma_client.fetch_embedding(file_name)
+        logger.info(f"Fetching embeddings with ID: {embedding_id}")
+
+        # Fetch from database using Prisma
+        data_bytes = prisma_client.fetch_embedding(embedding_id)
 
         if not data_bytes:
-            raise Exception(f"No embedding found for file: {file_name}")
+            logger.warning(f"No embeddings found with ID: {embedding_id}")
+            return np.array([])
 
-        # Create a temporary file to load the numpy array
+        logger.info(f"Retrieved {len(data_bytes)} bytes from database")
+
+        # Convert bytes to numpy array
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
             temp_file.write(data_bytes)
             temp_file_path = temp_file.name
 
         # Load the numpy array from the temporary file
-        data = np.load(temp_file_path)
+        try:
+            with np.load(temp_file_path, allow_pickle=True) as data:
+                # Get the first array in the npz file
+                array_name = list(data.files)[0]
+                embeddings = data[array_name]
+                logger.info(f"Loaded embeddings with shape: {embeddings.shape}")
+        except Exception as e:
+            logger.error(f"Error loading numpy array from bytes: {e}")
+            embeddings = np.array([])
+        finally:
+            # Clean up temp file
+            os.unlink(temp_file_path)
 
-        # Clean up temp file
-        os.unlink(temp_file_path)
-
-        # Get the array from the npz file (first array)
-        array_name = list(data.keys())[0]
-        result = data[array_name]
-
-        logger.info(f"Successfully fetched embedding: {file_name}")
-        return result
+        return embeddings
     except Exception as e:
         logger.error(f"Error fetching embeddings: {e}")
-        raise
+        return np.array([])
 
 
 def update_sheet_log(
@@ -503,222 +526,86 @@ def train_model():
         )
         logger.info(f"Category column length: {df['Category'].str.len().describe()}")
 
-        # Store training data with clear separation between category and description
-        # Use a structured array with named fields for clarity
-        # IMPORTANT: We're using df["Category"] for the category field, not df["Narrative"]
-        training_data = np.array(
-            list(zip(df["item_id"], df["Category"], df["description"])),
-            dtype=[("item_id", int), ("category", "U100"), ("description", "U500")],
+        # Create structured array for index data
+        index_data = np.array(
+            [
+                (i, desc, cat)
+                for i, (desc, cat) in enumerate(
+                    zip(df["description"].values, df["Category"].values)
+                )
+            ],
+            dtype=[
+                ("item_id", np.int32),
+                ("description", "U256"),  # Unicode string up to 256 chars
+                ("category", "U128"),  # Unicode string up to 128 chars
+            ],
         )
 
-        # Log the first few entries to verify structure
-        logger.info(f"First training data entry: {training_data[0]}")
-        logger.info(f"Training data dtype: {training_data.dtype}")
+        # Store index data
+        store_embeddings(index_data, f"{sheet_id}_index")
+        logger.info(f"Stored index data with {len(index_data)} entries")
 
-        # Log a few sample entries to verify we're storing the correct category
-        for i in range(min(5, len(training_data))):
-            logger.info(
-                f"Training entry {i}: id={training_data[i]['item_id']}, category='{training_data[i]['category']}', description='{training_data[i]['description']}'"
-            )
+        # Create a placeholder for the embeddings so we know it's expected
+        # This will be replaced with the actual embeddings when the webhook is called
+        placeholder = np.array([[0.0] * 768])  # Standard embedding size
+        store_embeddings(placeholder, f"{sheet_id}")
+        logger.info(f"Stored placeholder embeddings for {sheet_id}")
 
-        store_embeddings(f"{sheet_id}_index.npy", training_data)
+        # Verify index data was stored correctly
+        try:
+            stored_index = fetch_embeddings(f"{sheet_id}_index")
+            logger.info(f"Verified index data with shape: {stored_index.shape}")
+        except Exception as e:
+            logger.warning(f"Could not verify stored index data: {e}")
 
-        # Run prediction
-        prediction = run_prediction(
-            "train",
-            sheet_id,
-            user_id,
-            df["description"].tolist(),
-            sheet_name=data.get("sheetName"),
-            category_column=data.get("categoryColumn"),
+        # Get descriptions for embedding
+        descriptions = df["description"].tolist()
+        logger.info(f"Prepared {len(descriptions)} descriptions for embedding")
+
+        # Set up webhook URL with all necessary parameters
+        webhook_params = [
+            f"spreadsheetId={sheet_id}",
+            f"userId={user_id}",
+        ]
+
+        # Add sheet name if provided
+        if data.get("sheetName"):
+            webhook_params.append(f"sheetName={data.get('sheetName')}")
+
+        # Add category column if provided
+        if data.get("categoryColumn"):
+            webhook_params.append(f"categoryColumn={data.get('categoryColumn')}")
+
+        # Create webhook URL
+        webhook = f"{BACKEND_API}/train/webhook?{'&'.join(webhook_params)}"
+        logger.info(f"Setting up webhook URL: {webhook}")
+        logger.info(f"BACKEND_API value: {BACKEND_API}")
+
+        # Get embeddings with webhook
+        model = replicate.models.get("replicate/all-mpnet-base-v2")
+        version = model.versions.get(
+            "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
         )
+
+        # Create prediction with webhook
+        prediction = replicate.predictions.create(
+            version=version,
+            input={"text_batch": json.dumps(descriptions)},
+            webhook=webhook,
+            webhook_events_filter=["completed"],
+        )
+
+        logger.info(f"Created prediction with ID: {prediction.id}")
+        logger.info(f"Webhook URL: {webhook}")
+
+        # Update status
+        update_process_status("processing", "training", user_id)
 
         return jsonify({"status": "processing", "prediction_id": prediction.id})
 
     except Exception as e:
         logger.error(f"Error in train_model: {e}")
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/train/webhook", methods=["POST"])
-def training_webhook():
-    """Handle training webhook from Replicate."""
-    sheet_id = request.args.get("spreadsheetId")
-    user_id = request.args.get("userId")
-    embeddings_shape = None  # Initialize embeddings_shape variable
-
-    try:
-        # Log incoming request details
-        logger.info(
-            f"Received webhook request for sheet_id: {sheet_id}, user_id: {user_id}"
-        )
-
-        if not all([sheet_id, user_id]):
-            error_msg = "Missing required parameters: spreadsheetId and userId"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-
-        # Ensure user account exists
-        try:
-            account = prisma_client.get_account_by_user_id(user_id)
-            if not account:
-                # Create new account with all fields from schema
-                default_config = {
-                    "userId": user_id,
-                    "categorisationRange": "A:Z",
-                    "columnOrderCategorisation": {
-                        "categoryColumn": "E",
-                        "descriptionColumn": "C",
-                    },
-                    "categorisationTab": None,  # Set to None as it's being deprecated
-                    "api_key": None,  # Include api_key field but set to None
-                }
-                prisma_client.insert_account(user_id, default_config)
-                logger.info(f"Created new account for user {user_id}")
-        except Exception as e:
-            logger.warning(f"Error checking/creating user account: {e}")
-            # Continue with webhook processing even if account creation fails
-
-        # Get prediction_id from multiple sources with logging
-        prediction_id = None
-        prediction_source = None
-
-        # 1. Try Replicate header (most reliable)
-        if "X-Replicate-Prediction-Id" in request.headers:
-            prediction_id = request.headers.get("X-Replicate-Prediction-Id")
-            prediction_source = "Replicate header"
-
-        # 2. Try custom header (backup)
-        elif "Prediction-Id" in request.headers:
-            prediction_id = request.headers.get("Prediction-Id")
-            prediction_source = "Custom header"
-
-        # 3. Try query parameters
-        elif request.args.get("prediction_id"):
-            prediction_id = request.args.get("prediction_id")
-            prediction_source = "Query parameter"
-
-        # 4. Try JSON body as last resort
-        elif request.is_json:
-            try:
-                data = request.get_json(force=True)
-                if data.get("id"):
-                    prediction_id = data.get("id")
-                    prediction_source = "JSON body"
-            except Exception as e:
-                logger.warning(f"Error parsing request JSON for prediction ID: {e}")
-
-        if prediction_id:
-            logger.info(
-                f"Found prediction_id: {prediction_id} from {prediction_source}"
-            )
-        else:
-            error_msg = (
-                "Missing prediction ID - not found in headers, query params, or body"
-            )
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-
-        # Check if we've already processed this webhook
-        try:
-            webhook_result = prisma_client.get_webhook_result(prediction_id)
-            if webhook_result:
-                logger.info(
-                    f"Webhook already processed for prediction_id: {prediction_id}"
-                )
-                return (
-                    jsonify({"status": "success", "message": "Already processed"}),
-                    200,
-                )
-        except Exception as e:
-            logger.warning(f"Error checking webhook results: {e}")
-
-        # Parse and validate JSON data
-        if not request.is_json:
-            error_msg = "Request must be JSON"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-
-        try:
-            data = request.get_json(force=True)
-        except Exception as e:
-            error_msg = f"Failed to parse JSON: {str(e)}"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-
-        if not data or not isinstance(data, dict):
-            error_msg = "Invalid JSON data format"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-
-        # Process embeddings
-        try:
-            embeddings = np.array(
-                [item["embedding"] for item in data["output"]], dtype=np.float32
-            )
-            embeddings_shape = (
-                embeddings.shape
-            )  # Store shape before clearing embeddings
-            logger.info(
-                f"Successfully processed embeddings with shape: {embeddings_shape}"
-            )
-
-            # Store embeddings
-            store_embeddings(f"{sheet_id}.npy", embeddings)
-
-            # Log information about the stored embeddings
-            logger.info(
-                f"Stored embeddings for sheet_id: {sheet_id} with shape: {embeddings_shape}"
-            )
-
-            # Try to load the index file to verify it exists and has the right structure
-            try:
-                index_data = fetch_embeddings(f"{sheet_id}_index.npy")
-                logger.info(
-                    f"Verified index data - shape: {index_data.shape}, dtype: {index_data.dtype}"
-                )
-                if len(index_data) > 0:
-                    logger.info(f"Sample index entry: {index_data[0]}")
-            except Exception as e:
-                logger.warning(f"Could not verify index data: {e}")
-
-            # Clear memory
-            del embeddings
-            gc.collect()
-
-        except (KeyError, TypeError) as e:
-            error_msg = f"Invalid embedding data structure: {str(e)}"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
-
-        # Store webhook result with minimal data
-        try:
-            result = {
-                "user_id": user_id,
-                "status": "success",
-                "embeddings_shape": str(
-                    embeddings_shape
-                ),  # Convert to string for JSON serialization
-            }
-            prisma_client.insert_webhook_result(prediction_id, result)
-            logger.info(f"Stored webhook result for prediction_id: {prediction_id}")
-        except Exception as e:
-            logger.warning(f"Error storing webhook result: {e}")
-
-        # Update status
-        update_process_status("completed", "training", user_id)
-
-        logger.info("Training webhook completed successfully")
-        return jsonify(
-            {"status": "success", "message": "Training completed successfully"}
-        )
-
-    except Exception as e:
-        error_msg = f"Error in training webhook: {str(e)}"
-        logger.error(error_msg)
-        if user_id:
-            update_process_status(f"Error: {str(e)}", "training", user_id)
-        return jsonify({"error": error_msg}), 500
 
 
 @app.route("/classify", methods=["POST"])
@@ -780,7 +667,7 @@ def classify_transactions():
 
         # Verify training data exists
         try:
-            trained_data = fetch_embeddings("txclassify", f"{spreadsheet_id}_index.npy")
+            trained_data = fetch_embeddings(f"{spreadsheet_id}_index")
             if len(trained_data) == 0:
                 error_msg = "No training data found. Please train the model first."
                 return jsonify({"error": error_msg}), 400
@@ -824,20 +711,55 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         spreadsheet_id = predictions_db[prediction_id]["spreadsheet_id"]
         sheet_name = predictions_db[prediction_id].get("sheet_name", "new_transactions")
 
-        trained_embeddings = fetch_embeddings(f"{spreadsheet_id}.npy")
-        trained_data = fetch_embeddings(f"{spreadsheet_id}_index.npy")
+        logger.info(f"Fetching trained embeddings for spreadsheet_id: {spreadsheet_id}")
+        trained_embeddings = fetch_embeddings(f"{spreadsheet_id}")
+        trained_data = fetch_embeddings(f"{spreadsheet_id}_index")
+
+        logger.info(f"Trained embeddings size: {len(trained_embeddings)}")
+        logger.info(f"Trained data size: {len(trained_data)}")
 
         if len(trained_embeddings) == 0 or len(trained_data) == 0:
+            logger.error(f"No training data found for spreadsheet_id: {spreadsheet_id}")
+            logger.error(
+                f"Embeddings size: {len(trained_embeddings)}, Index size: {len(trained_data)}"
+            )
+
+            # Check if the files exist in the database
+            try:
+                embedding_exists = (
+                    prisma_client.fetch_embedding(f"{spreadsheet_id}") is not None
+                )
+                index_exists = (
+                    prisma_client.fetch_embedding(f"{spreadsheet_id}_index") is not None
+                )
+                logger.error(
+                    f"Embedding file exists in DB: {embedding_exists}, Index file exists in DB: {index_exists}"
+                )
+            except Exception as e:
+                logger.error(f"Error checking if embedding files exist: {e}")
+
             predictions_db[prediction_id]["status"] = "failed"
             predictions_db[prediction_id]["error"] = "No training data found"
             return
 
         # Clean and prepare descriptions
-        descriptions = [
-            clean_text(t["description"]) for t in transactions if t.get("description")
-        ]
+        descriptions = []
+        for t in transactions:
+            if t.get("description"):
+                descriptions.append(clean_text(t["description"]))
+            else:
+                logger.warning(f"No description field found in transaction: {t}")
+
+        if not descriptions:
+            logger.error("No valid descriptions found in transactions")
+            predictions_db[prediction_id]["status"] = "failed"
+            predictions_db[prediction_id][
+                "error"
+            ] = "No valid descriptions found in transactions"
+            return
 
         # Get embeddings for new descriptions
+        logger.info("Initializing Replicate model for embeddings")
         model = replicate.models.get("replicate/all-mpnet-base-v2")
         version = model.versions.get(
             "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
@@ -862,13 +784,21 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         webhook = f"{BACKEND_API}/classify/webhook?{'&'.join(webhook_params)}"
         logger.info(f"Setting up webhook URL: {webhook}")
 
+        # Log BACKEND_API value for debugging
+        logger.info(f"BACKEND_API value: {BACKEND_API}")
+
         # Get embeddings for new descriptions with webhook
+        logger.info(
+            f"Creating Replicate prediction with {len(descriptions)} descriptions"
+        )
         prediction = replicate.predictions.create(
             version=version,
             input={"text_batch": json.dumps(descriptions)},
             webhook=webhook,
             webhook_events_filter=["completed"],
         )
+
+        logger.info(f"Replicate prediction created with ID: {prediction.id}")
 
         # Store prediction ID for reference
         predictions_db[prediction_id]["replicate_prediction_id"] = prediction.id
@@ -990,8 +920,8 @@ def classify_webhook():
 
         # Get trained embeddings and categories
         try:
-            trained_embeddings = fetch_embeddings("txclassify", f"{sheet_id}.npy")
-            trained_data = fetch_embeddings("txclassify", f"{sheet_id}_index.npy")
+            trained_embeddings = fetch_embeddings(f"{sheet_id}")
+            trained_data = fetch_embeddings(f"{sheet_id}_index")
             logger.info(
                 f"Retrieved {len(trained_embeddings)} trained embeddings and {len(trained_data)} training data points"
             )
@@ -1485,6 +1415,173 @@ def manage_api_key():
     except Exception as e:
         logger.error(f"Error managing API key: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/user-config", methods=["GET"])
+def get_user_config():
+    """Get user configuration."""
+    try:
+        user_id = request.args.get("userId")
+        if not user_id:
+            return jsonify({"error": "Missing userId parameter"}), 400
+
+        response = prisma_client.get_account_by_user_id(user_id)
+        if not response:
+            return jsonify({"error": "User not found"}), 404
+
+        # Update API key if provided
+        api_key = request.args.get("apiKey")
+        if api_key:
+            prisma_client.update_account(user_id, {"api_key": api_key})
+            logger.info(f"Updated API key for user {user_id}")
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        logger.error(f"Error getting user config: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Handle webhook from Replicate."""
+    # Extract parameters from request
+    spreadsheet_id = request.args.get("spreadsheetId")
+    user_id = request.args.get("userId")
+
+    # Get prediction_id from headers or request
+    prediction_id = request.headers.get(
+        "X-Replicate-Prediction-Id"
+    ) or request.args.get("prediction_id")
+
+    logger.info(
+        f"Received webhook for spreadsheet_id: {spreadsheet_id}, user_id: {user_id}, prediction_id: {prediction_id}"
+    )
+
+    if not all([spreadsheet_id, user_id]):
+        error_msg = f"Missing required parameters: spreadsheet_id={spreadsheet_id}, user_id={user_id}"
+        logger.error(error_msg)
+        return jsonify({"error": error_msg}), 400
+
+    try:
+        # Parse JSON data
+        if not request.is_json:
+            error_msg = "Request must be JSON"
+            logger.error(error_msg)
+            return jsonify({"error": error_msg}), 400
+
+        data = request.get_json(force=True)
+        logger.info(f"Webhook data keys: {data.keys()}")
+
+        # Check if this is a training webhook (from the URL path)
+        is_training = "/train/" in request.path
+
+        if is_training:
+            # Process embeddings for training
+            try:
+                # Extract embeddings from the response
+                if (
+                    "output" in data
+                    and isinstance(data["output"], list)
+                    and len(data["output"]) > 0
+                ):
+                    # Standard Replicate format
+                    embeddings = np.array(
+                        [item["embedding"] for item in data["output"]], dtype=np.float32
+                    )
+                    logger.info(f"Extracted embeddings with shape: {embeddings.shape}")
+
+                    # Store the embeddings
+                    store_result = store_embeddings(embeddings, f"{spreadsheet_id}")
+                    logger.info(
+                        f"Stored embeddings for {spreadsheet_id}: {store_result}"
+                    )
+
+                    # Update status
+                    update_process_status("completed", "training", user_id)
+
+                    # Store webhook result
+                    if prediction_id:
+                        result = {
+                            "user_id": user_id,
+                            "status": "success",
+                            "embeddings_shape": str(embeddings.shape),
+                            "spreadsheet_id": spreadsheet_id,
+                        }
+                        prisma_client.insert_webhook_result(prediction_id, result)
+
+                    return jsonify({"status": "success"}), 200
+                else:
+                    error_msg = "Invalid data format in webhook response"
+                    logger.error(error_msg)
+                    return jsonify({"error": error_msg}), 400
+            except Exception as e:
+                error_msg = f"Error processing training webhook: {str(e)}"
+                logger.error(error_msg)
+                return jsonify({"error": error_msg}), 500
+        else:
+            # Handle other webhook types (classify, etc.)
+            logger.info("Non-training webhook received")
+            return jsonify({"status": "success"}), 200
+
+    except Exception as e:
+        error_msg = f"Error in webhook: {str(e)}"
+        logger.error(error_msg)
+        return jsonify({"error": error_msg}), 500
+
+
+@app.route("/webhook-result", methods=["GET"])
+def get_webhook_result():
+    """Get webhook result."""
+    try:
+        prediction_id = request.args.get("prediction_id")
+        if not prediction_id:
+            return jsonify({"error": "Missing prediction_id parameter"}), 400
+
+        webhook_result = prisma_client.get_webhook_result(prediction_id)
+        if not webhook_result:
+            return (
+                jsonify(
+                    {
+                        "status": "pending",
+                        "message": "No result found for this prediction ID",
+                    }
+                ),
+                404,
+            )
+
+        return jsonify(webhook_result), 200
+    except Exception as e:
+        logger.error(f"Error getting webhook result: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/check-webhook", methods=["GET"])
+def check_webhook():
+    """Check if webhook has been processed."""
+    try:
+        prediction_id = request.args.get("prediction_id")
+        if not prediction_id:
+            return jsonify({"error": "Missing prediction_id parameter"}), 400
+
+        webhook_check = prisma_client.get_webhook_result(prediction_id)
+        if webhook_check:
+            return jsonify({"status": "processed"}), 200
+        else:
+            return jsonify({"status": "pending"}), 200
+    except Exception as e:
+        logger.error(f"Error checking webhook: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/train/webhook", methods=["POST"])
+def train_webhook():
+    """Handle training webhook from Replicate."""
+    logger.info("Received training webhook, redirecting to main webhook handler")
+    # Add mode=train to the request args to ensure it's treated as a training webhook
+    request.args = request.args.copy()
+    request.args["mode"] = "train"
+    return webhook()
 
 
 if __name__ == "__main__":
