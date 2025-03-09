@@ -1028,15 +1028,35 @@ def classify_webhook():
             prediction_id = request.args.get("prediction_id", "unknown")
 
             try:
-                prisma_client.insert_webhook_result(
-                    prediction_id,
-                    {
-                        "user_id": user_id,
-                        "status": "success",
-                        "data": results,  # Store results directly in the data field
-                    },
+                # Format results for storage
+                serializable_results = {
+                    "status": "success",
+                    "message": "Classification completed",
+                    "data": [],
+                }
+
+                # Add each result with simple types
+                for r in results:
+                    serializable_results["data"].append(
+                        {
+                            "predicted_category": str(r.get("predicted_category", "")),
+                            "similarity_score": float(r.get("similarity_score", 0)),
+                            "narrative": (
+                                str(r.get("narrative", "")) if "narrative" in r else ""
+                            ),
+                        }
+                    )
+
+                # Store the results
+                webhook_result = prisma_client.insert_webhook_result(
+                    prediction_id, serializable_results
                 )
-                logger.info(f"Stored webhook result for sheet_id: {sheet_id}")
+                if webhook_result:
+                    logger.info(f"Stored webhook result for sheet_id: {sheet_id}")
+                else:
+                    logger.warning(
+                        f"Failed to store webhook result for sheet_id: {sheet_id}"
+                    )
             except Exception as e:
                 logger.warning(f"Error storing webhook result: {e}")
 

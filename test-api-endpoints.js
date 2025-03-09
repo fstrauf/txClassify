@@ -21,7 +21,6 @@
  */
 
 require("dotenv").config();
-const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -32,16 +31,13 @@ const net = require("net");
 
 // Configuration
 const API_PORT = process.env.API_PORT || 3001;
-// const API_URL = process.env.API_URL || `http://localhost:${API_PORT}`;
 const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
 const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
-const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3002;
 const CATEGORIZATION_DATA_PATH = path.join(__dirname, "pythonHandler", "test_data", "categorise_test.csv");
 
 // Global variables
 let webhookServer;
 let flaskProcess;
-let pendingCallbacks = 0; // Track number of pending callbacks
 
 // Set up logging with verbosity levels
 const LOG_LEVELS = {
@@ -105,71 +101,6 @@ const findFreePort = async (startPort) => {
       resolve(findFreePort(startPort + 1));
     });
   });
-};
-
-// Helper function to get ngrok URL
-const getNgrokUrl = async (port) => {
-  try {
-    const response = await axios.get("http://localhost:4040/api/tunnels");
-    if (response.status === 200) {
-      const tunnels = response.data.tunnels;
-
-      // First try to find a tunnel for our specific port
-      for (const tunnel of tunnels) {
-        if (tunnel.config.addr.endsWith(port.toString())) {
-          return tunnel.public_url;
-        }
-      }
-
-      // If no specific port tunnel found, use the first available tunnel
-      if (tunnels.length > 0) {
-        log(`No tunnel found for port ${port}, using first available tunnel: ${tunnels[0].public_url}`);
-        return tunnels[0].public_url;
-      }
-    }
-    log(`Ngrok is running but no tunnels found`);
-    return null;
-  } catch (error) {
-    log(`Failed to get ngrok URL: ${error.message}`);
-    return null;
-  }
-};
-
-// Start ngrok if not already running
-const startNgrok = async (port) => {
-  try {
-    // Check if ngrok is already running for this port
-    const ngrokUrl = await getNgrokUrl(port);
-    if (ngrokUrl) {
-      log(`Ngrok already running for port ${port}`);
-      return ngrokUrl;
-    }
-
-    log(`Starting ngrok for port ${port}...`);
-
-    // Start ngrok
-    const ngrok = spawn("ngrok", ["http", port.toString()]);
-
-    // Wait for ngrok to start
-    const maxAttempts = 10;
-    let attempts = 0;
-    while (attempts < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      const url = await getNgrokUrl(port);
-      if (url) {
-        log(`Ngrok started successfully with URL: ${url}`);
-        return url;
-      }
-      attempts++;
-      log(`Waiting for ngrok to start (attempt ${attempts}/${maxAttempts})...`);
-    }
-
-    log("Failed to start ngrok after multiple attempts");
-    return null;
-  } catch (error) {
-    log(`Error starting ngrok: ${error.message}`);
-    return null;
-  }
 };
 
 // Start Flask server
@@ -351,123 +282,6 @@ const loadCategorizationData = () => {
         resolve(testData);
       });
   });
-};
-
-// Parse and display classification results
-const writeResultsToSheet = (result, config) => {
-  try {
-    Logger.log("Writing results to sheet with config: " + JSON.stringify(config));
-
-    // Check if we have results directly in the response
-    if (result.results && Array.isArray(result.results)) {
-      Logger.log("Found results directly in response");
-      var webhookResults = result.results;
-      var categoryCol = result.config ? result.config.categoryColumn : config.categoryCol;
-      var startRow = result.config ? parseInt(result.config.startRow) : parseInt(config.startRow);
-
-      // Write categories and confidence scores
-      var endRow = startRow + webhookResults.length - 1;
-
-      Logger.log("Writing " + webhookResults.length + " results to sheet");
-      Logger.log("Start row: " + startRow + ", End row: " + endRow);
-
-      // Write categories
-      var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
-      categoryRange.setValues(webhookResults.map((r) => [r.predicted_category]));
-
-      // Write confidence scores if they exist
-      if (webhookResults[0].hasOwnProperty("similarity_score")) {
-        var confidenceCol = String.fromCharCode(categoryCol.charCodeAt(0) + 1);
-        var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
-        confidenceRange.setValues(webhookResults.map((r) => [r.similarity_score])).setNumberFormat("0.00%");
-      }
-
-      updateStatus("Categorisation completed successfully!");
-      return true;
-    }
-
-    // Check if we have results in the result.result.results.data format
-    if (
-      result.result &&
-      result.result.results &&
-      result.result.results.data &&
-      Array.isArray(result.result.results.data)
-    ) {
-      Logger.log("Found results in result.result.results.data format");
-      var webhookResults = result.result.results.data;
-      var startRow = parseInt(config.startRow);
-      var endRow = startRow + webhookResults.length - 1;
-
-      Logger.log("Writing " + webhookResults.length + " results to sheet");
-      Logger.log("Start row: " + startRow + ", End row: " + endRow);
-
-      // Write categories
-      var categoryRange = sheet.getRange(config.categoryCol + startRow + ":" + config.categoryCol + endRow);
-      categoryRange.setValues(webhookResults.map((r) => [r.predicted_category]));
-
-      // Write confidence scores if they exist
-      if (webhookResults[0].hasOwnProperty("similarity_score")) {
-        var confidenceCol = String.fromCharCode(config.categoryCol.charCodeAt(0) + 1);
-        var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
-        confidenceRange.setValues(webhookResults.map((r) => [r.similarity_score])).setNumberFormat("0.00%");
-      }
-
-      updateStatus("Categorisation completed successfully!");
-      return true;
-    }
-
-    // For newer webhook format with success status but results elsewhere
-    if (result.result && result.result.results && result.result.results.status === "success") {
-      Logger.log("Webhook reported success but checking for results elsewhere");
-      // Check if we have results elsewhere in the response
-      if (result.results && Array.isArray(result.results)) {
-        Logger.log("Found results in result.results format");
-        var webhookResults = result.results;
-        var categoryCol = result.config ? result.config.categoryColumn : config.categoryCol;
-        var startRow = result.config ? parseInt(result.config.startRow) : parseInt(config.startRow);
-
-        // Write categories and confidence scores
-        var endRow = startRow + webhookResults.length - 1;
-
-        Logger.log("Writing " + webhookResults.length + " results to sheet");
-        Logger.log("Start row: " + startRow + ", End row: " + endRow);
-
-        // Write categories
-        var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
-        categoryRange.setValues(webhookResults.map((r) => [r.predicted_category]));
-
-        // Write confidence scores if they exist
-        if (webhookResults[0].hasOwnProperty("similarity_score")) {
-          var confidenceCol = String.fromCharCode(categoryCol.charCodeAt(0) + 1);
-          var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
-          confidenceRange.setValues(webhookResults.map((r) => [r.similarity_score])).setNumberFormat("0.00%");
-        }
-
-        updateStatus("Categorisation completed successfully!");
-        return true;
-      }
-
-      updateStatus(
-        "Categorisation completed, but no results were found to write to the sheet",
-        "Check the Log sheet for details"
-      );
-      return false;
-    }
-
-    // No results found in any expected format
-    if (!result.result || !result.result.results) {
-      Logger.log("No webhook results found in response");
-      updateStatus("Categorisation completed, but no results were returned", "Check the Log sheet for details");
-      return false;
-    }
-
-    return false;
-  } catch (error) {
-    Logger.log("Error writing results to sheet: " + error);
-    Logger.log("Error stack: " + error.stack);
-    updateStatus("Error writing results to sheet: " + error.toString());
-    return false;
-  }
 };
 
 // Test training flow
@@ -820,8 +634,18 @@ const categoriseTransactions = async (config) => {
       // Override stdout.write to capture Flask logs
       process.stdout.write = function (chunk, encoding, callback) {
         const output = chunk.toString();
-        if (output.includes("Flask stdout:") && (output.includes("Match") || output.includes("Extracted category"))) {
+        // Capture all Flask logs for debugging
+        if (output.includes("Flask stdout:")) {
           flaskLogs.push(output);
+
+          // Log important Flask messages at the appropriate level
+          if (output.includes("ERROR") || output.includes("Error")) {
+            logError(`Flask: ${output.substring(output.indexOf("Flask stdout:") + 13).trim()}`);
+          } else if (output.includes("WARNING") || output.includes("Warning")) {
+            logInfo(`Flask: ${output.substring(output.indexOf("Flask stdout:") + 13).trim()}`);
+          } else if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
+            logDebug(`Flask: ${output.substring(output.indexOf("Flask stdout:") + 13).trim()}`);
+          }
         }
         return originalStdoutWrite.apply(process.stdout, arguments);
       };
@@ -1276,8 +1100,24 @@ const pollForCategorizationCompletion = async (predictionId, startTime, config) 
         logDebug("Detected webhook completion in status response");
       }
 
+      // Check for results in the response
+      let hasResults = false;
+      if (result.results && Array.isArray(result.results) && result.results.length > 0) {
+        hasResults = true;
+        logDebug(`Found ${result.results.length} results in the response`);
+      } else if (
+        result.result &&
+        result.result.results &&
+        result.result.results.data &&
+        Array.isArray(result.result.results.data) &&
+        result.result.results.data.length > 0
+      ) {
+        hasResults = true;
+        logDebug(`Found ${result.result.results.data.length} results in result.result.results.data`);
+      }
+
       // Handle completed status
-      if (result.status === "completed" || webhookCompleted) {
+      if (result.status === "completed" || webhookCompleted || hasResults) {
         process.stdout.write("\n");
         logInfo("Categorisation completed successfully!");
         return {
@@ -1374,6 +1214,14 @@ const processCategorizationResults = (result, originalTransactions) => {
     } else if (result.result && result.result.results && Array.isArray(result.result.results)) {
       logInfo("Found results array in result.result.results");
       results = result.result.results;
+    } else if (
+      result.result &&
+      result.result.results &&
+      result.result.results.data &&
+      Array.isArray(result.result.results.data)
+    ) {
+      logInfo("Found results array in result.result.results.data");
+      results = result.result.results.data;
     } else if (result.data && Array.isArray(result.data)) {
       logInfo("Found results array in result.data");
       results = result.data;
@@ -1387,6 +1235,21 @@ const processCategorizationResults = (result, originalTransactions) => {
       // No results found in the response
       logInfo("No results array found in the response");
       return [];
+    }
+
+    // If we have results but they don't have narratives, add them from original transactions
+    if (results.length > 0 && results.length <= originalTransactions.length) {
+      logInfo("Adding narratives from original transactions to results");
+
+      results = results.map((result, index) => {
+        const transaction = originalTransactions[index] || {};
+        const narrative = transaction.Narrative || transaction.description || transaction.Description || "";
+
+        return {
+          ...result,
+          narrative: result.narrative || result.description || narrative,
+        };
+      });
     }
 
     // Normalize results to have consistent field names
