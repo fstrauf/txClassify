@@ -5,10 +5,11 @@
   "main": "index.js",
   "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "test": "node test-api-endpoints.js",
+    "test": "node tests/test-api-endpoints.js --verbose",
+    "test:quiet": "node tests/test-api-endpoints.js",
     "start": "node index.js",
     "test-db": "node test-db-connection.js",
-    "debug-test": "NODE_OPTIONS='--inspect' node test-api-endpoints.js"
+    "debug-test": "NODE_OPTIONS='--inspect' node tests/test-api-endpoints.js --verbose"
   },
   "dependencies": {
     "@prisma/client": "^6.4.1",

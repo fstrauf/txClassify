@@ -33,7 +33,7 @@ const net = require("net");
 const API_PORT = process.env.API_PORT || 3001;
 const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
 const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
-const CATEGORIZATION_DATA_PATH = path.join(__dirname, "pythonHandler", "test_data", "categorise_test.csv");
+const CATEGORIZATION_DATA_PATH = path.join(__dirname, "test_data", "categorise_test.csv");
 
 // Global variables
 let webhookServer;
@@ -194,11 +194,12 @@ const startFlaskServer = async (port) => {
   return port; // Return the port that was actually used
 };
 
-// Load training data
+// Load training data from CSV
 const loadTrainingData = () => {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const results = [];
-    fs.createReadStream(path.join(__dirname, "pythonHandler", "test_data", "training_data.csv"))
+
+    fs.createReadStream(path.join(__dirname, "test_data", "training_data.csv"))
       .pipe(csv())
       .on("data", (data) => results.push(data))
       .on("end", () => {
@@ -206,9 +207,8 @@ const loadTrainingData = () => {
         resolve(results);
       })
       .on("error", (error) => {
-        logError(`Error loading training data: ${error.message}`);
-        // Return minimal data if loading fails
-        resolve([{ Category: "Test", Narrative: "Test transaction" }]);
+        logError(`Error loading training data: ${error.toString()}`);
+        reject(error);
       });
   });
 };
@@ -621,45 +621,10 @@ const categoriseTransactions = async (config) => {
       throw new Error("Configuration object is missing");
     }
 
-    // Create a buffer to capture Flask logs
-    let flaskLogs = [];
-
-    // Variable to store original stdout.write function
-    let originalStdoutWrite = null;
-
-    // Set up a listener for Flask process stdout if available
-    if (flaskProcess && flaskProcess.stdout) {
-      originalStdoutWrite = process.stdout.write;
-
-      // Override stdout.write to capture Flask logs
-      process.stdout.write = function (chunk, encoding, callback) {
-        const output = chunk.toString();
-        // Capture all Flask logs for debugging
-        if (output.includes("Flask stdout:")) {
-          flaskLogs.push(output);
-
-          // Log important Flask messages at the appropriate level
-          if (output.includes("ERROR") || output.includes("Error")) {
-            logError(`Flask: ${output.substring(output.indexOf("Flask stdout:") + 13).trim()}`);
-          } else if (output.includes("WARNING") || output.includes("Warning")) {
-            logInfo(`Flask: ${output.substring(output.indexOf("Flask stdout:") + 13).trim()}`);
-          } else if (CURRENT_LOG_LEVEL >= LOG_LEVELS.DEBUG) {
-            logDebug(`Flask: ${output.substring(output.indexOf("Flask stdout:") + 13).trim()}`);
-          }
-        }
-        return originalStdoutWrite.apply(process.stdout, arguments);
-      };
-    }
-
     // Load categorization data
     const transactions = await loadCategorizationData();
 
     if (transactions.length === 0) {
-      // Restore original stdout.write if we modified it
-      if (originalStdoutWrite) {
-        process.stdout.write = originalStdoutWrite;
-      }
-
       logError("Error: No transactions found to categorise");
       throw new Error("No transactions found to categorise");
     }
@@ -749,11 +714,6 @@ const categoriseTransactions = async (config) => {
         lastError = e;
         if (retryCount === maxRetries - 1) {
           // Last attempt failed
-          // Restore original stdout.write if we modified it
-          if (originalStdoutWrite) {
-            process.stdout.write = originalStdoutWrite;
-          }
-
           logError(`Error: Categorisation failed after ${maxRetries} attempts. Last error: ${e.toString()}`);
           throw new Error(`Categorisation failed after ${maxRetries} attempts: ${e.toString()}`);
         }
@@ -767,22 +727,12 @@ const categoriseTransactions = async (config) => {
     try {
       result = JSON.parse(responseBody);
     } catch (parseError) {
-      // Restore original stdout.write if we modified it
-      if (originalStdoutWrite) {
-        process.stdout.write = originalStdoutWrite;
-      }
-
       logError(`Error parsing response: ${parseError.toString()}`);
       throw new Error(`Failed to parse server response: ${parseError.toString()}`);
     }
 
     // Validate result structure
     if (!result || typeof result !== "object") {
-      // Restore original stdout.write if we modified it
-      if (originalStdoutWrite) {
-        process.stdout.write = originalStdoutWrite;
-      }
-
       logError("Error: Invalid response structure");
       throw new Error("Invalid response structure from server");
     }
@@ -801,195 +751,42 @@ const categoriseTransactions = async (config) => {
       // Poll for status until completion or timeout
       const pollResult = await pollForCategorizationCompletion(result.prediction_id, startTime, config);
 
-      // Restore original stdout.write if we modified it
-      if (originalStdoutWrite) {
-        process.stdout.write = originalStdoutWrite;
-      }
-
       // Process and display the results
       if (pollResult.status === "completed") {
-        // Extract results from Flask logs
-        const extractedResults = extractResultsFromFlaskLogs(flaskLogs, transactions);
+        // Process results from the API response
+        const apiResults = processCategorizationResults(pollResult.result, transactions);
 
-        if (extractedResults.length > 0) {
-          displayResults(extractedResults);
+        if (apiResults.length > 0) {
+          displayResults(apiResults);
           return {
             status: "completed",
             message: "Categorisation completed successfully!",
-            results: extractedResults,
+            results: apiResults,
           };
         } else {
-          // Try to process results from the API response as a fallback
-          const apiResults = processCategorizationResults(pollResult.result, transactions);
-          if (apiResults.length > 0) {
-            displayResults(apiResults);
-            return {
-              status: "completed",
-              message: "Categorisation completed successfully!",
-              results: apiResults,
-            };
-          } else {
-            console.log("\n===== CATEGORISATION RESULTS =====");
-            console.log("No results could be extracted from the Flask logs or API response.");
-            console.log("This is likely a bug in the test script or the Flask server.");
-            console.log("=====================================\n");
+          console.log("\n===== CATEGORISATION RESULTS =====");
+          console.log("No results could be extracted from the API response.");
+          console.log("This is likely a bug in the Flask server.");
+          console.log("=====================================\n");
 
-            return {
-              status: "completed",
-              message: "Categorisation completed but no results could be extracted",
-              results: [],
-            };
-          }
+          return {
+            status: "completed",
+            message: "Categorisation completed but no results could be extracted",
+            results: [],
+          };
         }
       } else {
         return pollResult;
       }
     } else {
-      // Restore original stdout.write if we modified it
-      if (originalStdoutWrite) {
-        process.stdout.write = originalStdoutWrite;
-      }
-
       logError("Error: No prediction ID received");
       throw new Error("No prediction ID received from server");
     }
   } catch (error) {
-    // Ensure we restore stdout.write in case of any error
-    if (typeof originalStdoutWrite === "function") {
-      process.stdout.write = originalStdoutWrite;
-    }
-
     logError(`Categorisation error: ${error.toString()}`);
     logDebug(`Error stack: ${error.stack}`);
     return { error: error.toString(), status: "failed" };
   }
-};
-
-// Helper function to extract results from Flask logs
-const extractResultsFromFlaskLogs = (flaskLogs, transactions) => {
-  const results = [];
-
-  logInfo(`Extracting results from ${flaskLogs.length} Flask log entries`);
-
-  // Regular expressions to extract information from logs
-  const matchRegex = /Match (\d+): trained_data\[\d+\] = \(\d+, '([^']+)', '([^']+)'\)/;
-  const scoreRegex = /Extracted category: '([^']+)', similarity score: ([\d.]+)/;
-
-  // Process logs to extract matches and scores
-  let currentMatch = null;
-
-  for (const log of flaskLogs) {
-    logDebug(`Processing log: ${log.substring(0, 100)}...`);
-
-    // Try to find a match line
-    const matchMatch = log.match(matchRegex);
-    if (matchMatch) {
-      const index = parseInt(matchMatch[1]);
-      const description = matchMatch[2];
-      const category = matchMatch[3];
-
-      logDebug(`Found match: index=${index}, description=${description}, category=${category}`);
-
-      currentMatch = {
-        index,
-        description,
-        category,
-        score: null,
-      };
-    }
-
-    // Try to find a score line
-    const scoreMatch = log.match(scoreRegex);
-    if (scoreMatch) {
-      const category = scoreMatch[1];
-      const score = parseFloat(scoreMatch[2]);
-
-      logDebug(`Found score: category=${category}, score=${score}`);
-
-      // If we have a current match, update it and add to results
-      if (currentMatch) {
-        currentMatch.category = category;
-        currentMatch.score = score;
-
-        results.push({
-          narrative: currentMatch.description,
-          predicted_category: currentMatch.category,
-          similarity_score: currentMatch.score,
-        });
-
-        logDebug(`Added result: ${JSON.stringify(results[results.length - 1])}`);
-
-        currentMatch = null;
-      } else {
-        // If we don't have a current match but found a score, try to match with a transaction
-        for (const transaction of transactions) {
-          const narrative = transaction.Narrative || transaction.description || transaction.Description || "";
-
-          // Check if this log entry contains the transaction narrative
-          if (log.includes(narrative)) {
-            results.push({
-              narrative,
-              predicted_category: category,
-              similarity_score: score,
-            });
-
-            logDebug(`Added result from score only: ${JSON.stringify(results[results.length - 1])}`);
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  // If we couldn't extract all results, try a more aggressive approach
-  if (results.length < transactions.length) {
-    logInfo(`Only extracted ${results.length}/${transactions.length} results, trying alternative approach`);
-
-    // Look for any logs that contain both a transaction narrative and a category
-    for (let i = 0; i < transactions.length; i++) {
-      const transaction = transactions[i];
-      const narrative = transaction.Narrative || transaction.description || transaction.Description || "";
-
-      // Skip if we already have a result for this transaction
-      if (results.some((r) => r.narrative === narrative)) {
-        continue;
-      }
-
-      // Try to find a match in the logs
-      for (const log of flaskLogs) {
-        if (log.includes(narrative)) {
-          // Try to extract a category and score
-          const scoreMatch = log.match(scoreRegex);
-          if (scoreMatch) {
-            results.push({
-              narrative,
-              predicted_category: scoreMatch[1],
-              similarity_score: parseFloat(scoreMatch[2]),
-            });
-
-            logDebug(`Added result from narrative match: ${JSON.stringify(results[results.length - 1])}`);
-            break;
-          }
-
-          // If we couldn't find a score, look for any category mention
-          const categoryMatch = log.match(/'([^']+)'/);
-          if (categoryMatch) {
-            results.push({
-              narrative,
-              predicted_category: categoryMatch[1],
-              similarity_score: 1.0, // Assume perfect match if not specified
-            });
-
-            logDebug(`Added result from category mention: ${JSON.stringify(results[results.length - 1])}`);
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  logInfo(`Extracted ${results.length} results from Flask logs`);
-  return results;
 };
 
 // Helper function to poll for categorization completion
@@ -1276,7 +1073,7 @@ const displayResults = (results) => {
 
   if (!results || results.length === 0) {
     console.log("No results to display.");
-    console.log("Check the Flask logs for more information.");
+    console.log("Check the API response for more information.");
     console.log("=====================================\n");
     return;
   }
