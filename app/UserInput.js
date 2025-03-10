@@ -3,10 +3,6 @@
 import { useState } from "react";
 import { Formik, Form } from "formik";
 import ExpenseTable from "./ExpenseTable";
-// import { createServerComponentClient } from "@supabase/auth-helpers-nextjs";
-// import { cookies } from "next/headers";
-
-
 
 export default function UserInput() {
   const [initialValues, setInititalValues] = useState({

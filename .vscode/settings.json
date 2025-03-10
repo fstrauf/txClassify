@@ -1,0 +1,3 @@
+{"npm.packageManager": "pnpm", "typescript.tsdk": "node_modules/typescript/lib", "editor.formatOnSave": true, "editor.codeActionsOnSave": {
+        "source.fixAll.eslint": "explicit"
+    }, "files.exclude": {"**/.git": true, "**/.DS_Store": true, "**/node_modules": true, "**/.venv": true, "**/__pycache__": true, "**/*.pyc": true}}
