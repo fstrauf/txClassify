@@ -2,7 +2,7 @@ services:
   - type: web
     name: tx-classify
     env: python
-    buildCommand: cd pythonHandler && pip install -r requirements.txt
+    buildCommand: cd pythonHandler && pip install -r requirements.txt && cd .. && python -m prisma generate
     startCommand: cd pythonHandler && gunicorn main:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
@@ -12,6 +12,10 @@ services:
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
       - key: REPLICATE_API_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
         sync: false
     healthCheckPath: /health
     autoDeploy: true
