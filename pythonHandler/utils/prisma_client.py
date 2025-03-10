@@ -1,9 +1,7 @@
 import os
 import logging
-from prisma import Prisma
 from prisma.errors import PrismaError
 import base64
-import json
 
 logger = logging.getLogger(__name__)
 

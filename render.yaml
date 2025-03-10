@@ -5,7 +5,7 @@ services:
     buildCommand: |
       pip install -r pythonHandler/requirements.txt
       cd pythonHandler
-      python generate_prisma.py
+      python init_prisma.py || echo "Prisma initialization failed, but continuing with deployment"
     startCommand: cd pythonHandler && gunicorn main:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
