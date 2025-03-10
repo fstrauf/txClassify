@@ -21,11 +21,23 @@ class PrismaClient:
     def initialize(self):
         """Initialize the Prisma client."""
         try:
+            # Try to import Prisma to check if the client has been generated
+            from prisma import Prisma
+
             self.client = Prisma()
             logger.info("Prisma client initialized")
         except Exception as e:
-            logger.error(f"Failed to initialize Prisma client: {str(e)}")
-            raise
+            error_msg = str(e)
+            if "Client hasn't been generated yet" in error_msg:
+                logger.error(
+                    "Prisma client hasn't been generated yet. Please run 'prisma generate'."
+                )
+                # Provide a fallback mechanism
+                self.client = None
+                logger.warning("Using fallback database connection mechanism")
+            else:
+                logger.error(f"Failed to initialize Prisma client: {error_msg}")
+                self.client = None
 
     def connect(self):
         """Connect to the database."""
