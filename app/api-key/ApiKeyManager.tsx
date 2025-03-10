@@ -1,13 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
 import { toast, Toaster } from 'react-hot-toast';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 interface ApiKeyManagerProps {
   userId: string;
@@ -23,13 +17,10 @@ export default function ApiKeyManager({ userId }: ApiKeyManagerProps) {
 
   const fetchApiKey = async () => {
     try {
-      const { data, error } = await supabase
-        .from('account')
-        .select('api_key')
-        .eq('userId', userId)
-        .single();
-
-      if (error) throw error;
+      const response = await fetch(`/api/account?userId=${userId}`);
+      if (!response.ok) throw new Error('Failed to fetch API key');
+      
+      const data = await response.json();
       setApiKey(data?.api_key || null);
     } catch (error) {
       console.error('Error fetching API key:', error);
@@ -43,14 +34,18 @@ export default function ApiKeyManager({ userId }: ApiKeyManagerProps) {
     try {
       const newApiKey = crypto.randomUUID();
       
-      const { error } = await supabase
-        .from('account')
-        .upsert({ 
+      const response = await fetch('/api/account', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
           userId: userId,
           api_key: newApiKey
-        });
+        }),
+      });
 
-      if (error) throw error;
+      if (!response.ok) throw new Error('Failed to generate API key');
       
       setApiKey(newApiKey);
       toast.success('API key generated successfully');
