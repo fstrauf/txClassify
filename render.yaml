@@ -2,7 +2,7 @@ services:
   - type: web
     name: tx-classify
     env: python
-    buildCommand: cd pythonHandler && pip install -r requirements.txt && cd .. && python -m prisma generate
+    buildCommand: pip install -r pythonHandler/requirements.txt && PYTHONPATH=$PYTHONPATH:/opt/render/project/src python -m prisma generate --schema=/opt/render/project/src/prisma/schema.prisma
     startCommand: cd pythonHandler && gunicorn main:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
