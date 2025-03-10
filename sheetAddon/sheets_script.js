@@ -1,5 +1,5 @@
 // Service configuration
-const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
+const CLASSIFICATION_SERVICE_URL = "https://tx-classify.onrender.com";
 
 // Add menu to the spreadsheet
 function onOpen(e) {
