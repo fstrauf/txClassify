@@ -4,12 +4,21 @@ services:
     env: python
     buildCommand: |
       pip install -r pythonHandler/requirements.txt
+      npm install -g prisma@5.17.0
+      cd prisma
+      npx prisma@5.17.0 generate
+      cd ..
+      PRISMA_PY_DEBUG_GENERATOR=1 python -m prisma generate --schema=prisma/schema.prisma
       cd pythonHandler
-      python init_prisma.py || echo "Prisma initialization failed, but continuing with deployment"
+      python init_prisma.py
     startCommand: cd pythonHandler && gunicorn main:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: NODE_VERSION
+        value: 18.x
+      - key: PRISMA_PY_DEBUG_GENERATOR
+        value: "1"
       - key: NEXT_PUBLIC_SUPABASE_URL
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
