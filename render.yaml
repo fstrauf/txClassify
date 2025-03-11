@@ -14,6 +14,8 @@ services:
       echo "Setting PYTHONPATH..."
       export PYTHONPATH=$PYTHONPATH:/opt/render/project/src
       echo "PYTHONPATH: $PYTHONPATH"
+      echo "Testing import..."
+      python test_import.py
       echo "Generating Prisma client..."
       cd prisma
       npx prisma@5.17.0 generate
@@ -21,7 +23,7 @@ services:
       echo "Prisma client generated successfully!"
       echo "Testing Prisma..."
       python test_prisma_deploy.py
-    startCommand: cd pythonHandler && PYTHONPATH=/opt/render/project/src gunicorn main:app --bind 0.0.0.0:$PORT
+    startCommand: cd pythonHandler && gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
