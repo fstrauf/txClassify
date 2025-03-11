@@ -1,14 +1,11 @@
 import os
 import logging
+from prisma import Prisma
 from prisma.errors import PrismaError
 import base64
-import psycopg2
 import json
 
 logger = logging.getLogger(__name__)
-
-# Import Prisma - this will fail if Prisma is not properly set up
-from prisma import Prisma
 
 
 class PrismaClient:
@@ -194,6 +191,9 @@ class PrismaClient:
                 self.connect()
 
             # Convert results to a JSON string
+            import json
+
+            # Create a simple structure with the results
             if (
                 isinstance(results, dict)
                 and "data" in results
@@ -232,6 +232,7 @@ class PrismaClient:
 
             try:
                 # Execute the raw SQL query using psycopg2
+                import psycopg2
                 from psycopg2.extras import RealDictCursor
 
                 # Get the database URL from environment
