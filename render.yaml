@@ -6,23 +6,12 @@ services:
       pip install -r pythonHandler/requirements.txt
       npm install -g prisma@5.17.0
       npm install -g @prisma/client@5.17.0
-      echo "Checking installed versions:"
-      echo "Node.js version: $(node --version)"
-      echo "Prisma CLI version: $(npx prisma@5.17.0 --version)"
-      echo "Python version: $(python --version)"
-      echo "Prisma Python package version: $(python -c "import prisma; print(prisma.__version__)")"
-      echo "Setting PYTHONPATH..."
-      export PYTHONPATH=$PYTHONPATH:/opt/render/project/src
-      echo "PYTHONPATH: $PYTHONPATH"
-      echo "Testing import..."
-      python test_import.py
-      echo "Generating Prisma client..."
+    preDeployCommand: |
       cd prisma
       npx prisma@5.17.0 generate
+      npx prisma@5.17.0 migrate deploy
       cd ..
-      echo "Prisma client generated successfully!"
-      echo "Testing Prisma..."
-      python test_prisma_deploy.py
+      python test_prisma.py
     startCommand: cd pythonHandler && gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
