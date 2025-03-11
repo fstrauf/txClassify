@@ -22,7 +22,7 @@ class PrismaClient:
         """Initialize the Prisma client."""
         try:
             self.client = Prisma()
-            logger.info("Prisma client initialized")
+            logger.info("Prisma client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Prisma client: {str(e)}")
             raise

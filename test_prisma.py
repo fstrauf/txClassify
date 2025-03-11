@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+"""
+Simple script to test the Prisma client.
+"""
 import os
 import sys
 import logging
@@ -27,9 +31,8 @@ def test_prisma():
 
             # Try a simple query
             try:
-                # Try to get all accounts
-                accounts = client.account.find_many()
-                logger.info(f"Found {len(accounts)} accounts")
+                accounts = client.account.find_many(take=5)
+                logger.info(f"Query successful: Found {len(accounts)} accounts")
             except Exception as e:
                 logger.warning(f"Query failed: {str(e)}")
 
