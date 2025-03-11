@@ -5,18 +5,30 @@ services:
     buildCommand: |
       pip install -r pythonHandler/requirements.txt
       npm install -g prisma@5.17.0
+      npm install -g @prisma/client@5.17.0
+      echo "Checking installed versions:"
+      echo "Node.js version: $(node --version)"
+      echo "Prisma CLI version: $(npx prisma@5.17.0 --version)"
+      echo "Python version: $(python --version)"
+      echo "Prisma Python package version: $(python -c "import prisma; print(prisma.__version__)")"
+      echo "Setting PYTHONPATH..."
+      export PYTHONPATH=$PYTHONPATH:/opt/render/project/src
+      echo "PYTHONPATH: $PYTHONPATH"
+      echo "Generating Prisma client..."
       cd prisma
       npx prisma@5.17.0 generate
       cd ..
-      PRISMA_PY_DEBUG_GENERATOR=1 python -m prisma generate --schema=prisma/schema.prisma
-      cd pythonHandler
-      python init_prisma.py
-    startCommand: cd pythonHandler && gunicorn main:app --bind 0.0.0.0:$PORT
+      echo "Prisma client generated successfully!"
+      echo "Testing Prisma..."
+      python test_prisma_deploy.py
+    startCommand: cd pythonHandler && PYTHONPATH=/opt/render/project/src gunicorn main:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: NODE_VERSION
         value: 18.x
+      - key: PYTHONPATH
+        value: /opt/render/project/src
       - key: PRISMA_PY_DEBUG_GENERATOR
         value: "1"
       - key: NEXT_PUBLIC_SUPABASE_URL
