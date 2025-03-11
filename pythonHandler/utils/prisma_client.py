@@ -21,6 +21,10 @@ class PrismaClient:
     def initialize(self):
         """Initialize the Prisma client."""
         try:
+            # Set debug flag to bypass version check
+            os.environ["PRISMA_PY_DEBUG_GENERATOR"] = "1"
+
+            # Initialize client
             self.client = Prisma()
             logger.info("Prisma client initialized successfully")
         except Exception as e:
