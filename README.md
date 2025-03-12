@@ -87,6 +87,7 @@ If you encounter issues with the tests, try the following:
 
    - For Replicate to work properly, you need a public URL for webhooks
    - Use ngrok to expose your local webhook server
+   - Alternatively, set `USE_WEBHOOKS=false` in your `.env` file to disable webhooks and use polling instead
 
 4. **Debugging**
    - Run `pnpm run debug-test` to start the tests with Node.js inspector
@@ -94,7 +95,7 @@ If you encounter issues with the tests, try the following:
 
 ### Using ngrok for Webhook Testing
 
-For Replicate to work properly, you need to expose your webhook endpoint using ngrok:
+For Replicate to work properly with webhooks enabled, you need to expose your webhook endpoint using ngrok:
 
 1. Install ngrok: https://ngrok.com/download
 
@@ -104,7 +105,15 @@ For Replicate to work properly, you need to expose your webhook endpoint using n
 ngrok http 3002
 ```
 
-3. The test script will automatically detect the ngrok URL and use it for the webhook.
+3. Set `USE_WEBHOOKS=true` and `BACKEND_API=https://your-ngrok-url` in your `.env` file.
+
+### Disabling Webhooks
+
+If you don't need webhooks or are having issues with them, you can disable them:
+
+1. Set `USE_WEBHOOKS=false` in your `.env` file.
+
+2. The system will use polling instead of webhooks to check the status of predictions.
 
 ## Python Testing
 
