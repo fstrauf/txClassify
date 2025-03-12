@@ -239,7 +239,6 @@ def run_prediction(
     descriptions: list,
     sheet_name: str = None,
     category_column: str = None,
-    use_webhook: bool = None,
 ) -> dict:
     """Run prediction using Replicate API."""
     try:
@@ -248,42 +247,12 @@ def run_prediction(
             "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
         )
 
-        # Determine whether to use webhooks
-        # If use_webhook is None, check environment variable
-        if use_webhook is None:
-            use_webhook = os.environ.get("USE_WEBHOOKS", "false").lower() == "true"
-
-        # Set up prediction parameters
-        prediction_params = {
-            "version": version,
-            "input": {"text_batch": json.dumps(descriptions)},
-        }
-
-        # Only add webhook if enabled and BACKEND_API is set
-        if (
-            use_webhook
-            and BACKEND_API
-            and not BACKEND_API.startswith("http://localhost")
-        ):
-            # Create webhook URL with all necessary parameters
-            webhook_params = [f"spreadsheetId={sheet_id}", f"userId={user_id}"]
-            if sheet_name:
-                webhook_params.append(f"sheetName={sheet_name}")
-            if category_column:
-                webhook_params.append(f"categoryColumn={category_column}")
-
-            webhook = f"{BACKEND_API}/{mode}/webhook?{'&'.join(webhook_params)}"
-            logger.info(f"Using webhook URL: {webhook}")
-
-            prediction_params["webhook"] = webhook
-            prediction_params["webhook_events_filter"] = ["completed"]
-        else:
-            logger.info(
-                "Webhooks disabled or invalid BACKEND_API. Using polling instead."
-            )
-
-        # Create the prediction
-        prediction = replicate.predictions.create(**prediction_params)
+        # Create the prediction without webhook
+        logger.info("Creating prediction without webhook (using polling)")
+        prediction = replicate.predictions.create(
+            version=version,
+            input={"text_batch": json.dumps(descriptions)},
+        )
 
         return prediction
     except Exception as e:
@@ -584,9 +553,6 @@ def train_model():
         descriptions = df["description"].tolist()
         logger.info(f"Prepared {len(descriptions)} descriptions for embedding")
 
-        # Determine whether to use webhooks based on environment variable
-        use_webhooks = os.environ.get("USE_WEBHOOKS", "false").lower() == "true"
-
         # Create prediction using the run_prediction function
         prediction = run_prediction(
             mode="train",
@@ -595,10 +561,67 @@ def train_model():
             descriptions=descriptions,
             sheet_name=data.get("sheetName"),
             category_column=data.get("categoryColumn"),
-            use_webhook=use_webhooks,
         )
 
         logger.info(f"Created prediction with ID: {prediction.id}")
+
+        # Wait for the prediction to complete
+        attempt = 0
+        max_attempts = 60  # Maximum number of attempts
+
+        # Start with shorter checks for the first few attempts
+        initial_delays = [2, 3, 5, 10, 15]  # First few checks are faster
+
+        while prediction.status != "succeeded" and attempt < max_attempts:
+            if prediction.status == "failed":
+                logger.error(f"Training prediction failed: {prediction.error}")
+                update_process_status("failed", "training", user_id)
+                return jsonify({"status": "failed", "error": prediction.error}), 500
+
+            # Use initial delays for first few attempts, then exponential backoff
+            if attempt < len(initial_delays):
+                delay = initial_delays[attempt]
+            else:
+                # Cap at 60 seconds for later attempts
+                delay = min(20 * (1.5 ** (attempt - len(initial_delays))), 60)
+
+            logger.info(
+                f"Waiting {delay} seconds before checking training prediction status again (attempt {attempt+1}/{max_attempts})"
+            )
+            time.sleep(delay)
+
+            # Reload prediction status
+            prediction.reload()
+            attempt += 1
+
+        if attempt >= max_attempts:
+            logger.warning(
+                f"Timed out waiting for training prediction to complete, but continuing anyway"
+            )
+        elif prediction.status == "succeeded":
+            logger.info("Training prediction completed successfully")
+
+            # Process the embeddings from the prediction output
+            if (
+                prediction.output
+                and isinstance(prediction.output, list)
+                and len(prediction.output) > 0
+            ):
+                try:
+                    # Extract embeddings from the response
+                    embeddings = np.array(
+                        [item["embedding"] for item in prediction.output],
+                        dtype=np.float32,
+                    )
+                    logger.info(f"Extracted embeddings with shape: {embeddings.shape}")
+
+                    # Store the embeddings
+                    store_result = store_embeddings(embeddings, f"{sheet_id}")
+                    logger.info(f"Stored embeddings for {sheet_id}: {store_result}")
+                except Exception as e:
+                    logger.error(f"Error processing training embeddings: {e}")
+            else:
+                logger.warning("No embeddings found in training prediction output")
 
         # Update status
         update_process_status("processing", "training", user_id)
@@ -712,6 +735,8 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         # Get trained embeddings and categories
         spreadsheet_id = predictions_db[prediction_id]["spreadsheet_id"]
         sheet_name = predictions_db[prediction_id].get("sheet_name", "new_transactions")
+        category_column = predictions_db[prediction_id].get("category_column", "E")
+        start_row = predictions_db[prediction_id].get("start_row", "2")
 
         logger.info(f"Fetching trained embeddings for spreadsheet_id: {spreadsheet_id}")
         trained_embeddings = fetch_embeddings(f"{spreadsheet_id}")
@@ -720,10 +745,22 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         logger.info(f"Trained embeddings size: {len(trained_embeddings)}")
         logger.info(f"Trained data size: {len(trained_data)}")
 
-        if len(trained_embeddings) == 0 or len(trained_data) == 0:
-            logger.error(f"No training data found for spreadsheet_id: {spreadsheet_id}")
+        # Check if we have a placeholder embedding (shape (1, 768) with all zeros)
+        is_placeholder = False
+        if trained_embeddings.shape == (1, 768):
+            # Check if it's all zeros (placeholder)
+            if np.all(trained_embeddings == 0):
+                logger.warning(
+                    "Detected placeholder embedding. This indicates training was not completed properly."
+                )
+                is_placeholder = True
+
+        if len(trained_embeddings) == 0 or len(trained_data) == 0 or is_placeholder:
             logger.error(
-                f"Embeddings size: {len(trained_embeddings)}, Index size: {len(trained_data)}"
+                f"No valid training data found for spreadsheet_id: {spreadsheet_id}"
+            )
+            logger.error(
+                f"Embeddings size: {len(trained_embeddings)}, Index size: {len(trained_data)}, Is placeholder: {is_placeholder}"
             )
 
             # Check if the files exist in the database
@@ -741,16 +778,29 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
                 logger.error(f"Error checking if embedding files exist: {e}")
 
             predictions_db[prediction_id]["status"] = "failed"
-            predictions_db[prediction_id]["error"] = "No training data found"
+            predictions_db[prediction_id]["error"] = "No valid training data found"
             return
 
         # Clean and prepare descriptions
         descriptions = []
+        original_descriptions = []
         for t in transactions:
-            if t.get("description"):
-                descriptions.append(clean_text(t["description"]))
+            # Prioritize Narrative field (as used in sheets_script.js)
+            # but maintain backward compatibility with description/narrative
+            narrative = t.get("Narrative")
+            if narrative is None:
+                narrative = t.get("description") or t.get("narrative")
+                if narrative:
+                    logger.info(
+                        f"Found description in non-standard field. Consider using 'Narrative' field."
+                    )
+
+            if narrative:
+                cleaned = clean_text(narrative)
+                descriptions.append(cleaned)
+                original_descriptions.append(narrative)
             else:
-                logger.warning(f"No description field found in transaction: {t}")
+                logger.warning(f"No Narrative field found in transaction: {t}")
 
         if not descriptions:
             logger.error("No valid descriptions found in transactions")
@@ -763,9 +813,6 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         # Get embeddings for new descriptions
         logger.info("Initializing Replicate model for embeddings")
 
-        # Determine whether to use webhooks based on environment variable
-        use_webhooks = os.environ.get("USE_WEBHOOKS", "false").lower() == "true"
-
         # Create prediction using the run_prediction function
         prediction = run_prediction(
             mode="classify",
@@ -774,7 +821,6 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
             descriptions=descriptions,
             sheet_name=sheet_name,
             category_column=category_column,
-            use_webhook=use_webhooks,
         )
 
         logger.info(f"Created prediction with ID: {prediction.id}")
@@ -816,38 +862,151 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
                 "status_message"
             ] = f"Waiting for embeddings (attempt {attempt}/{max_attempts})"
 
-            # If we've been waiting for a while, check if webhook results are already available
-            if attempt > 5:
-                try:
-                    webhook_result = prisma_client.get_webhook_result(prediction_id)
-                    if webhook_result:
-                        logger.info(
-                            f"Found webhook results while waiting for embeddings (attempt {attempt})"
-                        )
-                        predictions_db[prediction_id]["status"] = "completed"
-                        predictions_db[prediction_id][
-                            "status_message"
-                        ] = "Classification completed successfully"
-                        return
-                except Exception as e:
-                    logger.warning(
-                        f"Error checking webhook results during waiting: {e}"
-                    )
-
         if attempt >= max_attempts:
             predictions_db[prediction_id]["status"] = "failed"
             predictions_db[prediction_id]["error"] = "Timed out waiting for embeddings"
             return
 
-        # If we're using webhooks, we don't need to process the results here
-        # The webhook will handle it
-        predictions_db[prediction_id]["status"] = "waiting_for_webhook"
-        predictions_db[prediction_id][
-            "status_message"
-        ] = "Embeddings completed, waiting for webhook to process results"
-        logger.info(
-            f"Embeddings completed for prediction {prediction_id}, waiting for webhook to process results"
-        )
+        # Process the results
+        logger.info("Processing embeddings")
+
+        try:
+            # Get new embeddings from the prediction output
+            if not prediction.output:
+                predictions_db[prediction_id]["status"] = "failed"
+                predictions_db[prediction_id][
+                    "error"
+                ] = "No embeddings returned from prediction"
+                return
+
+            new_embeddings = np.array(
+                [item["embedding"] for item in prediction.output], dtype=np.float32
+            )
+            logger.info(f"Processed {len(new_embeddings)} new embeddings")
+
+            # Calculate similarities
+            similarities = cosine_similarity(new_embeddings, trained_embeddings)
+            best_matches = similarities.argmax(axis=1)
+            logger.info(f"Calculated similarities with shape {similarities.shape}")
+
+            # Get predicted categories and confidence scores
+            results = []
+            for i, idx in enumerate(best_matches):
+                try:
+                    # Add debug logging for the first few matches
+                    if i < 3:
+                        logger.info(
+                            f"Match {i}: trained_data[{idx}] = {trained_data[idx]}"
+                        )
+
+                    # Extract the category directly from the structured array
+                    category = None
+
+                    # Try different field names and positions to get the category
+                    if "category" in trained_data.dtype.names:
+                        category = str(trained_data[idx]["category"])
+                    elif "Category" in trained_data.dtype.names:
+                        category = str(trained_data[idx]["Category"])
+                    else:
+                        # Fallback to index 2 which should be the category field
+                        # The structured array has (item_id, description, category)
+                        category = str(trained_data[idx][2])
+
+                    similarity_score = float(
+                        similarities[i][idx]
+                    )  # Get the similarity score
+
+                    # Log the extracted category and score
+                    if i < 3:
+                        logger.info(
+                            f"Extracted category: '{category}', similarity score: {similarity_score:.2f}"
+                        )
+
+                    results.append(
+                        {
+                            "predicted_category": category,
+                            "similarity_score": similarity_score,
+                            "narrative": (
+                                original_descriptions[i]
+                                if i < len(original_descriptions)
+                                else ""
+                            ),
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Error processing prediction {i}: {str(e)}")
+                    logger.error(
+                        f"trained_data type: {type(trained_data)}, shape: {trained_data.shape if hasattr(trained_data, 'shape') else 'unknown'}"
+                    )
+                    if i < 3 and idx < len(trained_data):
+                        logger.error(f"trained_data[{idx}] = {trained_data[idx]}")
+                    results.append(
+                        {
+                            "predicted_category": "Unknown",
+                            "similarity_score": 0.0,
+                            "narrative": (
+                                original_descriptions[i]
+                                if i < len(original_descriptions)
+                                else ""
+                            ),
+                        }
+                    )
+
+            logger.info(f"Generated {len(results)} predictions")
+
+            # Format results for storage
+            serializable_results = {
+                "status": "success",
+                "message": "Classification completed",
+                "data": [],
+            }
+
+            # Add each result with simple types
+            for r in results:
+                serializable_results["data"].append(
+                    {
+                        "predicted_category": str(r.get("predicted_category", "")),
+                        "similarity_score": float(r.get("similarity_score", 0)),
+                        "narrative": str(r.get("narrative", "")),
+                    }
+                )
+
+            # Store the results
+            webhook_result = prisma_client.insert_webhook_result(
+                prediction_id, serializable_results
+            )
+            if webhook_result:
+                logger.info(f"Stored result for sheet_id: {spreadsheet_id}")
+            else:
+                logger.warning(f"Failed to store result for sheet_id: {spreadsheet_id}")
+
+            # Update status
+            predictions_db[prediction_id]["status"] = "completed"
+            predictions_db[prediction_id][
+                "status_message"
+            ] = "Classification completed successfully"
+            predictions_db[prediction_id]["results"] = results
+            predictions_db[prediction_id]["config"] = {
+                "categoryColumn": category_column,
+                "startRow": start_row,
+                "sheetName": sheet_name,
+                "spreadsheetId": spreadsheet_id,
+            }
+
+            # Update process status
+            update_process_status("completed", "classify", user_id)
+            update_sheet_log(
+                spreadsheet_id, "SUCCESS", "Classification completed successfully"
+            )
+
+            logger.info(f"Classification completed for prediction {prediction_id}")
+
+        except Exception as e:
+            error_msg = f"Error processing classification results: {str(e)}"
+            logger.error(error_msg)
+            predictions_db[prediction_id]["status"] = "failed"
+            predictions_db[prediction_id]["error"] = error_msg
+            update_sheet_log(spreadsheet_id, "ERROR", error_msg)
 
     except Exception as e:
         logger.error(f"Error in process_classification: {e}")
@@ -1079,142 +1238,40 @@ def classify_webhook():
 def get_prediction_status(prediction_id):
     """Get the status of a prediction."""
     try:
-        try:
-            webhook_result = prisma_client.get_webhook_result(prediction_id)
-            if webhook_result:
-                logger.info(
-                    f"Found completed webhook results for prediction {prediction_id}"
-                )
-                webhook_data = webhook_result
-
-                # Extract the actual results from the webhook data
-                results_data = []
-                if webhook_data.get("results"):
-                    # Handle different result structures
-                    if isinstance(webhook_data["results"], dict):
-                        if webhook_data["results"].get("data"):
-                            # Old structure: {"data": [...]}
-                            results_data = webhook_data["results"]["data"]
-                        elif webhook_data["results"].get("status") and webhook_data[
-                            "results"
-                        ].get("data"):
-                            # Another structure: {"status": "success", "data": [...]}
-                            results_data = webhook_data["results"]["data"]
-                    elif isinstance(webhook_data["results"], list):
-                        # New structure: direct list
-                        results_data = webhook_data["results"]
-                    logger.info(
-                        f"Extracted {len(results_data)} results from webhook data"
-                    )
-
-                # Get configuration from predictions_db if available
-                category_column = "E"  # Default
-                start_row = "1"  # Default
-                sheet_name = "Sheet1"  # Default
-                spreadsheet_id = None
-
-                if prediction_id in predictions_db:
-                    pred_data = predictions_db[prediction_id]
-                    category_column = pred_data.get("category_column", category_column)
-                    start_row = pred_data.get("start_row", start_row)
-                    sheet_name = pred_data.get("sheet_name", sheet_name)
-                    spreadsheet_id = pred_data.get("spreadsheet_id", spreadsheet_id)
-
-                # Return a response that includes the actual results
-                return jsonify(
-                    {
-                        "status": "completed",
-                        "message": "Classification completed successfully",
-                        "results": results_data,  # Include the actual results array
-                        "config": {
-                            "categoryColumn": category_column,
-                            "startRow": start_row,
-                            "sheetName": sheet_name,
-                            "spreadsheetId": spreadsheet_id,
-                        },
-                        "result": {
-                            "results": {"status": "success", "data": results_data}
-                        },  # Keep the original result format for backward compatibility
-                    }
-                )
-        except Exception as e:
-            logger.warning(f"Error checking webhook results: {e}")
-
-        # Then check if we have this prediction in our local dictionary
+        # First check if we have this prediction in our local dictionary
         if prediction_id in predictions_db:
             logger.info(f"Found prediction {prediction_id} in local predictions_db")
             prediction_data = predictions_db[prediction_id]
 
-            # This helps in cases where the webhook has completed but we missed it
-            if prediction_data.get("status") == "waiting_for_webhook":
-                try:
-                    # Quick check for webhook results
-                    webhook_check = prisma_client.get_webhook_result(prediction_id)
-                    if webhook_check:
-                        # We found a result, get the full data
-                        webhook_data = webhook_check
+            # Prepare the response
+            response_data = {
+                "status": prediction_data.get("status", "processing"),
+                "message": prediction_data.get(
+                    "status_message", "Processing in progress"
+                ),
+                "processed_transactions": prediction_data.get(
+                    "processed_transactions", 0
+                ),
+                "total_transactions": prediction_data.get("total_transactions", 0),
+            }
 
-                        # Extract results and return them
-                        results_data = []
-                        if webhook_data.get("results"):
-                            # Handle different result structures
-                            if isinstance(webhook_data["results"], dict):
-                                if webhook_data["results"].get("data"):
-                                    # Old structure: {"data": [...]}
-                                    results_data = webhook_data["results"]["data"]
-                                elif webhook_data["results"].get(
-                                    "status"
-                                ) and webhook_data["results"].get("data"):
-                                    # Another structure: {"status": "success", "data": [...]}
-                                    results_data = webhook_data["results"]["data"]
-                            elif isinstance(webhook_data["results"], list):
-                                # New structure: direct list
-                                results_data = webhook_data["results"]
-                            logger.info(
-                                f"Found webhook results on second check: {len(results_data)} results"
-                            )
-
-                        return jsonify(
-                            {
-                                "status": "completed",
-                                "message": "Classification completed successfully",
-                                "results": results_data,
-                                "config": {
-                                    "categoryColumn": prediction_data.get(
-                                        "category_column", "E"
-                                    ),
-                                    "startRow": prediction_data.get("start_row", "1"),
-                                    "sheetName": prediction_data.get(
-                                        "sheet_name", "Sheet1"
-                                    ),
-                                    "spreadsheetId": prediction_data.get(
-                                        "spreadsheet_id"
-                                    ),
-                                },
-                                "result": {
-                                    "results": {
-                                        "status": "success",
-                                        "data": results_data,
-                                    }
-                                },
-                            }
-                        )
-                except Exception as e:
-                    logger.warning(f"Error on second webhook check: {e}")
-
-            # Return the status from predictions_db
-            return jsonify(
-                {
-                    "status": prediction_data.get("status", "processing"),
-                    "message": prediction_data.get(
-                        "status_message", "Processing in progress"
-                    ),
-                    "processed_transactions": prediction_data.get(
-                        "processed_transactions", 0
-                    ),
-                    "total_transactions": prediction_data.get("total_transactions", 0),
+            # If the prediction is completed and has results, include them in the response
+            if prediction_data.get("status") == "completed" and prediction_data.get(
+                "results"
+            ):
+                logger.info(
+                    f"Including results in response for completed prediction {prediction_id}"
+                )
+                response_data["results"] = prediction_data.get("results", [])
+                response_data["config"] = prediction_data.get("config", {})
+                response_data["result"] = {
+                    "results": {
+                        "status": "success",
+                        "data": prediction_data.get("results", []),
+                    }
                 }
-            )
+
+            return jsonify(response_data)
 
         # Check if we have a cached response that's less than 1 minute old
         current_time = datetime.now()
