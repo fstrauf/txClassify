@@ -239,6 +239,7 @@ def run_prediction(
     descriptions: list,
     sheet_name: str = None,
     category_column: str = None,
+    use_webhook: bool = None,
 ) -> dict:
     """Run prediction using Replicate API."""
     try:
@@ -247,21 +248,42 @@ def run_prediction(
             "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
         )
 
-        # Create webhook URL with all necessary parameters
-        webhook_params = [f"spreadsheetId={sheet_id}", f"userId={user_id}"]
-        if sheet_name:
-            webhook_params.append(f"sheetName={sheet_name}")
-        if category_column:
-            webhook_params.append(f"categoryColumn={category_column}")
+        # Determine whether to use webhooks
+        # If use_webhook is None, check environment variable
+        if use_webhook is None:
+            use_webhook = os.environ.get("USE_WEBHOOKS", "false").lower() == "true"
 
-        webhook = f"{BACKEND_API}/{mode}/webhook?{'&'.join(webhook_params)}"
+        # Set up prediction parameters
+        prediction_params = {
+            "version": version,
+            "input": {"text_batch": json.dumps(descriptions)},
+        }
 
-        prediction = replicate.predictions.create(
-            version=version,
-            input={"text_batch": json.dumps(descriptions)},
-            webhook=webhook,
-            webhook_events_filter=["completed"],
-        )
+        # Only add webhook if enabled and BACKEND_API is set
+        if (
+            use_webhook
+            and BACKEND_API
+            and not BACKEND_API.startswith("http://localhost")
+        ):
+            # Create webhook URL with all necessary parameters
+            webhook_params = [f"spreadsheetId={sheet_id}", f"userId={user_id}"]
+            if sheet_name:
+                webhook_params.append(f"sheetName={sheet_name}")
+            if category_column:
+                webhook_params.append(f"categoryColumn={category_column}")
+
+            webhook = f"{BACKEND_API}/{mode}/webhook?{'&'.join(webhook_params)}"
+            logger.info(f"Using webhook URL: {webhook}")
+
+            prediction_params["webhook"] = webhook
+            prediction_params["webhook_events_filter"] = ["completed"]
+        else:
+            logger.info(
+                "Webhooks disabled or invalid BACKEND_API. Using polling instead."
+            )
+
+        # Create the prediction
+        prediction = replicate.predictions.create(**prediction_params)
 
         return prediction
     except Exception as e:
@@ -562,41 +584,21 @@ def train_model():
         descriptions = df["description"].tolist()
         logger.info(f"Prepared {len(descriptions)} descriptions for embedding")
 
-        # Set up webhook URL with all necessary parameters
-        webhook_params = [
-            f"spreadsheetId={sheet_id}",
-            f"userId={user_id}",
-        ]
+        # Determine whether to use webhooks based on environment variable
+        use_webhooks = os.environ.get("USE_WEBHOOKS", "false").lower() == "true"
 
-        # Add sheet name if provided
-        if data.get("sheetName"):
-            webhook_params.append(f"sheetName={data.get('sheetName')}")
-
-        # Add category column if provided
-        if data.get("categoryColumn"):
-            webhook_params.append(f"categoryColumn={data.get('categoryColumn')}")
-
-        # Create webhook URL
-        webhook = f"{BACKEND_API}/train/webhook?{'&'.join(webhook_params)}"
-        logger.info(f"Setting up webhook URL: {webhook}")
-        logger.info(f"BACKEND_API value: {BACKEND_API}")
-
-        # Get embeddings with webhook
-        model = replicate.models.get("replicate/all-mpnet-base-v2")
-        version = model.versions.get(
-            "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
-        )
-
-        # Create prediction with webhook
-        prediction = replicate.predictions.create(
-            version=version,
-            input={"text_batch": json.dumps(descriptions)},
-            webhook=webhook,
-            webhook_events_filter=["completed"],
+        # Create prediction using the run_prediction function
+        prediction = run_prediction(
+            mode="train",
+            sheet_id=sheet_id,
+            user_id=user_id,
+            descriptions=descriptions,
+            sheet_name=data.get("sheetName"),
+            category_column=data.get("categoryColumn"),
+            use_webhook=use_webhooks,
         )
 
         logger.info(f"Created prediction with ID: {prediction.id}")
-        logger.info(f"Webhook URL: {webhook}")
 
         # Update status
         update_process_status("processing", "training", user_id)
@@ -760,45 +762,22 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
 
         # Get embeddings for new descriptions
         logger.info("Initializing Replicate model for embeddings")
-        model = replicate.models.get("replicate/all-mpnet-base-v2")
-        version = model.versions.get(
-            "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
+
+        # Determine whether to use webhooks based on environment variable
+        use_webhooks = os.environ.get("USE_WEBHOOKS", "false").lower() == "true"
+
+        # Create prediction using the run_prediction function
+        prediction = run_prediction(
+            mode="classify",
+            sheet_id=spreadsheet_id,
+            user_id=user_id,
+            descriptions=descriptions,
+            sheet_name=sheet_name,
+            category_column=category_column,
+            use_webhook=use_webhooks,
         )
 
-        # Create webhook URL with all necessary parameters
-        webhook_params = [
-            f"spreadsheetId={spreadsheet_id}",
-            f"userId={user_id}",
-            f"sheetName={sheet_name}",
-            f"prediction_id={prediction_id}",
-        ]
-
-        # Add start row parameter if available
-        start_row = predictions_db[prediction_id].get("start_row", "1")
-        webhook_params.append(f"startRow={start_row}")
-
-        # Add category column parameter if available
-        category_column = predictions_db[prediction_id].get("category_column", "E")
-        webhook_params.append(f"categoryColumn={category_column}")
-
-        webhook = f"{BACKEND_API}/classify/webhook?{'&'.join(webhook_params)}"
-        logger.info(f"Setting up webhook URL: {webhook}")
-
-        # Log BACKEND_API value for debugging
-        logger.info(f"BACKEND_API value: {BACKEND_API}")
-
-        # Get embeddings for new descriptions with webhook
-        logger.info(
-            f"Creating Replicate prediction with {len(descriptions)} descriptions"
-        )
-        prediction = replicate.predictions.create(
-            version=version,
-            input={"text_batch": json.dumps(descriptions)},
-            webhook=webhook,
-            webhook_events_filter=["completed"],
-        )
-
-        logger.info(f"Replicate prediction created with ID: {prediction.id}")
+        logger.info(f"Created prediction with ID: {prediction.id}")
 
         # Store prediction ID for reference
         predictions_db[prediction_id]["replicate_prediction_id"] = prediction.id

@@ -12,4 +12,5 @@ alwaysApply: false
 - Always think from first principles. Let's solve the root cause of an issue and not apply fixes upon fixes.
 - Keep solutions as simple as possible. Let's not boil the ocean but instead get a simple fix for the problem presented.
 - no mock data! this is a production application and we can't just return dummy data if it doesn't work.
+- don't create documentation unless explicity tasked
 

@@ -60,6 +60,10 @@ if (process.argv.includes("--verbose")) {
   CURRENT_LOG_LEVEL = LOG_LEVELS.TRACE;
 }
 
+// Check for test mode flags
+const RUN_TRAINING = !process.argv.includes("--cat-only");
+const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
+
 const log = (message, level = LOG_LEVELS.INFO) => {
   // Only log messages at or below the current log level
   if (level <= CURRENT_LOG_LEVEL) {
@@ -143,6 +147,7 @@ const startFlaskServer = async (port) => {
   env.FLASK_APP = "pythonHandler.main";
   env.FLASK_ENV = "testing";
   env.PORT = port.toString();
+  env.USE_WEBHOOKS = "false"; // Disable webhooks for testing
 
   // Ensure BACKEND_API is set to an HTTPS URL if available, or default to localhost
   if (!env.BACKEND_API || !env.BACKEND_API.startsWith("https://")) {
@@ -1226,40 +1231,50 @@ const main = async () => {
 
     logDebug(`Test configuration: ${JSON.stringify(config, null, 2)}`);
 
+    let trainingSuccessful = false;
+
     // ===== STEP 1: Run training flow =====
-    console.log("\n===== STEP 1: TRAINING MODEL =====");
-    const trainingResult = await trainModel(config);
+    if (RUN_TRAINING) {
+      console.log("\n===== STEP 1: TRAINING MODEL =====");
+      const trainingResult = await trainModel(config);
 
-    if (trainingResult.status === "completed") {
-      console.log("✅ Training completed successfully");
-    } else {
-      console.log(`❌ Training failed: ${trainingResult.error || "Unknown error"}`);
-    }
-
-    // Check if training was successful or if we reached max polls (which we consider successful)
-    const trainingSuccessful =
-      trainingResult.status === "completed" ||
-      (trainingResult.message && trainingResult.message.includes("maximum polling attempts"));
-
-    // Only proceed with categorization if training was successful
-    if (trainingSuccessful) {
-      // Add a small delay to ensure the model is ready
-      logInfo("Waiting for model to be fully ready...");
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-
-      // ===== STEP 2: Run categorisation flow =====
-      console.log("\n===== STEP 2: CATEGORISATION MODEL =====");
-      const categorisationResult = await categoriseTransactions(config);
-
-      if (categorisationResult.status === "completed") {
-        // Results are already displayed in processCategorizationResults
+      if (trainingResult.status === "completed") {
+        console.log("✅ Training completed successfully");
+        trainingSuccessful = true;
       } else {
-        console.log(`❌ Categorisation failed: ${categorisationResult.error || "Unknown error"}`);
+        console.log(`❌ Training failed: ${trainingResult.error || "Unknown error"}`);
+        trainingSuccessful =
+          trainingResult.status === "completed" ||
+          (trainingResult.message && trainingResult.message.includes("maximum polling attempts"));
+      }
+
+      // Add a small delay to ensure the model is ready if we're also running categorization
+      if (RUN_CATEGORIZATION && trainingSuccessful) {
+        logInfo("Waiting for model to be fully ready...");
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
     } else {
-      console.log(
-        `⚠️ Skipping categorisation step because training failed: ${trainingResult.error || "Unknown error"}`
-      );
+      console.log("\n===== SKIPPING TRAINING (--cat-only flag detected) =====");
+      // Assume training is successful if we're only running categorization
+      trainingSuccessful = true;
+    }
+
+    // ===== STEP 2: Run categorisation flow =====
+    if (RUN_CATEGORIZATION) {
+      if (trainingSuccessful || !RUN_TRAINING) {
+        console.log("\n===== STEP 2: CATEGORISATION MODEL =====");
+        const categorisationResult = await categoriseTransactions(config);
+
+        if (categorisationResult.status === "completed") {
+          console.log("✅ Categorisation completed successfully");
+        } else {
+          console.log(`❌ Categorisation failed: ${categorisationResult.error || "Unknown error"}`);
+        }
+      } else {
+        console.log(`⚠️ Skipping categorisation step because training failed`);
+      }
+    } else {
+      console.log("\n===== SKIPPING CATEGORISATION (--train-only flag detected) =====");
     }
 
     // Cleanup
