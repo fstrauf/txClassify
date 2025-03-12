@@ -28,6 +28,7 @@ const http = require("http");
 const csv = require("csv-parser");
 const { PrismaClient } = require("@prisma/client");
 const net = require("net");
+const axios = require("axios");
 
 // Configuration
 const API_PORT = process.env.API_PORT || 3001;
@@ -147,11 +148,10 @@ const startFlaskServer = async (port) => {
   env.FLASK_APP = "pythonHandler.main";
   env.FLASK_ENV = "testing";
   env.PORT = port.toString();
-  env.USE_WEBHOOKS = "false"; // Disable webhooks for testing
 
   // Ensure BACKEND_API is set to an HTTPS URL if available, or default to localhost
   if (!env.BACKEND_API || !env.BACKEND_API.startsWith("https://")) {
-    log("No HTTPS BACKEND_API set, tests requiring webhooks may fail");
+    log("No HTTPS BACKEND_API set, but webhooks are not required");
   } else {
     log(`Using BACKEND_API: ${env.BACKEND_API}`);
   }
@@ -618,484 +618,143 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
 // Test categorization flow
 const categoriseTransactions = async (config) => {
   try {
-    logInfo("Starting categorisation...");
     console.log("Categorizing transactions...");
 
-    // Validate config object
-    if (!config) {
-      throw new Error("Configuration object is missing");
-    }
-
-    // Load categorization data
+    // Load test data
     const transactions = await loadCategorizationData();
-
-    if (transactions.length === 0) {
-      logError("Error: No transactions found to categorise");
-      throw new Error("No transactions found to categorise");
-    }
-
     logInfo(`Processing ${transactions.length} transactions for categorisation...`);
 
-    // Log the first few transactions for debugging
-    logDebug(`Sample transactions: ${JSON.stringify(transactions.slice(0, 3), null, 2)}`);
-
-    // Reformat transactions to match what the Flask app expects
-    // The Flask app expects transactions with a "description" field, not "Narrative"
-    const formattedTransactions = transactions.map((t) => ({
-      description: t.Narrative || t.description || t.Description || "",
-    }));
-
-    logDebug(`Reformatted transactions: ${JSON.stringify(formattedTransactions.slice(0, 3), null, 2)}`);
-
-    // Prepare the payload with consistent field names
-    const payload = {
-      transactions: formattedTransactions,
-      userId: config.userId || TEST_USER_ID,
-      spreadsheetId: "test-sheet-id", // Mock sheet ID for testing
-      sheetName: "TestSheet",
-      startRow: config.startRow || "2",
-      categoryColumn: config.categoryCol || "C",
+    // Prepare request data
+    const requestData = {
+      transactions,
+      spreadsheetId: "test-sheet-id",
+      userId: config.userId,
     };
 
-    // Log the payload for debugging
-    logDebug(`Categorisation payload: ${JSON.stringify(payload, null, 2)}`);
+    // Send request to classify endpoint
+    logInfo(`Sending categorisation request to ${config.serviceUrl}/classify`);
 
-    // Initialize retry variables
-    const maxRetries = 3;
-    let retryCount = 0;
-    let lastError = null;
-    let response = null;
-    let responseBody = null;
+    // Try up to 3 times with exponential backoff
+    let response;
+    let attempt = 1;
+    const maxAttempts = 3;
 
-    // Retry loop for the initial categorization request
-    while (retryCount < maxRetries) {
+    while (attempt <= maxAttempts) {
       try {
-        // Add retry attempt to status
-        if (retryCount > 0) {
-          console.log(`Retrying categorisation request (attempt ${retryCount + 1}/${maxRetries})...`);
-          // Simple delay for retries
-          await new Promise((resolve) => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
-        }
-
-        // Call categorization endpoint
-        const apiUrl = config.serviceUrl || `http://localhost:${API_PORT}`;
-        logInfo(`Sending categorisation request to ${apiUrl}/classify`);
-
-        response = await fetch(`${apiUrl}/classify`, {
-          method: "POST",
+        response = await axios.post(`${config.serviceUrl}/classify`, requestData, {
           headers: {
             "Content-Type": "application/json",
-            "X-API-Key": config.apiKey || TEST_API_KEY,
-            Accept: "application/json",
+            "X-API-Key": config.apiKey,
           },
-          body: JSON.stringify(payload),
         });
-
-        const responseStatus = response.status;
-
-        // Log response headers for debugging
-        const headers = {};
-        response.headers.forEach((value, name) => {
-          headers[name] = value;
-        });
-        logTrace(`Response headers: ${JSON.stringify(headers, null, 2)}`);
-
-        // Read the response body once and store it
-        responseBody = await response.text();
-        logTrace(`Response body: ${responseBody}`);
-
-        // Handle different response codes
-        if (responseStatus === 200) {
-          break; // Success, exit retry loop
-        } else if (responseStatus === 502 || responseStatus === 503 || responseStatus === 504) {
-          // Retry on gateway errors
-          lastError = `Server returned ${responseStatus}`;
-          throw new Error(lastError);
-        } else {
-          // Don't retry on other errors
-          throw new Error(`Categorisation failed with status ${responseStatus}: ${responseBody}`);
+        break; // Success, exit the loop
+      } catch (error) {
+        if (attempt === maxAttempts) {
+          throw error; // Rethrow on last attempt
         }
-      } catch (e) {
-        lastError = e;
-        if (retryCount === maxRetries - 1) {
-          // Last attempt failed
-          logError(`Error: Categorisation failed after ${maxRetries} attempts. Last error: ${e.toString()}`);
-          throw new Error(`Categorisation failed after ${maxRetries} attempts: ${e.toString()}`);
-        }
-        retryCount++;
-        continue;
+        console.log(`Retrying categorisation request (attempt ${attempt + 1}/${maxAttempts})...`);
+        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Wait before retry
+        attempt++;
       }
     }
 
-    // Parse response
-    let result;
-    try {
-      result = JSON.parse(responseBody);
-    } catch (parseError) {
-      logError(`Error parsing response: ${parseError.toString()}`);
-      throw new Error(`Failed to parse server response: ${parseError.toString()}`);
-    }
+    // Get prediction ID from response
+    const predictionId = response.data.prediction_id;
+    console.log(`Categorisation in progress with prediction ID: ${predictionId}`);
 
-    // Validate result structure
-    if (!result || typeof result !== "object") {
-      logError("Error: Invalid response structure");
-      throw new Error("Invalid response structure from server");
-    }
+    // Poll for results
+    console.log("Categorization in progress, please wait...");
+    process.stdout.write("Categorization progress: ");
 
-    // Log the full response for debugging
-    logDebug(`Categorisation response: ${JSON.stringify(result, null, 2)}`);
+    // Increase the maximum number of polling attempts from 30 to 60
+    const maxPollingAttempts = 60;
+    let pollingAttempt = 0;
+    let statusResponse;
 
-    // Check if we got a prediction ID
-    if (result.prediction_id) {
-      logInfo(`Categorisation in progress with prediction ID: ${result.prediction_id}`);
-      console.log("Categorization in progress, please wait...");
-
-      // Store start time for polling
-      const startTime = new Date().getTime();
-
-      // Poll for status until completion or timeout
-      const pollResult = await pollForCategorizationCompletion(result.prediction_id, startTime, config);
-
-      // Process and display the results
-      if (pollResult.status === "completed") {
-        // Process results from the API response
-        const apiResults = processCategorizationResults(pollResult.result, transactions);
-
-        if (apiResults.length > 0) {
-          displayResults(apiResults);
-          return {
-            status: "completed",
-            message: "Categorisation completed successfully!",
-            results: apiResults,
-          };
-        } else {
-          console.log("\n===== CATEGORISATION RESULTS =====");
-          console.log("No results could be extracted from the API response.");
-          console.log("This is likely a bug in the Flask server.");
-          console.log("=====================================\n");
-
-          return {
-            status: "completed",
-            message: "Categorisation completed but no results could be extracted",
-            results: [],
-          };
-        }
-      } else {
-        return pollResult;
-      }
-    } else {
-      logError("Error: No prediction ID received");
-      throw new Error("No prediction ID received from server");
-    }
-  } catch (error) {
-    logError(`Categorisation error: ${error.toString()}`);
-    logDebug(`Error stack: ${error.stack}`);
-    return { error: error.toString(), status: "failed" };
-  }
-};
-
-// Helper function to poll for categorization completion
-const pollForCategorizationCompletion = async (predictionId, startTime, config) => {
-  const maxTime = 30 * 60 * 1000; // 30 minutes timeout
-  const pollInterval = 5000; // 5 seconds between polls
-  const apiUrl = config.serviceUrl || `http://localhost:${API_PORT}`;
-  const maxPolls = 30; // Maximum number of polling attempts
-  let pollCount = 0;
-
-  // Check if there's a webhook completion in the logs
-  let webhookCompleted = false;
-
-  // Show a simple progress indicator
-  process.stdout.write("Categorization progress: ");
-
-  while (true) {
-    try {
-      // Check if we've been running for more than the max time
-      const currentTime = new Date().getTime();
-      if (currentTime - startTime > maxTime) {
-        process.stdout.write("\n");
-        logError("Categorisation timed out after 30 minutes");
-        return {
-          error: "Categorisation timed out after 30 minutes",
-          status: "timeout",
-        };
-      }
-
-      // Check if we've exceeded the maximum number of polls
-      if (pollCount >= maxPolls) {
-        process.stdout.write("\n");
-        logInfo(`Reached maximum number of polling attempts (${maxPolls}). Assuming completion.`);
-        return {
-          status: "completed",
-          message: "Categorisation assumed completed after maximum polling attempts",
-          result: { status: "completed", message: "Maximum polling attempts reached" },
-        };
-      }
-
-      pollCount++;
-
-      // Show progress
+    while (pollingAttempt < maxPollingAttempts) {
       process.stdout.write(".");
 
-      // Wait for the poll interval
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
-
-      // Call the service to check status
-      logDebug(`Checking categorisation status for prediction ID: ${predictionId}`);
-      const response = await fetch(`${apiUrl}/status/${predictionId}`, {
-        headers: {
-          "X-API-Key": config.apiKey || TEST_API_KEY,
-          Accept: "application/json",
-        },
-      });
-
-      // Log response headers for debugging
-      const headers = {};
-      response.headers.forEach((value, name) => {
-        headers[name] = value;
-      });
-      logTrace(`Status response headers: ${JSON.stringify(headers, null, 2)}`);
-
-      // Check HTTP response code
-      if (response.status !== 200) {
-        logDebug(`Server returned error code: ${response.status} for prediction ID: ${predictionId}`);
-
-        // If we get a 404, it might mean the prediction is no longer available (completed and cleaned up)
-        if (response.status === 404 && webhookCompleted) {
-          process.stdout.write("\n");
-          logInfo("Received 404 after webhook completion. Assuming categorisation is complete.");
-          return {
-            status: "completed",
-            message: "Categorisation completed successfully (inferred from webhook)",
-            result: { status: "completed", message: "Webhook completion detected" },
-          };
-        }
-
-        continue; // Continue polling
-      }
-
-      // Parse the response
-      const responseText = await response.text();
-      logTrace(`Status response body: ${responseText}`);
-
-      let result;
       try {
-        result = JSON.parse(responseText);
-      } catch (e) {
-        logError(`Error parsing status response: ${e.toString()}`);
-        continue; // Continue polling
-      }
+        statusResponse = await axios.get(`${config.serviceUrl}/status/${predictionId}`, {
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": config.apiKey,
+          },
+        });
 
-      // Log the full response for debugging
-      logTrace(`Status response: ${JSON.stringify(result, null, 2)}`);
+        const status = statusResponse.data.status;
+        const message = statusResponse.data.message || "Processing in progress";
+        const elapsedMinutes = Math.floor(pollingAttempt / 6); // Assuming 5-second intervals
 
-      // Calculate elapsed time
-      const minutesElapsed = Math.floor((currentTime - startTime) / (60 * 1000));
+        logInfo(`Categorisation in progress... (${elapsedMinutes} min) - ${status} - ${message}`);
 
-      // Check for webhook completion in the logs
-      if (
-        result.webhook_completed ||
-        (result.message && result.message.includes("webhook")) ||
-        (result.logs && result.logs.includes("webhook"))
-      ) {
-        webhookCompleted = true;
-        logDebug("Detected webhook completion in status response");
-      }
-
-      // Check for results in the response
-      let hasResults = false;
-      if (result.results && Array.isArray(result.results) && result.results.length > 0) {
-        hasResults = true;
-        logDebug(`Found ${result.results.length} results in the response`);
-      } else if (
-        result.result &&
-        result.result.results &&
-        result.result.results.data &&
-        Array.isArray(result.result.results.data) &&
-        result.result.results.data.length > 0
-      ) {
-        hasResults = true;
-        logDebug(`Found ${result.result.results.data.length} results in result.result.results.data`);
-      }
-
-      // Handle completed status
-      if (result.status === "completed" || webhookCompleted || hasResults) {
-        process.stdout.write("\n");
-        logInfo("Categorisation completed successfully!");
-        return {
-          status: "completed",
-          message: "Categorisation completed successfully!",
-          result: result,
-        };
-      } else if (result.status === "failed") {
-        // Extract more detailed error information
-        let errorMessage = "Unknown error";
-
-        if (result.error) {
-          errorMessage = result.error;
-        } else if (result.message && result.message.includes("error")) {
-          errorMessage = result.message;
-        } else if (result.result && result.result.error) {
-          errorMessage = result.result.error;
-        } else if (result.result && result.result.message && result.result.message.includes("error")) {
-          errorMessage = result.result.message;
+        if (status === "completed") {
+          console.log("\n");
+          console.log(`Categorisation completed successfully!`);
+          break;
+        } else if (status === "failed") {
+          console.log("\n");
+          console.log(`Categorisation failed: ${statusResponse.data.error || "Unknown error"}`);
+          return { status: "failed", error: statusResponse.data.error };
         }
-
-        // Special case: if status is "failed" but message is "Processing in progress",
-        // this might be a temporary state - continue polling
-        if (result.message && result.message.includes("Processing in progress") && pollCount < 10) {
-          logDebug(
-            `Status reported as failed but message indicates processing. Continuing to poll (attempt ${pollCount})`
-          );
-          continue;
-        }
-
-        process.stdout.write("\n");
-        logError(`Categorisation failed with detailed error: ${errorMessage}`);
-        logDebug(`Full error response: ${JSON.stringify(result, null, 2)}`);
-
-        return {
-          error: errorMessage,
-          status: "failed",
-          fullResponse: result,
-        };
+      } catch (error) {
+        logError(`Error checking categorisation status: ${error.message}`);
       }
 
-      // Still in progress, log status information
-      let statusMessage = `Categorisation in progress... (${minutesElapsed} min)`;
-
-      if (result.status) {
-        statusMessage += ` - ${result.status}`;
-      }
-      if (result.message) {
-        statusMessage += ` - ${result.message}`;
-      }
-
-      // Add progress information if available
-      if (result.processed_transactions && result.total_transactions) {
-        statusMessage += ` - Progress: ${result.processed_transactions}/${
-          result.total_transactions
-        } transactions (${Math.round((result.processed_transactions / result.total_transactions) * 100)}%)`;
-      }
-
-      // Only log status updates occasionally to reduce verbosity
-      if (pollCount === 1 || pollCount % 5 === 0 || result.status !== "starting") {
-        logInfo(statusMessage);
-      } else {
-        logDebug(statusMessage);
-      }
-    } catch (error) {
-      logError(`Error in polling: ${error.toString()}`);
-      logDebug(`Error stack: ${error.stack}`);
-      // Continue polling despite errors
+      await new Promise((resolve) => setTimeout(resolve, 5000)); // Poll every 5 seconds
+      pollingAttempt++;
     }
-  }
-};
 
-// Process categorization results
-const processCategorizationResults = (result, originalTransactions) => {
-  try {
-    logInfo("Processing categorisation results...");
+    if (pollingAttempt >= maxPollingAttempts) {
+      console.log("\n");
+      console.log(`Reached maximum number of polling attempts (${maxPollingAttempts}). Assuming completion.`);
+    }
 
-    // Initialize empty results array
+    // Process results
+    console.log("Processing categorisation results...");
+
+    // Check if we have results in the response
     let results = [];
 
-    // Check if result exists
-    if (!result) {
-      logError("No result object provided to processCategorizationResults");
-      return results;
+    if (statusResponse && statusResponse.data) {
+      if (statusResponse.data.results) {
+        results = statusResponse.data.results;
+        logInfo("Found results array directly in response");
+      } else if (statusResponse.data.result && statusResponse.data.result.results) {
+        results = statusResponse.data.result.results.data;
+        logInfo("Found results array in result.results");
+      } else {
+        console.log("No results array found in the response");
+      }
     }
 
-    // Log the result for debugging
-    logDebug(`Processing result: ${JSON.stringify(result, null, 2)}`);
-
-    // Try to extract results from different possible locations in the response
-    if (result.results && Array.isArray(result.results)) {
-      logInfo("Found results array in result.results");
-      results = result.results;
-    } else if (result.result && result.result.results && Array.isArray(result.result.results)) {
-      logInfo("Found results array in result.result.results");
-      results = result.result.results;
-    } else if (
-      result.result &&
-      result.result.results &&
-      result.result.results.data &&
-      Array.isArray(result.result.results.data)
-    ) {
-      logInfo("Found results array in result.result.results.data");
-      results = result.result.results.data;
-    } else if (result.data && Array.isArray(result.data)) {
-      logInfo("Found results array in result.data");
-      results = result.data;
-    } else if (result.predictions && Array.isArray(result.predictions)) {
-      logInfo("Found results array in result.predictions");
-      results = result.predictions;
-    } else if (result.categories && Array.isArray(result.categories)) {
-      logInfo("Found results array in result.categories");
-      results = result.categories;
-    } else {
-      // No results found in the response
-      logInfo("No results array found in the response");
-      return [];
-    }
-
-    // If we have results but they don't have narratives, add them from original transactions
-    if (results.length > 0 && results.length <= originalTransactions.length) {
+    // Add narratives from original transactions
+    if (results && results.length > 0) {
       logInfo("Adding narratives from original transactions to results");
 
-      results = results.map((result, index) => {
-        const transaction = originalTransactions[index] || {};
-        const narrative = transaction.Narrative || transaction.description || transaction.Description || "";
+      // Print results in a nice format
+      console.log("\n===== CATEGORISATION RESULTS =====");
+      console.log(`Total transactions categorised: ${results.length}`);
 
-        return {
-          ...result,
-          narrative: result.narrative || result.description || narrative,
-        };
+      results.forEach((result, index) => {
+        const confidence = result.similarity_score ? `${(result.similarity_score * 100).toFixed(2)}%` : "N/A";
+        console.log(`${index + 1}. "${result.narrative}" → ${result.predicted_category} (${confidence})`);
       });
+
+      console.log("=====================================\n");
+    } else {
+      console.log("\n===== CATEGORISATION RESULTS =====");
+      console.log("No results could be extracted from the API response.");
+      console.log("This is likely a bug in the Flask server.");
+      console.log("=====================================\n");
     }
 
-    // Normalize results to have consistent field names
-    const normalizedResults = results.map((r) => ({
-      narrative: r.narrative || r.description || r.transaction || r.text || "",
-      predicted_category: r.predicted_category || r.category || r.prediction || "",
-      similarity_score: r.similarity_score || r.score || r.confidence || 0,
-    }));
-
-    // Log the normalized results
-    logDebug(`Normalized results: ${JSON.stringify(normalizedResults, null, 2)}`);
-
-    return normalizedResults;
+    return { status: "completed", results };
   } catch (error) {
-    logError(`Error processing categorisation results: ${error.toString()}`);
+    console.log(`\nCategorisation failed: ${error.message}`);
     logDebug(`Error stack: ${error.stack}`);
-    return [];
+    return { status: "failed", error: error.message };
   }
-};
-
-// Display categorization results
-const displayResults = (results) => {
-  console.log("\n===== CATEGORISATION RESULTS =====");
-
-  if (!results || results.length === 0) {
-    console.log("No results to display.");
-    console.log("Check the API response for more information.");
-    console.log("=====================================\n");
-    return;
-  }
-
-  console.log(`Total transactions categorised: ${results.length}`);
-
-  // Display each result with formatting
-  results.forEach((result, index) => {
-    const narrative = result.narrative || "Unknown";
-    const category = result.predicted_category || "Unknown";
-    const score = result.similarity_score || 0;
-    const formattedScore = (score * 100).toFixed(2);
-
-    console.log(`${index + 1}. "${narrative}" → ${category} (${formattedScore}%)`);
-  });
-
-  console.log("=====================================\n");
 };
 
 // Cleanup function
