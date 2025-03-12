@@ -4,6 +4,7 @@ from prisma import Prisma
 from prisma.errors import PrismaError
 import base64
 import json
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -31,16 +32,32 @@ class PrismaClient:
             logger.error(f"Failed to initialize Prisma client: {str(e)}")
             raise
 
-    def connect(self):
-        """Connect to the database."""
+    def connect(self, max_retries=3):
+        """Connect to the database with retry mechanism."""
         if not self.client:
             self.initialize()
-        try:
-            self.client.connect()
-            logger.info("Connected to database via Prisma")
-        except PrismaError as e:
-            logger.error(f"Failed to connect to database: {str(e)}")
-            raise
+
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                logger.info(
+                    f"Attempting to connect to database (attempt {retry_count + 1}/{max_retries})"
+                )
+                self.client.connect()
+                logger.info("Connected to database via Prisma")
+                return True
+            except PrismaError as e:
+                retry_count += 1
+                logger.error(
+                    f"Failed to connect to database (attempt {retry_count}/{max_retries}): {str(e)}"
+                )
+                if retry_count < max_retries:
+                    delay = 2**retry_count  # Exponential backoff: 2, 4, 8 seconds
+                    logger.info(f"Retrying in {delay} seconds...")
+                    time.sleep(delay)
+                else:
+                    logger.error("Failed to connect to database after maximum retries")
+                    raise
 
     def disconnect(self):
         """Disconnect from the database."""
@@ -48,8 +65,25 @@ class PrismaClient:
             try:
                 self.client.disconnect()
                 logger.info("Disconnected from database")
-            except PrismaError as e:
+            except Exception as e:
                 logger.error(f"Error disconnecting from database: {str(e)}")
+
+    def ensure_connection(self, max_retries=3):
+        """Ensure the client is connected to the database."""
+        if not self.client:
+            logger.info("Client not initialized, initializing now")
+            self.initialize()
+            return self.connect(max_retries)
+
+        try:
+            # Check if client is connected
+            if not hasattr(self.client, "_engine") or not self.client._engine:
+                logger.info("Client not connected, reconnecting")
+                return self.connect(max_retries)
+            return True
+        except Exception as e:
+            logger.error(f"Error checking connection status: {str(e)}")
+            return self.connect(max_retries)
 
     # Account methods
     def get_account_by_user_id(self, user_id):

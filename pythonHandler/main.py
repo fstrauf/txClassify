@@ -49,14 +49,14 @@ logger.info(f"Backend API URL: {BACKEND_API}")
 logger.info("=== Main Application Starting ===")
 logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'production')}")
 
-# Connect to the database
+# Connect to the database with retry mechanism
 try:
+    logger.info("Attempting initial database connection")
     prisma_client.connect()
-    logger.info("Connected to database")
 except Exception as e:
-    logger.error(f"Failed to connect to database: {e}")
+    logger.error(f"Failed to establish initial database connection: {e}")
     logger.warning(
-        "Continuing without database connection. Some features may not work correctly."
+        "Some features may not work correctly until database connection is established"
     )
 
 
@@ -77,16 +77,11 @@ def shutdown_db_connection(exception=None):
 def ensure_db_connection():
     """Ensure database connection is active before each request."""
     try:
-        # Check if client exists and is connected
-        if (
-            not hasattr(prisma_client.client, "_engine")
-            or not prisma_client.client._engine
-        ):
-            logger.info("Database connection not active, reconnecting...")
-            prisma_client.connect()
-            logger.info("Reconnected to database")
+        # Use the new ensure_connection method
+        prisma_client.ensure_connection()
     except Exception as e:
         logger.error(f"Failed to ensure database connection: {e}")
+        logger.warning("Request may fail due to database connection issues")
 
 
 @app.route("/")

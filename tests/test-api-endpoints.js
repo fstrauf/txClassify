@@ -145,7 +145,7 @@ const startFlaskServer = async (port) => {
 
   // Start the Flask server
   const env = { ...process.env };
-  env.FLASK_APP = "pythonHandler.main";
+  env.FLASK_APP = "main";
   env.FLASK_ENV = "testing";
   env.PORT = port.toString();
 
@@ -156,10 +156,14 @@ const startFlaskServer = async (port) => {
     log(`Using BACKEND_API: ${env.BACKEND_API}`);
   }
 
-  flaskProcess = spawn("python", ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], {
+  // Change working directory to pythonHandler
+  const options = {
     env,
     stdio: "pipe",
-  });
+    cwd: path.join(process.cwd(), "pythonHandler"),
+  };
+
+  flaskProcess = spawn("python", ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
 
   flaskProcess.stdout.on("data", (data) => {
     log(`Flask stdout: ${data.toString().trim()}`);
