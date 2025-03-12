@@ -5,6 +5,7 @@ from prisma.errors import PrismaError
 import base64
 import json
 import time
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -32,110 +33,98 @@ class PrismaClient:
             logger.error(f"Failed to initialize Prisma client: {str(e)}")
             raise
 
-    def connect(self, max_retries=3):
-        """Connect to the database with retry mechanism."""
-        if not self.client:
-            self.initialize()
+    def connect(self):
+        """Connect to the database."""
+        try:
+            if not self.client:
+                self.initialize()
 
-        retry_count = 0
-        while retry_count < max_retries:
+            # Simple connection attempt without checking connection status first
+            # This avoids the circular dependency issue
             try:
-                logger.info(
-                    f"Attempting to connect to database (attempt {retry_count + 1}/{max_retries})"
-                )
                 self.client.connect()
                 logger.info("Connected to database via Prisma")
                 return True
             except PrismaError as e:
-                retry_count += 1
-                logger.error(
-                    f"Failed to connect to database (attempt {retry_count}/{max_retries}): {str(e)}"
-                )
-                if retry_count < max_retries:
-                    delay = 2**retry_count  # Exponential backoff: 2, 4, 8 seconds
-                    logger.info(f"Retrying in {delay} seconds...")
-                    time.sleep(delay)
-                else:
-                    logger.error("Failed to connect to database after maximum retries")
-                    raise
+                if "Already connected" in str(e):
+                    # Already connected is not an error
+                    logger.info("Client already connected to database")
+                    return True
+                # Re-raise other errors
+                raise
+        except Exception as e:
+            logger.error(f"Failed to connect to database: {str(e)}")
+            raise
 
     def disconnect(self):
         """Disconnect from the database."""
-        if self.client:
-            try:
+        try:
+            if self.client and hasattr(self.client, "_engine") and self.client._engine:
                 self.client.disconnect()
                 logger.info("Disconnected from database")
-            except Exception as e:
-                logger.error(f"Error disconnecting from database: {str(e)}")
-
-    def ensure_connection(self, max_retries=3):
-        """Ensure the client is connected to the database."""
-        if not self.client:
-            logger.info("Client not initialized, initializing now")
-            self.initialize()
-            return self.connect(max_retries)
-
-        try:
-            # Check if client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                logger.info("Client not connected, reconnecting")
-                return self.connect(max_retries)
-            return True
         except Exception as e:
-            logger.error(f"Error checking connection status: {str(e)}")
-            return self.connect(max_retries)
+            logger.error(f"Error disconnecting from database: {str(e)}")
 
     # Account methods
     def get_account_by_user_id(self, user_id):
         """Get account by user ID."""
         try:
-            # Ensure client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                self.connect()
+            # Ensure connection
+            self.connect()
 
             account = self.client.account.find_unique(where={"userId": user_id})
             if account:
                 # Convert to dictionary for consistent access
-                return {
+                account_dict = {
                     "userId": account.userId,
                     "categorisationRange": account.categorisationRange,
                     "categorisationTab": account.categorisationTab,
                     "columnOrderCategorisation": account.columnOrderCategorisation,
                     "api_key": account.api_key,
                 }
+
+                # Add email field if it exists
+                if hasattr(account, "email"):
+                    account_dict["email"] = account.email
+
+                return account_dict
             return None
-        except PrismaError as e:
+        except Exception as e:
             logger.error(f"Error getting account by user ID: {str(e)}")
             raise
 
     def get_account_by_api_key(self, api_key):
         """Get account by API key."""
         try:
-            # Ensure client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                self.connect()
+            # Ensure connection
+            self.connect()
 
             account = self.client.account.find_first(where={"api_key": api_key})
             if account:
                 # Convert to dictionary for consistent access
-                return {
+                account_dict = {
                     "userId": account.userId,
                     "categorisationRange": account.categorisationRange,
                     "categorisationTab": account.categorisationTab,
                     "columnOrderCategorisation": account.columnOrderCategorisation,
                     "api_key": account.api_key,
                 }
+
+                # Add email field if it exists
+                if hasattr(account, "email"):
+                    account_dict["email"] = account.email
+
+                return account_dict
             return None
-        except PrismaError as e:
+        except Exception as e:
             logger.error(f"Error getting account by API key: {str(e)}")
             raise
 
     def insert_account(self, user_id, data):
         """Insert a new account."""
         try:
-            # Ensure client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                self.connect()
+            # Ensure connection
+            self.connect()
 
             account_data = {"userId": user_id}
 
@@ -143,6 +132,9 @@ class PrismaClient:
                 account_data["api_key"] = data["apiKey"]
             elif "api_key" in data:
                 account_data["api_key"] = data["api_key"]
+
+            if "email" in data:
+                account_data["email"] = data["email"]
 
             if "config" in data:
                 account_data["config"] = data["config"]
@@ -165,24 +157,29 @@ class PrismaClient:
 
             if account:
                 # Convert to dictionary for consistent access
-                return {
+                account_dict = {
                     "userId": account.userId,
                     "categorisationRange": account.categorisationRange,
                     "categorisationTab": account.categorisationTab,
                     "columnOrderCategorisation": account.columnOrderCategorisation,
                     "api_key": account.api_key,
                 }
+
+                # Add email field if it exists
+                if hasattr(account, "email"):
+                    account_dict["email"] = account.email
+
+                return account_dict
             return None
-        except PrismaError as e:
+        except Exception as e:
             logger.error(f"Error inserting account: {str(e)}")
             raise
 
     def update_account(self, user_id, data):
         """Update an existing account."""
         try:
-            # Ensure client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                self.connect()
+            # Ensure connection
+            self.connect()
 
             update_data = {}
 
@@ -190,6 +187,9 @@ class PrismaClient:
                 update_data["api_key"] = data["apiKey"]
             elif "api_key" in data:
                 update_data["api_key"] = data["api_key"]
+
+            if "email" in data:
+                update_data["email"] = data["email"]
 
             if "categorisationRange" in data:
                 update_data["categorisationRange"] = data["categorisationRange"]
@@ -214,9 +214,10 @@ class PrismaClient:
                     "categorisationTab": account.categorisationTab,
                     "columnOrderCategorisation": account.columnOrderCategorisation,
                     "api_key": account.api_key,
+                    "email": account.email,
                 }
             return None
-        except PrismaError as e:
+        except Exception as e:
             logger.error(f"Error updating account: {str(e)}")
             raise
 
@@ -225,8 +226,7 @@ class PrismaClient:
         """Insert webhook result."""
         try:
             # Ensure client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                self.connect()
+            self.connect()
 
             # Convert results to a JSON string
             import json
@@ -329,9 +329,8 @@ class PrismaClient:
     def get_webhook_result(self, prediction_id):
         """Get webhook result by prediction ID."""
         try:
-            # Ensure client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                self.connect()
+            # Ensure connection
+            self.connect()
 
             webhook_result = self.client.webhookresult.find_unique(
                 where={"prediction_id": prediction_id}
@@ -346,25 +345,16 @@ class PrismaClient:
                     "created_at": webhook_result.created_at,
                 }
             return None
-        except PrismaError as e:
+        except Exception as e:
             logger.error(f"Error getting webhook result: {str(e)}")
-            raise
+            return None
 
     # Embedding methods
     def store_embedding(self, embedding_id, data_bytes):
-        """Store embedding data in the database.
-
-        Args:
-            embedding_id: The identifier for the embeddings
-            data_bytes: The binary data to store
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Store embedding data in the database."""
         try:
-            # Ensure client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                self.connect()
+            # Ensure connection
+            self.connect()
 
             # Convert bytes to base64 string for storage
             data_base64 = base64.b64encode(data_bytes).decode("utf-8")
@@ -394,18 +384,10 @@ class PrismaClient:
             return False
 
     def fetch_embedding(self, embedding_id):
-        """Fetch embedding data from the database.
-
-        Args:
-            embedding_id: The identifier for the embeddings to fetch
-
-        Returns:
-            bytes: The binary data, or None if not found
-        """
+        """Fetch embedding data from the database."""
         try:
-            # Ensure client is connected
-            if not hasattr(self.client, "_engine") or not self.client._engine:
-                self.connect()
+            # Ensure connection
+            self.connect()
 
             embedding = self.client.embedding.find_unique(
                 where={"embedding_id": embedding_id}

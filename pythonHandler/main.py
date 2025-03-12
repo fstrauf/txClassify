@@ -49,26 +49,43 @@ logger.info(f"Backend API URL: {BACKEND_API}")
 logger.info("=== Main Application Starting ===")
 logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'production')}")
 
-# Connect to the database with retry mechanism
-try:
-    logger.info("Attempting initial database connection")
-    prisma_client.connect()
-except Exception as e:
-    logger.error(f"Failed to establish initial database connection: {e}")
-    logger.warning(
-        "Some features may not work correctly until database connection is established"
-    )
+# Connect to the database with a simple retry mechanism
+connected = False
+max_retries = 3
+retry_count = 0
+
+while not connected and retry_count < max_retries:
+    try:
+        logger.info(f"Connecting to database (attempt {retry_count + 1}/{max_retries})")
+        prisma_client.connect()
+        logger.info("Successfully connected to database on startup")
+        connected = True
+    except Exception as e:
+        retry_count += 1
+        logger.error(f"Database connection attempt {retry_count} failed: {e}")
+        if retry_count < max_retries:
+            # Simple backoff strategy
+            sleep_time = 1 * retry_count
+            logger.info(f"Retrying in {sleep_time} seconds...")
+            time.sleep(sleep_time)
+        else:
+            logger.warning(
+                "All connection attempts failed, will retry on first request"
+            )
+
+# Even if we couldn't connect, continue with app startup
+# The app will try to reconnect on each request
 
 
 @app.teardown_appcontext
 def shutdown_db_connection(exception=None):
     """Disconnect from the database when the application context ends."""
     try:
-        # We don't want to disconnect after each request in testing mode
-        # as it causes issues with subsequent requests
-        if os.environ.get("FLASK_ENV") != "testing":
+        # Only disconnect if we're shutting down the app
+        if exception and isinstance(exception, Exception):
+            logger.info("Disconnecting from database due to exception")
             prisma_client.disconnect()
-        logger.info("Disconnected from database")
+            logger.info("Disconnected from database")
     except Exception as e:
         logger.error(f"Error disconnecting from database: {e}")
 
@@ -77,8 +94,8 @@ def shutdown_db_connection(exception=None):
 def ensure_db_connection():
     """Ensure database connection is active before each request."""
     try:
-        # Use the new ensure_connection method
-        prisma_client.ensure_connection()
+        # Use the simplified connect method
+        prisma_client.connect()
     except Exception as e:
         logger.error(f"Failed to ensure database connection: {e}")
         logger.warning("Request may fail due to database connection issues")
