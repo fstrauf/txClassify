@@ -1,20 +1,15 @@
 import os
 import sys
 import logging
-import logging.handlers
-from datetime import datetime
 
 # Gunicorn config
 bind = "0.0.0.0:" + str(os.environ.get("PORT", 5001))
 workers = int(os.environ.get("WEB_CONCURRENCY", 4))
 worker_class = "sync"
-worker_connections = 1000
-timeout = 120  # Increased from 30 to 120 seconds
+timeout = 120  # Increased timeout for long-running operations
 keepalive = 2
 max_requests = 1000
 max_requests_jitter = 50
-preload_app = True  # Preload the application code
-reload = True  # Enable auto-reload on code changes
 
 # Enable logging
 capture_output = True
@@ -95,3 +90,18 @@ def on_exit(server):
     """Log when Gunicorn exits."""
     logger = logging.getLogger("gunicorn.error")
     logger.info("=== Gunicorn Shutting Down ===")
+
+
+def worker_exit(server, worker):
+    """Clean up when a worker exits."""
+    logger = logging.getLogger("gunicorn.error")
+    logger.info(f"Worker exiting (pid: {worker.pid})")
+
+    # Attempt to clean up database connections
+    try:
+        from utils.prisma_client import prisma_client
+
+        prisma_client.disconnect()
+        logger.info(f"Worker {worker.pid} disconnected from database")
+    except Exception as e:
+        logger.error(f"Error disconnecting from database in worker {worker.pid}: {e}")
