@@ -16,7 +16,7 @@ import uuid
 import time
 from typing import List
 from threading import Thread
-from .utils.prisma_client import prisma_client
+from utils.prisma_client import prisma_client
 import psycopg2
 from dotenv import load_dotenv
 
