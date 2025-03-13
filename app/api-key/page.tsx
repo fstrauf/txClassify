@@ -1,8 +1,9 @@
-import { getSession } from "@auth0/nextjs-auth0";
+// import { getSession } from "@auth0/nextjs-auth0";
+import { auth0 } from "@/src/lib/auth0";
 import ApiKeyManager from "./ApiKeyManager";
 
 export default async function ApiKeyPage() {
-  const session = await getSession();
+  const session = await auth0.getSession();
   const user = session?.user;
 
   return (
@@ -26,4 +27,4 @@ export default async function ApiKeyPage() {
       </main>
     </div>
   );
-} 
+}

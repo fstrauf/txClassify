@@ -27,11 +27,13 @@ model WebhookResult {
 }
 
 model Account {
-  userId                    String  @id @unique
+  userId                    String    @id @unique
+  email                     String?
   categorisationRange       String?
   categorisationTab         String?
   columnOrderCategorisation Json?
-  api_key                   String? @unique
+  api_key                   String?   @unique
+  created_at                DateTime? @default(now()) @db.Timestamptz(6)
 
   @@map("account")
 }
