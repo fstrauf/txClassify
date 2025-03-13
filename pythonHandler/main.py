@@ -193,6 +193,14 @@ def validate_api_key(api_key: str) -> str:
             logger.error("User data found but missing userId")
             raise Exception("Invalid user configuration - missing userId")
 
+        # Track API usage on successful validation
+        try:
+            prisma_client.track_api_usage(api_key)
+            logger.debug(f"Tracked API usage for key: {api_key[:4]}...{api_key[-4:]}")
+        except Exception as tracking_error:
+            # Don't fail the validation if tracking fails
+            logger.warning(f"Error tracking API usage: {tracking_error}")
+
         return account["userId"]
 
     except Exception as e:
@@ -301,6 +309,18 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
         # Store in database using Prisma
         result = prisma_client.store_embedding(embedding_id, data_bytes)
         logger.info(f"Embedding storage result: {result}")
+
+        # Try to link embedding to account if we have an API key in the request context
+        try:
+            # Check if there's an API key in the current request context
+            if hasattr(request, "headers") and request.headers.get("X-API-Key"):
+                api_key = request.headers.get("X-API-Key")
+                prisma_client.track_embedding_creation(api_key, embedding_id)
+                logger.info(f"Linked embedding {embedding_id} to account via API key")
+        except Exception as tracking_error:
+            # Don't fail the storage if tracking fails
+            logger.warning(f"Error tracking embedding creation: {tracking_error}")
+
         return result
     except Exception as e:
         logger.error(f"Error storing embeddings: {e}")
@@ -410,6 +430,10 @@ def train_model():
             try:
                 user_id = validate_api_key(api_key)
                 logger.info(f"Got user_id from API key validation: {user_id}")
+
+                # Track API usage explicitly for the training endpoint
+                prisma_client.track_api_usage(api_key)
+                logger.info(f"Tracked API usage for training endpoint")
             except Exception as e:
                 # If API key validation fails and we're not in fallback mode, return error
                 if not data.get("userId"):
@@ -683,6 +707,10 @@ def classify_transactions():
         try:
             user_id = validate_api_key(api_key)
             logger.info(f"API key validated for user: {user_id}")
+
+            # Track API usage explicitly for the classify endpoint
+            prisma_client.track_api_usage(api_key)
+            logger.info(f"Tracked API usage for classify endpoint")
 
             # Update API key in user account if needed
             try:
@@ -1358,6 +1386,10 @@ def manage_api_key():
                     user_id = validate_api_key(api_key)
                     logger.info(f"API key validated for user: {user_id}")
 
+                    # Track API usage explicitly for API key management
+                    prisma_client.track_api_usage(api_key)
+                    logger.info(f"Tracked API usage for API key management endpoint")
+
                     # Return the API key
                     return jsonify(
                         {"status": "success", "user_id": user_id, "api_key": api_key}
@@ -1493,12 +1525,21 @@ def get_user_config():
         if not user_id:
             return jsonify({"error": "Missing userId parameter"}), 400
 
+        # Track API usage if API key is provided
+        api_key = request.args.get("apiKey") or request.headers.get("X-API-Key")
+        if api_key:
+            try:
+                prisma_client.track_api_usage(api_key)
+                logger.info(f"Tracked API usage for user config endpoint")
+            except Exception as tracking_error:
+                # Don't fail the request if tracking fails
+                logger.warning(f"Error tracking API usage: {tracking_error}")
+
         response = prisma_client.get_account_by_user_id(user_id)
         if not response:
             return jsonify({"error": "User not found"}), 404
 
         # Update API key if provided
-        api_key = request.args.get("apiKey")
         if api_key:
             prisma_client.update_account(user_id, {"api_key": api_key})
             logger.info(f"Updated API key for user {user_id}")
@@ -1650,6 +1691,35 @@ def train_webhook():
     request.args = request.args.copy()
     request.args["mode"] = "train"
     return webhook()
+
+
+@app.route("/api-usage", methods=["GET"])
+def get_api_usage():
+    """Get API usage statistics for an account."""
+    try:
+        # Require API key authentication
+        api_key = request.headers.get("X-API-Key")
+        if not api_key:
+            return jsonify({"error": "Missing API key"}), 401
+
+        # Validate API key and get user ID
+        try:
+            user_id = validate_api_key(api_key)
+            logger.info(f"API key validated for user: {user_id}")
+        except Exception as e:
+            logger.error(f"API key validation failed: {e}")
+            return jsonify({"error": f"API key validation failed: {str(e)}"}), 401
+
+        # Get usage statistics
+        usage_stats = prisma_client.get_account_usage_stats(user_id)
+        if not usage_stats:
+            return jsonify({"error": "Failed to retrieve usage statistics"}), 500
+
+        return jsonify(usage_stats), 200
+
+    except Exception as e:
+        logger.error(f"Error getting API usage statistics: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

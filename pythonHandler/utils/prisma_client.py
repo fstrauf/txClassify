@@ -3,8 +3,6 @@ import logging
 from prisma import Prisma
 from prisma.errors import PrismaError
 import base64
-import json
-import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -220,6 +218,134 @@ class PrismaClient:
         except Exception as e:
             logger.error(f"Error updating account: {str(e)}")
             raise
+
+    # API Usage Tracking methods
+    def track_api_usage(self, api_key):
+        """
+        Track API key usage by incrementing request count and updating last used timestamp.
+
+        Args:
+            api_key: The API key to track usage for
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Ensure connection
+            self.connect()
+
+            # Find the account with this API key
+            account = self.client.account.find_first(where={"api_key": api_key})
+            if not account:
+                logger.warning(
+                    f"No account found for API key: {api_key[:4]}...{api_key[-4:]}"
+                )
+                return False
+
+            # Update the account with new request count and timestamp
+            self.client.account.update(
+                where={"userId": account.userId},
+                data={
+                    "requestsCount": (
+                        account.requestsCount + 1
+                        if hasattr(account, "requestsCount")
+                        else 1
+                    ),
+                    "lastUsed": datetime.now(),
+                },
+            )
+
+            logger.info(f"Tracked API usage for account: {account.userId}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error tracking API usage: {str(e)}")
+            return False
+
+    def track_embedding_creation(self, api_key, embedding_id):
+        """
+        Track API key usage for embedding creation and link the embedding to the account.
+
+        Args:
+            api_key: The API key used for the request
+            embedding_id: The ID of the embedding being created
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Ensure connection
+            self.connect()
+
+            # First, track the API usage
+            self.track_api_usage(api_key)
+
+            # Find the account with this API key
+            account = self.client.account.find_first(where={"api_key": api_key})
+            if not account:
+                logger.warning(
+                    f"No account found for API key: {api_key[:4]}...{api_key[-4:]}"
+                )
+                return False
+
+            # Update the embedding with the account ID
+            embedding = self.client.embedding.find_unique(
+                where={"embedding_id": embedding_id}
+            )
+            if not embedding:
+                logger.warning(f"No embedding found with ID: {embedding_id}")
+                return False
+
+            self.client.embedding.update(
+                where={"embedding_id": embedding_id}, data={"accountId": account.userId}
+            )
+
+            logger.info(f"Linked embedding {embedding_id} to account {account.userId}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error tracking embedding creation: {str(e)}")
+            return False
+
+    def get_account_usage_stats(self, user_id):
+        """
+        Get usage statistics for an account.
+
+        Args:
+            user_id: The user ID to get statistics for
+
+        Returns:
+            dict: Dictionary with usage statistics or None if an error occurred
+        """
+        try:
+            # Ensure connection
+            self.connect()
+
+            # Get account with usage fields
+            account = self.client.account.find_unique(
+                where={"userId": user_id}, include={"embeddings": True}
+            )
+
+            if not account:
+                logger.warning(f"No account found for user ID: {user_id}")
+                return None
+
+            # Count embeddings
+            embeddings_count = len(account.embeddings) if account.embeddings else 0
+
+            return {
+                "user_id": account.userId,
+                "email": account.email if hasattr(account, "email") else None,
+                "requests_count": (
+                    account.requestsCount if hasattr(account, "requestsCount") else 0
+                ),
+                "last_used": account.lastUsed,
+                "embeddings_count": embeddings_count,
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting account usage stats: {str(e)}")
+            return None
 
     # Webhook results methods
     def insert_webhook_result(self, prediction_id, results):
