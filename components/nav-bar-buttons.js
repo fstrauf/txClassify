@@ -4,10 +4,10 @@ import { LoginButton } from "../components/buttons/login-button";
 import { LogoutButton } from "../components/buttons/logout-button";
 import { SignupButton } from "../components/buttons/signup-button";
 import Link from "next/link";
-import { useAuth0User } from "@/components/Auth0ClientProvider";
+import { useUser } from "@auth0/nextjs-auth0/client";
 
 export const NavBarButtons = () => {
-  const user = useAuth0User();
+  const { user } = useUser();
 
   return (
     <div className="flex flex-col sm:flex-row items-center gap-3">

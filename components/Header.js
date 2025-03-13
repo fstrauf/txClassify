@@ -3,11 +3,9 @@ import React, { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { NavBarButtons } from "../components/nav-bar-buttons";
-import { useAuth0User } from "@/components/Auth0ClientProvider";
 
 export default function Header() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const user = useAuth0User();
 
   return (
     <header className="w-full bg-surface shadow-soft sticky top-0 z-50">

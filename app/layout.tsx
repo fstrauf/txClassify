@@ -3,8 +3,7 @@ import { Inter } from "next/font/google";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import PostHogProviderWrapper from "./components/PostHogProvider";
-import { auth0 } from "@/src/lib/auth0";
-import { Auth0ClientProvider } from "@/components/Auth0ClientProvider";
+import { UserProvider } from "@auth0/nextjs-auth0/client";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -19,19 +18,16 @@ export const metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const session = await auth0.getSession();
-  const user = session?.user;
-
   return (
     <html lang="en">
       <body className={`${inter.className} flex flex-col min-h-screen`}>
-        <PostHogProviderWrapper>
-          <Auth0ClientProvider user={user}>
+        <UserProvider>
+          <PostHogProviderWrapper>
             <Header />
             <div className="flex-grow">{children}</div>
             <Footer />
-          </Auth0ClientProvider>
-        </PostHogProviderWrapper>
+          </PostHogProviderWrapper>
+        </UserProvider>
       </body>
     </html>
   );

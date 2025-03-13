@@ -1,9 +1,9 @@
-import { auth0 } from "@/src/lib/auth0";
 import { redirect } from "next/navigation";
 import ProfileClient from "./ProfileClient";
+import { getSession } from "@auth0/nextjs-auth0";
 
 export default async function ProfilePage() {
-  const session = await auth0.getSession();
+  const session = await getSession();
 
   if (!session) {
     // Redirect to login if not authenticated
