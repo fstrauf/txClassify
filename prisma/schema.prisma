@@ -3,11 +3,12 @@ generator client {
   previewFeatures = ["metrics"]
 }
 
-generator python {
-  provider             = "prisma-client-py"
-  interface            = "sync"
-  recursive_type_depth = "5"
-}
+// Temporarily commenting out the Python generator to fix version issues
+// generator python {
+//   provider             = "prisma-client-py"
+//   interface            = "sync"
+//   recursive_type_depth = "5"
+// }
 
 datasource db {
   provider     = "postgresql"
@@ -26,16 +27,23 @@ model WebhookResult {
   @@map("webhook_results")
 }
 
+// Define the enum for app beta opt-in status
+enum AppBetaOptInStatus {
+  OPTED_IN
+  DISMISSED
+}
+
 model Account {
-  userId                    String      @id @unique
+  userId                    String              @id @unique
   categorisationRange       String?
   categorisationTab         String?
   columnOrderCategorisation Json?
-  api_key                   String?     @unique
-  created_at                DateTime?   @default(now()) @db.Timestamptz(6)
+  api_key                   String?             @unique
+  created_at                DateTime?           @default(now()) @db.Timestamptz(6)
   email                     String?
-  lastUsed                  DateTime?   @db.Timestamptz(6)
-  requestsCount             Int         @default(0)
+  lastUsed                  DateTime?           @db.Timestamptz(6)
+  requestsCount             Int                 @default(0)
+  appBetaOptIn              AppBetaOptInStatus?
   embeddings                Embedding[]
 
   @@map("account")
