@@ -10,29 +10,35 @@ export default function BetaAccessBanner() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [isBannerVisible, setIsBannerVisible] = useState(false);
-  const [isCheckingPreference, setIsCheckingPreference] = useState(true);
+  const [hasCheckedPreference, setHasCheckedPreference] = useState(false);
   const posthog = usePostHog();
   const { user, isLoading: isUserLoading } = useUser();
 
   // Check if the user has already opted in or dismissed the banner
   useEffect(() => {
-    const checkUserPreference = async () => {
-      if (isUserLoading) {
-        return; // Wait until user loading is complete
-      }
+    if (isUserLoading) {
+      return;
+    }
 
+    if (!user) {
+      setHasCheckedPreference(true);
+      return;
+    }
+
+    const checkUserPreference = async () => {
       try {
         const response = await fetch("/api/user/getBetaPreference");
         const data = await response.json();
 
-        // Only show the banner if the user hasn't made a choice yet (preference is null)
         if (response.ok && data.preference === null) {
-          setIsBannerVisible(true);
+          setTimeout(() => {
+            setIsBannerVisible(true);
+          }, 1000);
         }
       } catch (error) {
         console.error("Error checking beta preference:", error);
       } finally {
-        setIsCheckingPreference(false);
+        setHasCheckedPreference(true);
       }
     };
 
@@ -41,10 +47,10 @@ export default function BetaAccessBanner() {
 
   // Track when the banner is viewed
   useEffect(() => {
-    if (!isCheckingPreference && isBannerVisible && posthog) {
+    if (hasCheckedPreference && isBannerVisible && posthog) {
       posthog.capture("beta_app_banner_viewed");
     }
-  }, [isCheckingPreference, isBannerVisible, posthog]);
+  }, [hasCheckedPreference, isBannerVisible, posthog]);
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,7 +128,7 @@ export default function BetaAccessBanner() {
     }
   };
 
-  if (!isBannerVisible || isCheckingPreference) {
+  if (!hasCheckedPreference || !isBannerVisible) {
     return null;
   }
 
