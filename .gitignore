@@ -51,3 +51,5 @@ pnpm-lock.yaml
 
 .env
 .venv
+
+/test_env

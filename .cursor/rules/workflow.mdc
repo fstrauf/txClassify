@@ -1,6 +1,7 @@
 ---
-description: 
+description: process workflow
 globs: 
+alwaysApply: false
 ---
 
 # Simple Workflow of the Python Algo
@@ -25,27 +26,3 @@ All of this runs on the lowest tiers, so it can happen that they are temporarily
 1. DB runs on Supabase
 2. Replicate handles the embeddings model
 3. Render is where the python service is deployed.
-
-
-# database
-
-Account table
-
--- Table Definition
--- This script only contains the table creation statements and does not fully represent the table in the database. Do not use it as a backup.
-
--- Table Definition
-CREATE TABLE "public"."account" (
-    "categorisationRange" text,
-    "userId" text NOT NULL,
-    "categorisationTab" text,
-    "columnOrderCategorisation" jsonb,
-    "api_key" text,
-    PRIMARY KEY ("userId")
-);
-
--- Column Comment
-COMMENT ON COLUMN "public"."account"."categorisationRange" IS 'the range that is to be selected for categorising';
-COMMENT ON COLUMN "public"."account"."userId" IS 'Auth0 user id';
-COMMENT ON COLUMN "public"."account"."categorisationTab" IS 'The tab of the sheet used for categorisation';
-COMMENT ON COLUMN "public"."account"."columnOrderCategorisation" IS 'Order of categorisation columns in a users sheet.';

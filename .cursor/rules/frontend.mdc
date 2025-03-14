@@ -1,10 +1,17 @@
 ---
-description: 
-globs: 
+description: general nextjs and frontend rules
+globs: *.tsx, *.js
+alwaysApply: false
 ---
 
 # Your rule content
 
 - Use Nextjs for all development
 - Tailwind for styling
+- never store any keys in the codebase. All keys should live in .env files.
+- Always think from first principles. Let's solve the root cause of an issue and not apply fixes upon fixes.
+- Keep solutions as simple as possible. Let's not boil the ocean but instead get a simple fix for the problem presented.
+- no mock data! this is a production application and we can't just return dummy data if it doesn't work.
+- don't create documentation or README or .md files unless explicity tasked
+- pnpm is the package manager all commands should use pnpm
 
