@@ -1,6 +1,6 @@
 ---
-description: 
-globs: 
+description: general nextjs and frontend rules
+globs: *.tsx, *.js
 alwaysApply: false
 ---
 

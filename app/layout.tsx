@@ -4,6 +4,7 @@ import Header from "../components/Header";
 import Footer from "../components/Footer";
 import PostHogProviderWrapper from "./components/PostHogProvider";
 import { UserProvider } from "@auth0/nextjs-auth0/client";
+import BannerWrapper from "./components/BannerWrapper";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -26,6 +27,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Header />
             <div className="flex-grow">{children}</div>
             <Footer />
+            <BannerWrapper />
           </PostHogProviderWrapper>
         </UserProvider>
       </body>

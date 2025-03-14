@@ -10,14 +10,14 @@ module.exports = {
       colors: {
         // Modern color palette inspired by the reference sites
         primary: {
-          DEFAULT: "#2563EB", // Bright blue for primary actions
+          DEFAULT: "#4361ee", // Bright blue for primary actions
           light: "#3B82F6",
           dark: "#1D4ED8",
         },
         secondary: {
-          DEFAULT: "#10B981", // Success green
-          light: "#34D399",
-          dark: "#059669",
+          DEFAULT: "#b5179e", // Magenta/pink for secondary elements
+          light: "#d31eb3", // Lighter magenta
+          dark: "#8a1277", // Darker magenta
         },
         background: {
           DEFAULT: "#F9FAFB",
@@ -28,13 +28,10 @@ module.exports = {
           dark: "#374151",
         },
         accent: {
-          DEFAULT: "#8B5CF6", // Purple for accents
+          DEFAULT: "#f72585", // Purple for accents
           light: "#A78BFA",
           dark: "#7C3AED",
         },
-        first: "#4F46E5", // For gradient backgrounds
-        second: "#7C3AED",
-        third: "#2563EB",
       },
       fontFamily: {
         sans: ["Inter", "system-ui", "sans-serif"],
@@ -50,6 +47,8 @@ module.exports = {
       },
       animation: {
         gradient: "gradient 8s linear infinite",
+        fadeIn: "fadeIn 0.5s ease-in-out",
+        pulse: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
       },
       keyframes: {
         gradient: {
@@ -61,6 +60,14 @@ module.exports = {
             "background-size": "200% 200%",
             "background-position": "right center",
           },
+        },
+        fadeIn: {
+          "0%": { opacity: 0, transform: "translateY(10px)" },
+          "100%": { opacity: 1, transform: "translateY(0)" },
+        },
+        pulse: {
+          "0%, 100%": { opacity: 1 },
+          "50%": { opacity: 0.8 },
         },
       },
     },
