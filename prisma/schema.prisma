@@ -4,11 +4,11 @@ generator client {
 }
 
 // Temporarily commenting out the Python generator to fix version issues
-// generator python {
-//   provider             = "prisma-client-py"
-//   interface            = "sync"
-//   recursive_type_depth = "5"
-// }
+generator python {
+  provider             = "prisma-client-py"
+  interface            = "sync"
+  recursive_type_depth = "5"
+}
 
 datasource db {
   provider     = "postgresql"
