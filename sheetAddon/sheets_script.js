@@ -723,8 +723,19 @@ function categoriseTransactions(config) {
     Logger.log("Categorisation service response: " + JSON.stringify(result));
 
     if (response.getResponseCode() !== 200) {
-      updateStatus("Error: Categorisation failed");
-      throw new Error("Categorisation service error: " + response.getContentText());
+      // Check for specific error messages in the response
+      var errorResponse = JSON.parse(response.getContentText());
+      var errorMessage = "Categorisation service error";
+
+      if (errorResponse && errorResponse.error && errorResponse.error.includes("No valid training data found")) {
+        errorMessage =
+          "No training data found. Please train the model first by using the 'Train Model' option before attempting to categorize transactions.";
+      } else if (errorResponse && errorResponse.error) {
+        errorMessage = errorResponse.error;
+      }
+
+      updateStatus("Error: " + errorMessage);
+      throw new Error(errorMessage);
     }
 
     // Check if we got a prediction ID
