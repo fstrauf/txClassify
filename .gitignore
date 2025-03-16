@@ -53,3 +53,7 @@ pnpm-lock.yaml
 .venv
 
 /test_env
+
+# Python Prisma client
+pythonHandler/prisma/client/
+pythonHandler/prisma/schema.prisma
