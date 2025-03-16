@@ -8,8 +8,6 @@ generator python_client {
   provider             = "prisma-client-py"
   interface            = "sync"
   recursive_type_depth = "5"
-  output               = "../prisma/client"
-  // This generator will be skipped if SKIP_PYTHON_CLIENT is set
   engineType           = "binary"
 }
 
