@@ -3,11 +3,12 @@ generator client {
   previewFeatures = ["metrics"]
 }
 
-// Temporarily commenting out the Python generator to fix version issues
-generator python {
+// Only generate Python client when not on Vercel
+generator python_client {
   provider             = "prisma-client-py"
   interface            = "sync"
   recursive_type_depth = "5"
+  engineType           = "binary"
 }
 
 datasource db {

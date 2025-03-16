@@ -8,7 +8,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "postinstall": "prisma generate",
+    "postinstall": "node scripts/generate-prisma.js",
     "test": "node tests/test-api-endpoints.js --verbose",
     "test:all": "node tests/test-api-endpoints.js --verbose",
     "test:train": "node tests/test-api-endpoints.js --train-only --verbose",
