@@ -7,13 +7,13 @@ services:
       pip install -r requirements.txt
 
       # Install specific Prisma version and generate client
-      npm install -g prisma@6.5.0
+      npm install -g prisma@5.17.0
       mkdir -p prisma
       cp ../prisma/schema.prisma prisma/
-      npx prisma@6.5.0 generate
+      npx prisma@5.17.0 generate
     preDeployCommand: |
       cd ../prisma
-      npx prisma@6.5.0 migrate deploy
+      npx prisma@5.17.0 migrate deploy
       cd ../pythonHandler
     startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --timeout 120
     envVars:
