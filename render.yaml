@@ -3,38 +3,33 @@ services:
     name: tx-classify
     env: python
     buildCommand: |
-      # Install Python dependencies
-      cd pythonHandler
+      # Install Python dependencies from root (pythonHandler)
       pip install -r requirements.txt
       cd ..
 
-      # Install Node dependencies and Prisma
-      npm install --no-save
+      # Install Prisma globally
       npm install -g prisma@5.17.0
 
-      # Ensure scripts directory exists and is accessible
-      mkdir -p scripts
-      chmod +x scripts/generate-prisma.js
-
-      # Generate Prisma clients
+      # Set debug flag
       export PRISMA_PY_DEBUG_GENERATOR=1
-      export RENDER=1
-      node scripts/generate-prisma.js
+
+      # Generate Prisma client
+      cd prisma
+      npx prisma@5.17.0 generate
+      cd ..
     preDeployCommand: |
-      cd pythonHandler/prisma
+      cd prisma
       npx prisma@5.17.0 migrate deploy
-      cd ../..
-    startCommand: cd pythonHandler && gunicorn main:app --bind 0.0.0.0:$PORT --timeout 120
+      cd ..
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: NODE_VERSION
         value: 18.x
       - key: PYTHONPATH
-        value: /opt/render/project/src/pythonHandler
+        value: /opt/render/project/src
       - key: PRISMA_PY_DEBUG_GENERATOR
-        value: "1"
-      - key: RENDER
         value: "1"
       - key: DATABASE_URL
         sync: false
