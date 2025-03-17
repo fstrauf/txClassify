@@ -5,6 +5,7 @@ import FAQ from "@/components/FAQ";
 import Features from "@/components/Features";
 import Link from "next/link";
 import Head from "next/head";
+import { FaGoogle } from "react-icons/fa";
 
 export default function Home() {
   return (
@@ -52,6 +53,19 @@ export default function Home() {
           {/* Quick Social Proof */}
           <div className="mt-8 text-gray-600">
             <p>Over 1,000 people are already on their path to financial independence</p>
+          </div>
+
+          <div className="mt-6">
+            <Link
+              href="https://workspace.google.com/marketplace/app/expense_sorted/456363921097"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center px-6 py-3 rounded-lg bg-white border-2 border-primary text-primary font-semibold hover:bg-primary/10 transition-all duration-200 shadow-sm gap-2"
+            >
+              <FaGoogle className="w-5 h-5" />
+              Get Google Workspace Add-on
+            </Link>
+            <p className="mt-2 text-sm text-gray-600">Already using Google Sheets? Install directly from Marketplace</p>
           </div>
         </div>
 
