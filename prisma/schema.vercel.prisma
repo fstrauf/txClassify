@@ -1,0 +1,56 @@
+generator client {
+    provider        = "prisma-client-js"
+    previewFeatures = ["metrics"]
+}
+
+datasource db {
+    provider     = "postgresql"
+    url          = env("DATABASE_URL")
+    directUrl    = env("DIRECT_URL")
+    relationMode = "foreignKeys"
+}
+
+model WebhookResult {
+    id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    prediction_id String    @unique
+    results       Json
+    created_at    DateTime? @default(now()) @db.Timestamptz(6)
+
+    @@index([prediction_id], map: "idx_webhook_results_prediction_id")
+    @@map("webhook_results")
+}
+
+enum AppBetaOptInStatus {
+    OPTED_IN
+    DISMISSED
+}
+
+model Account {
+    userId                    String              @id @unique
+    categorisationRange       String?
+    categorisationTab         String?
+    columnOrderCategorisation Json?
+    api_key                   String?             @unique
+    created_at                DateTime?           @default(now()) @db.Timestamptz(6)
+    email                     String?
+    lastUsed                  DateTime?           @db.Timestamptz(6)
+    requestsCount             Int                 @default(0)
+    appBetaOptIn              AppBetaOptInStatus?
+    embeddings                Embedding[]
+
+    @@map("account")
+}
+
+model Embedding {
+    id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    data         String
+    created_at   DateTime? @default(now()) @db.Timestamptz(6)
+    updated_at   DateTime? @updatedAt @db.Timestamptz(6)
+    embedding_id String    @unique
+    accountId    String?
+    account      Account?  @relation(fields: [accountId], references: [userId])
+
+    @@index([embedding_id], map: "idx_embedding_embedding_id")
+    @@index([accountId], map: "idx_embedding_account_id")
+    @@map("embeddings")
+}
