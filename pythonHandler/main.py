@@ -1137,224 +1137,224 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         predictions_db[prediction_id]["error"] = str(e)
 
 
-@app.route("/classify/webhook", methods=["POST"])
-def classify_webhook():
-    """Handle classification webhook from Replicate."""
-    try:
-        data = request.get_json()
-        sheet_id = request.args.get("spreadsheetId")
-        user_id = request.args.get("userId")
-        sheet_name = request.args.get("sheetName")
-        start_row = request.args.get("startRow", "2")  # Default to row 2
-        category_column = request.args.get("categoryColumn", "E")  # Default to column E
+# @app.route("/classify/webhook", methods=["POST"])
+# def classify_webhook():
+#     """Handle classification webhook from Replicate."""
+#     try:
+#         data = request.get_json()
+#         sheet_id = request.args.get("spreadsheetId")
+#         user_id = request.args.get("userId")
+#         sheet_name = request.args.get("sheetName")
+#         start_row = request.args.get("startRow", "2")  # Default to row 2
+#         category_column = request.args.get("categoryColumn", "E")  # Default to column E
 
-        # Log all parameters for debugging
-        logger.info(
-            f"Webhook parameters: sheet_id={sheet_id}, user_id={user_id}, sheet_name={sheet_name}, start_row={start_row}, category_column={category_column}"
-        )
+#         # Log all parameters for debugging
+#         logger.info(
+#             f"Webhook parameters: sheet_id={sheet_id}, user_id={user_id}, sheet_name={sheet_name}, start_row={start_row}, category_column={category_column}"
+#         )
 
-        if not all([data, sheet_id, user_id]):
-            error_msg = "Missing required parameters: data, spreadsheetId, or userId"
-            logger.error(error_msg)
-            if sheet_id:
-                update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
+#         if not all([data, sheet_id, user_id]):
+#             error_msg = "Missing required parameters: data, spreadsheetId, or userId"
+#             logger.error(error_msg)
+#             if sheet_id:
+#                 update_sheet_log(sheet_id, "ERROR", error_msg)
+#             return jsonify({"error": error_msg}), 400
 
-        # Default sheet_name to "new_transactions" if not provided
-        if not sheet_name:
-            logger.warning(
-                "sheet_name not provided in webhook, defaulting to 'new_transactions'"
-            )
-            sheet_name = "new_transactions"
+#         # Default sheet_name to "new_transactions" if not provided
+#         if not sheet_name:
+#             logger.warning(
+#                 "sheet_name not provided in webhook, defaulting to 'new_transactions'"
+#             )
+#             sheet_name = "new_transactions"
 
-        # Get new embeddings
-        try:
-            new_embeddings = np.array(
-                [item["embedding"] for item in data["output"]], dtype=np.float32
-            )
-            logger.info(f"Processed {len(new_embeddings)} new embeddings")
-        except Exception as e:
-            error_msg = f"Error processing embeddings: {str(e)}"
-            logger.error(error_msg)
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
+#         # Get new embeddings
+#         try:
+#             new_embeddings = np.array(
+#                 [item["embedding"] for item in data["output"]], dtype=np.float32
+#             )
+#             logger.info(f"Processed {len(new_embeddings)} new embeddings")
+#         except Exception as e:
+#             error_msg = f"Error processing embeddings: {str(e)}"
+#             logger.error(error_msg)
+#             update_sheet_log(sheet_id, "ERROR", error_msg)
+#             return jsonify({"error": error_msg}), 400
 
-        # Get trained embeddings and categories
-        try:
-            trained_embeddings = fetch_embeddings(f"{sheet_id}")
-            trained_data = fetch_embeddings(f"{sheet_id}_index")
-            logger.info(
-                f"Retrieved {len(trained_embeddings)} trained embeddings and {len(trained_data)} training data points"
-            )
+#         # Get trained embeddings and categories
+#         try:
+#             trained_embeddings = fetch_embeddings(f"{sheet_id}")
+#             trained_data = fetch_embeddings(f"{sheet_id}_index")
+#             logger.info(
+#                 f"Retrieved {len(trained_embeddings)} trained embeddings and {len(trained_data)} training data points"
+#             )
 
-            # Add debug logging to see the structure of trained_data
-            if len(trained_data) > 0:
-                logger.info(f"First training data point: {trained_data[0]}")
-                logger.info(f"Training data dtype: {trained_data.dtype}")
-                logger.info(f"Training data shape: {trained_data.shape}")
+#             # Add debug logging to see the structure of trained_data
+#             if len(trained_data) > 0:
+#                 logger.info(f"First training data point: {trained_data[0]}")
+#                 logger.info(f"Training data dtype: {trained_data.dtype}")
+#                 logger.info(f"Training data shape: {trained_data.shape}")
 
-                # Log a few sample categories to verify content
-                sample_categories = [
-                    (
-                        trained_data[i]["category"]
-                        if "category" in trained_data.dtype.names
-                        else (
-                            trained_data[i]["Category"]
-                            if "Category" in trained_data.dtype.names
-                            else trained_data[i][1]
-                        )
-                    )
-                    for i in range(min(5, len(trained_data)))
-                ]
-                logger.info(f"Sample categories: {sample_categories}")
+#                 # Log a few sample categories to verify content
+#                 sample_categories = [
+#                     (
+#                         trained_data[i]["category"]
+#                         if "category" in trained_data.dtype.names
+#                         else (
+#                             trained_data[i]["Category"]
+#                             if "Category" in trained_data.dtype.names
+#                             else trained_data[i][1]
+#                         )
+#                     )
+#                     for i in range(min(5, len(trained_data)))
+#                 ]
+#                 logger.info(f"Sample categories: {sample_categories}")
 
-            if len(trained_embeddings) == 0 or len(trained_data) == 0:
-                error_msg = "No training data found"
-                logger.error(error_msg)
-                update_sheet_log(sheet_id, "ERROR", error_msg)
-                return jsonify({"error": error_msg}), 400
-        except Exception as e:
-            error_msg = f"Error fetching training data: {str(e)}"
-            logger.error(error_msg)
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
+#             if len(trained_embeddings) == 0 or len(trained_data) == 0:
+#                 error_msg = "No training data found"
+#                 logger.error(error_msg)
+#                 update_sheet_log(sheet_id, "ERROR", error_msg)
+#                 return jsonify({"error": error_msg}), 400
+#         except Exception as e:
+#             error_msg = f"Error fetching training data: {str(e)}"
+#             logger.error(error_msg)
+#             update_sheet_log(sheet_id, "ERROR", error_msg)
+#             return jsonify({"error": error_msg}), 400
 
-        # Calculate similarities
-        try:
-            similarities = cosine_similarity(new_embeddings, trained_embeddings)
-            best_matches = similarities.argmax(axis=1)
-            logger.info(f"Calculated similarities with shape {similarities.shape}")
-        except Exception as e:
-            error_msg = f"Error calculating similarities: {str(e)}"
-            logger.error(error_msg)
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 400
+#         # Calculate similarities
+#         try:
+#             similarities = cosine_similarity(new_embeddings, trained_embeddings)
+#             best_matches = similarities.argmax(axis=1)
+#             logger.info(f"Calculated similarities with shape {similarities.shape}")
+#         except Exception as e:
+#             error_msg = f"Error calculating similarities: {str(e)}"
+#             logger.error(error_msg)
+#             update_sheet_log(sheet_id, "ERROR", error_msg)
+#             return jsonify({"error": error_msg}), 400
 
-        # Get predicted categories and confidence scores
-        results = []
-        for i, idx in enumerate(best_matches):
-            try:
-                # Add debug logging for the first few matches
-                if i < 3:
-                    logger.info(f"Match {i}: trained_data[{idx}] = {trained_data[idx]}")
+#         # Get predicted categories and confidence scores
+#         results = []
+#         for i, idx in enumerate(best_matches):
+#             try:
+#                 # Add debug logging for the first few matches
+#                 if i < 3:
+#                     logger.info(f"Match {i}: trained_data[{idx}] = {trained_data[idx]}")
 
-                # Extract the category directly from the structured array
-                # This should be the actual category, not the description
-                category = None
+#                 # Extract the category directly from the structured array
+#                 # This should be the actual category, not the description
+#                 category = None
 
-                # Try different field names and positions to get the category
-                if "category" in trained_data.dtype.names:
-                    category = str(trained_data[idx]["category"])
-                elif "Category" in trained_data.dtype.names:
-                    category = str(trained_data[idx]["Category"])
-                else:
-                    # Fallback to index 1 which should be the category field
-                    category = str(trained_data[idx][1])
+#                 # Try different field names and positions to get the category
+#                 if "category" in trained_data.dtype.names:
+#                     category = str(trained_data[idx]["category"])
+#                 elif "Category" in trained_data.dtype.names:
+#                     category = str(trained_data[idx]["Category"])
+#                 else:
+#                     # Fallback to index 1 which should be the category field
+#                     category = str(trained_data[idx][1])
 
-                similarity_score = float(
-                    similarities[i][idx]
-                )  # Get the similarity score
+#                 similarity_score = float(
+#                     similarities[i][idx]
+#                 )  # Get the similarity score
 
-                # Log the extracted category and score
-                if i < 3:
-                    logger.info(
-                        f"Extracted category: '{category}', similarity score: {similarity_score:.2f}"
-                    )
+#                 # Log the extracted category and score
+#                 if i < 3:
+#                     logger.info(
+#                         f"Extracted category: '{category}', similarity score: {similarity_score:.2f}"
+#                     )
 
-                results.append(
-                    {
-                        "predicted_category": category,
-                        "similarity_score": similarity_score,
-                    }
-                )
-            except Exception as e:
-                logger.error(f"Error processing prediction {i}: {str(e)}")
-                logger.error(
-                    f"trained_data type: {type(trained_data)}, shape: {trained_data.shape if hasattr(trained_data, 'shape') else 'unknown'}"
-                )
-                if i < 3 and idx < len(trained_data):
-                    logger.error(f"trained_data[{idx}] = {trained_data[idx]}")
-                results.append(
-                    {"predicted_category": "Unknown", "similarity_score": 0.0}
-                )
+#                 results.append(
+#                     {
+#                         "predicted_category": category,
+#                         "similarity_score": similarity_score,
+#                     }
+#                 )
+#             except Exception as e:
+#                 logger.error(f"Error processing prediction {i}: {str(e)}")
+#                 logger.error(
+#                     f"trained_data type: {type(trained_data)}, shape: {trained_data.shape if hasattr(trained_data, 'shape') else 'unknown'}"
+#                 )
+#                 if i < 3 and idx < len(trained_data):
+#                     logger.error(f"trained_data[{idx}] = {trained_data[idx]}")
+#                 results.append(
+#                     {"predicted_category": "Unknown", "similarity_score": 0.0}
+#                 )
 
-        logger.info(f"Generated {len(results)} predictions")
+#         logger.info(f"Generated {len(results)} predictions")
 
-        # Instead of writing to the sheet directly, return the results
-        status_msg = f"Generated {len(results)} predictions for sheet '{sheet_name}'"
-        update_sheet_log(sheet_id, "INFO", status_msg)
+#         # Instead of writing to the sheet directly, return the results
+#         status_msg = f"Generated {len(results)} predictions for sheet '{sheet_name}'"
+#         update_sheet_log(sheet_id, "INFO", status_msg)
 
-        try:
-            # Store webhook result with results data
-            prediction_id = request.args.get("prediction_id", "unknown")
+#         try:
+#             # Store webhook result with results data
+#             prediction_id = request.args.get("prediction_id", "unknown")
 
-            try:
-                # Format results for storage
-                serializable_results = {
-                    "status": "success",
-                    "message": "Classification completed",
-                    "data": [],
-                }
+#             try:
+#                 # Format results for storage
+#                 serializable_results = {
+#                     "status": "success",
+#                     "message": "Classification completed",
+#                     "data": [],
+#                 }
 
-                # Add each result with simple types
-                for r in results:
-                    serializable_results["data"].append(
-                        {
-                            "predicted_category": str(r.get("predicted_category", "")),
-                            "similarity_score": float(r.get("similarity_score", 0)),
-                            "narrative": (
-                                str(r.get("narrative", "")) if "narrative" in r else ""
-                            ),
-                        }
-                    )
+#                 # Add each result with simple types
+#                 for r in results:
+#                     serializable_results["data"].append(
+#                         {
+#                             "predicted_category": str(r.get("predicted_category", "")),
+#                             "similarity_score": float(r.get("similarity_score", 0)),
+#                             "narrative": (
+#                                 str(r.get("narrative", "")) if "narrative" in r else ""
+#                             ),
+#                         }
+#                     )
 
-                # Store the results
-                webhook_result = prisma_client.insert_webhook_result(
-                    prediction_id, serializable_results
-                )
-                if webhook_result:
-                    logger.info(f"Stored webhook result for sheet_id: {sheet_id}")
-                else:
-                    logger.warning(
-                        f"Failed to store webhook result for sheet_id: {sheet_id}"
-                    )
-            except Exception as e:
-                logger.warning(f"Error storing webhook result: {e}")
+#                 # Store the results
+#                 webhook_result = prisma_client.insert_webhook_result(
+#                     prediction_id, serializable_results
+#                 )
+#                 if webhook_result:
+#                     logger.info(f"Stored webhook result for sheet_id: {sheet_id}")
+#                 else:
+#                     logger.warning(
+#                         f"Failed to store webhook result for sheet_id: {sheet_id}"
+#                     )
+#             except Exception as e:
+#                 logger.warning(f"Error storing webhook result: {e}")
 
-            status_msg = "Classification completed successfully"
-            update_process_status("completed", "classify", user_id)
-            update_sheet_log(sheet_id, "SUCCESS", status_msg)
+#             status_msg = "Classification completed successfully"
+#             update_process_status("completed", "classify", user_id)
+#             update_sheet_log(sheet_id, "SUCCESS", status_msg)
 
-            # Return the results to be handled by the Google Apps Script
-            return jsonify(
-                {
-                    "status": "success",
-                    "results": results,
-                    "config": {
-                        "categoryColumn": category_column,
-                        "startRow": start_row,
-                        "sheetName": sheet_name,
-                        "spreadsheetId": sheet_id,
-                    },
-                }
-            )
+#             # Return the results to be handled by the Google Apps Script
+#             return jsonify(
+#                 {
+#                     "status": "success",
+#                     "results": results,
+#                     "config": {
+#                         "categoryColumn": category_column,
+#                         "startRow": start_row,
+#                         "sheetName": sheet_name,
+#                         "spreadsheetId": sheet_id,
+#                     },
+#                 }
+#             )
 
-        except Exception as e:
-            error_msg = f"Error processing results: {str(e)}"
-            logger.error(error_msg)
-            update_sheet_log(sheet_id, "ERROR", error_msg)
-            return jsonify({"error": error_msg}), 500
+#         except Exception as e:
+#             error_msg = f"Error processing results: {str(e)}"
+#             logger.error(error_msg)
+#             update_sheet_log(sheet_id, "ERROR", error_msg)
+#             return jsonify({"error": error_msg}), 500
 
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error in classify webhook: {error_msg}")
-        if user_id:
-            update_process_status(f"Error: {str(e)}", "classify", user_id)
-        if sheet_id:
-            update_sheet_log(
-                sheet_id, "ERROR", f"Classification webhook failed: {error_msg}"
-            )
-        return jsonify({"error": error_msg}), 500
+#     except Exception as e:
+#         error_msg = str(e)
+#         logger.error(f"Error in classify webhook: {error_msg}")
+#         if user_id:
+#             update_process_status(f"Error: {str(e)}", "classify", user_id)
+#         if sheet_id:
+#             update_sheet_log(
+#                 sheet_id, "ERROR", f"Classification webhook failed: {error_msg}"
+#             )
+#         return jsonify({"error": error_msg}), 500
 
 
 @app.route("/status/<prediction_id>", methods=["GET"])
@@ -1634,146 +1634,146 @@ def get_user_config():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    """Handle webhook from Replicate."""
-    # Extract parameters from request
-    spreadsheet_id = request.args.get("spreadsheetId")
-    user_id = request.args.get("userId")
+# @app.route("/webhook", methods=["POST"])
+# def webhook():
+#     """Handle webhook from Replicate."""
+#     # Extract parameters from request
+#     spreadsheet_id = request.args.get("spreadsheetId")
+#     user_id = request.args.get("userId")
 
-    # Get prediction_id from headers or request
-    prediction_id = request.headers.get(
-        "X-Replicate-Prediction-Id"
-    ) or request.args.get("prediction_id")
+#     # Get prediction_id from headers or request
+#     prediction_id = request.headers.get(
+#         "X-Replicate-Prediction-Id"
+#     ) or request.args.get("prediction_id")
 
-    logger.info(
-        f"Received webhook for spreadsheet_id: {spreadsheet_id}, user_id: {user_id}, prediction_id: {prediction_id}"
-    )
+#     logger.info(
+#         f"Received webhook for spreadsheet_id: {spreadsheet_id}, user_id: {user_id}, prediction_id: {prediction_id}"
+#     )
 
-    if not all([spreadsheet_id, user_id]):
-        error_msg = f"Missing required parameters: spreadsheet_id={spreadsheet_id}, user_id={user_id}"
-        logger.error(error_msg)
-        return jsonify({"error": error_msg}), 400
+#     if not all([spreadsheet_id, user_id]):
+#         error_msg = f"Missing required parameters: spreadsheet_id={spreadsheet_id}, user_id={user_id}"
+#         logger.error(error_msg)
+#         return jsonify({"error": error_msg}), 400
 
-    try:
-        # Parse JSON data
-        if not request.is_json:
-            error_msg = "Request must be JSON"
-            logger.error(error_msg)
-            return jsonify({"error": error_msg}), 400
+#     try:
+#         # Parse JSON data
+#         if not request.is_json:
+#             error_msg = "Request must be JSON"
+#             logger.error(error_msg)
+#             return jsonify({"error": error_msg}), 400
 
-        data = request.get_json(force=True)
-        logger.info(f"Webhook data keys: {data.keys()}")
+#         data = request.get_json(force=True)
+#         logger.info(f"Webhook data keys: {data.keys()}")
 
-        # Check if this is a training webhook (from the URL path)
-        is_training = "/train/" in request.path
+#         # Check if this is a training webhook (from the URL path)
+#         is_training = "/train/" in request.path
 
-        if is_training:
-            # Process embeddings for training
-            try:
-                # Extract embeddings from the response
-                if (
-                    "output" in data
-                    and isinstance(data["output"], list)
-                    and len(data["output"]) > 0
-                ):
-                    # Standard Replicate format
-                    embeddings = np.array(
-                        [item["embedding"] for item in data["output"]], dtype=np.float32
-                    )
-                    logger.info(f"Extracted embeddings with shape: {embeddings.shape}")
+#         if is_training:
+#             # Process embeddings for training
+#             try:
+#                 # Extract embeddings from the response
+#                 if (
+#                     "output" in data
+#                     and isinstance(data["output"], list)
+#                     and len(data["output"]) > 0
+#                 ):
+#                     # Standard Replicate format
+#                     embeddings = np.array(
+#                         [item["embedding"] for item in data["output"]], dtype=np.float32
+#                     )
+#                     logger.info(f"Extracted embeddings with shape: {embeddings.shape}")
 
-                    # Store the embeddings
-                    store_result = store_embeddings(embeddings, f"{spreadsheet_id}")
-                    logger.info(
-                        f"Stored embeddings for {spreadsheet_id}: {store_result}"
-                    )
+#                     # Store the embeddings
+#                     store_result = store_embeddings(embeddings, f"{spreadsheet_id}")
+#                     logger.info(
+#                         f"Stored embeddings for {spreadsheet_id}: {store_result}"
+#                     )
 
-                    # Update status
-                    update_process_status("completed", "training", user_id)
+#                     # Update status
+#                     update_process_status("completed", "training", user_id)
 
-                    # Store webhook result
-                    if prediction_id:
-                        result = {
-                            "user_id": user_id,
-                            "status": "success",
-                            "embeddings_shape": str(embeddings.shape),
-                            "spreadsheet_id": spreadsheet_id,
-                        }
-                        prisma_client.insert_webhook_result(prediction_id, result)
+#                     # Store webhook result
+#                     if prediction_id:
+#                         result = {
+#                             "user_id": user_id,
+#                             "status": "success",
+#                             "embeddings_shape": str(embeddings.shape),
+#                             "spreadsheet_id": spreadsheet_id,
+#                         }
+#                         prisma_client.insert_webhook_result(prediction_id, result)
 
-                    return jsonify({"status": "success"}), 200
-                else:
-                    error_msg = "Invalid data format in webhook response"
-                    logger.error(error_msg)
-                    return jsonify({"error": error_msg}), 400
-            except Exception as e:
-                error_msg = f"Error processing training webhook: {str(e)}"
-                logger.error(error_msg)
-                return jsonify({"error": error_msg}), 500
-        else:
-            # Handle other webhook types (classify, etc.)
-            logger.info("Non-training webhook received")
-            return jsonify({"status": "success"}), 200
+#                     return jsonify({"status": "success"}), 200
+#                 else:
+#                     error_msg = "Invalid data format in webhook response"
+#                     logger.error(error_msg)
+#                     return jsonify({"error": error_msg}), 400
+#             except Exception as e:
+#                 error_msg = f"Error processing training webhook: {str(e)}"
+#                 logger.error(error_msg)
+#                 return jsonify({"error": error_msg}), 500
+#         else:
+#             # Handle other webhook types (classify, etc.)
+#             logger.info("Non-training webhook received")
+#             return jsonify({"status": "success"}), 200
 
-    except Exception as e:
-        error_msg = f"Error in webhook: {str(e)}"
-        logger.error(error_msg)
-        return jsonify({"error": error_msg}), 500
-
-
-@app.route("/webhook-result", methods=["GET"])
-def get_webhook_result():
-    """Get webhook result."""
-    try:
-        prediction_id = request.args.get("prediction_id")
-        if not prediction_id:
-            return jsonify({"error": "Missing prediction_id parameter"}), 400
-
-        webhook_result = prisma_client.get_webhook_result(prediction_id)
-        if not webhook_result:
-            return (
-                jsonify(
-                    {
-                        "status": "pending",
-                        "message": "No result found for this prediction ID",
-                    }
-                ),
-                404,
-            )
-
-        return jsonify(webhook_result), 200
-    except Exception as e:
-        logger.error(f"Error getting webhook result: {e}")
-        return jsonify({"error": str(e)}), 500
+#     except Exception as e:
+#         error_msg = f"Error in webhook: {str(e)}"
+#         logger.error(error_msg)
+#         return jsonify({"error": error_msg}), 500
 
 
-@app.route("/check-webhook", methods=["GET"])
-def check_webhook():
-    """Check if webhook has been processed."""
-    try:
-        prediction_id = request.args.get("prediction_id")
-        if not prediction_id:
-            return jsonify({"error": "Missing prediction_id parameter"}), 400
+# @app.route("/webhook-result", methods=["GET"])
+# def get_webhook_result():
+#     """Get webhook result."""
+#     try:
+#         prediction_id = request.args.get("prediction_id")
+#         if not prediction_id:
+#             return jsonify({"error": "Missing prediction_id parameter"}), 400
 
-        webhook_check = prisma_client.get_webhook_result(prediction_id)
-        if webhook_check:
-            return jsonify({"status": "processed"}), 200
-        else:
-            return jsonify({"status": "pending"}), 200
-    except Exception as e:
-        logger.error(f"Error checking webhook: {e}")
-        return jsonify({"error": str(e)}), 500
+#         webhook_result = prisma_client.get_webhook_result(prediction_id)
+#         if not webhook_result:
+#             return (
+#                 jsonify(
+#                     {
+#                         "status": "pending",
+#                         "message": "No result found for this prediction ID",
+#                     }
+#                 ),
+#                 404,
+#             )
+
+#         return jsonify(webhook_result), 200
+#     except Exception as e:
+#         logger.error(f"Error getting webhook result: {e}")
+#         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/train/webhook", methods=["POST"])
-def train_webhook():
-    """Handle training webhook from Replicate."""
-    logger.info("Received training webhook, redirecting to main webhook handler")
-    # Add mode=train to the request args to ensure it's treated as a training webhook
-    request.args = request.args.copy()
-    request.args["mode"] = "train"
-    return webhook()
+# @app.route("/check-webhook", methods=["GET"])
+# def check_webhook():
+#     """Check if webhook has been processed."""
+#     try:
+#         prediction_id = request.args.get("prediction_id")
+#         if not prediction_id:
+#             return jsonify({"error": "Missing prediction_id parameter"}), 400
+
+#         webhook_check = prisma_client.get_webhook_result(prediction_id)
+#         if webhook_check:
+#             return jsonify({"status": "processed"}), 200
+#         else:
+#             return jsonify({"status": "pending"}), 200
+#     except Exception as e:
+#         logger.error(f"Error checking webhook: {e}")
+#         return jsonify({"error": str(e)}), 500
+
+
+# @app.route("/train/webhook", methods=["POST"])
+# def train_webhook():
+#     """Handle training webhook from Replicate."""
+#     logger.info("Received training webhook, redirecting to main webhook handler")
+#     # Add mode=train to the request args to ensure it's treated as a training webhook
+#     request.args = request.args.copy()
+#     request.args["mode"] = "train"
+#     return webhook()
 
 
 @app.route("/api-usage", methods=["GET"])

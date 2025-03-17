@@ -1,25 +1,3 @@
-/**
- * End-to-end tests for the transaction classification system.
- *
- * This script tests the API endpoints by:
- * 1. Setting up a test user with fixed credentials
- * 2. Making API calls to the training and categorization endpoints
- * 3. Verifying that the responses are as expected
- * 4. Cleaning up the test user
- *
- * To run these tests:
- *    pnpm test
- *
- * For Replicate to work properly, use ngrok to expose your webhook endpoint:
- * - Install ngrok: https://ngrok.com/download
- * - Run ngrok: ngrok http <webhook_port>
- *
- * Troubleshooting:
- * - If you encounter database connection issues, check your DATABASE_URL in .env
- * - If the API key validation fails, ensure the test user exists in the database
- * - For more detailed debugging, run: pnpm run debug-test
- */
-
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
@@ -34,7 +12,7 @@ const axios = require("axios");
 const API_PORT = process.env.API_PORT || 3001;
 const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
 const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
-const CATEGORIZATION_DATA_PATH = path.join(__dirname, "test_data", "categorise_test.csv");
+// const CATEGORIZATION_DATA_PATH = path.join(__dirname, "test_data", "categorise_test.csv");
 
 // Global variables
 let webhookServer;

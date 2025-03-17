@@ -699,24 +699,60 @@ function categoriseTransactions(config) {
     Logger.log("Found " + descriptions.length + " transactions to categorise");
     updateStatus("Processing " + descriptions.length + " transactions...");
 
-    // Make API call
-    var response = UrlFetchApp.fetch(serviceConfig.serviceUrl + "/classify", {
-      method: "post",
-      contentType: "application/json",
-      headers: { "X-API-Key": serviceConfig.apiKey },
-      payload: JSON.stringify({
-        transactions: descriptions,
-        spreadsheetId: spreadsheetId,
-        userId: serviceConfig.userId,
-        startRow: startRow.toString(),
-        categoryColumn: config.categoryCol,
-      }),
-      muteHttpExceptions: true,
+    // Prepare the payload
+    var payload = JSON.stringify({
+      transactions: descriptions,
+      spreadsheetId: spreadsheetId,
+      userId: serviceConfig.userId,
+      startRow: startRow.toString(),
+      categoryColumn: config.categoryCol,
     });
 
-    if (response.getResponseCode() !== 200) {
-      var error = JSON.parse(response.getContentText());
-      throw new Error(error.error || "Server returned error code: " + response.getResponseCode());
+    // Make API call with retry logic
+    var maxRetries = 3;
+    var retryCount = 0;
+    var response;
+    var error;
+
+    while (retryCount < maxRetries) {
+      try {
+        if (retryCount > 0) {
+          Logger.log(`Retrying categorisation request (attempt ${retryCount + 1}/${maxRetries})...`);
+          // Simple delay for retries
+          Utilities.sleep(Math.pow(2, retryCount) * 1000);
+        }
+
+        response = UrlFetchApp.fetch(serviceConfig.serviceUrl + "/classify", {
+          method: "post",
+          contentType: "application/json",
+          headers: { "X-API-Key": serviceConfig.apiKey },
+          payload: payload,
+          muteHttpExceptions: true,
+        });
+
+        if (response.getResponseCode() === 200) {
+          break; // Success, exit retry loop
+        } else if (
+          response.getResponseCode() === 502 ||
+          response.getResponseCode() === 503 ||
+          response.getResponseCode() === 504
+        ) {
+          // Retry on gateway errors
+          error = `Server returned ${response.getResponseCode()}`;
+          retryCount++;
+          continue;
+        } else {
+          // Don't retry on other errors
+          throw new Error(`Server returned error code: ${response.getResponseCode()}`);
+        }
+      } catch (e) {
+        error = e;
+        if (retryCount === maxRetries - 1) {
+          // Last attempt failed
+          throw new Error(`Categorisation failed after ${maxRetries} attempts: ${e.toString()}`);
+        }
+        retryCount++;
+      }
     }
 
     var result = JSON.parse(response.getContentText());
@@ -732,9 +768,10 @@ function categoriseTransactions(config) {
       OPERATION_TYPE: "categorise",
       START_TIME: Date.now().toString(),
       CONFIG: JSON.stringify(config),
+      SERVICE_URL: serviceConfig.serviceUrl,
     });
 
-    // Show progress dialog
+    // Show progress dialog with fixed polling interval
     var html = HtmlService.createHtmlOutput(
       `
       <style>
@@ -754,21 +791,27 @@ function categoriseTransactions(config) {
         }
         .status { margin: 10px 0; }
         .error { color: red; }
+        .warning { color: orange; }
       </style>
       <div class="status" id="status">Processing ${descriptions.length} transactions...</div>
       <div class="progress-bar">
         <div class="progress-fill" id="progress"></div>
       </div>
       <script>
-        const POLL_INTERVAL = 5000;
-        const MAX_POLLS = 120;
+        const POLL_INTERVAL = 5000;  // Fixed 5-second interval
+        const MAX_POLLS = 120;       // 10 minutes maximum
         let pollCount = 0;
+        let errorCount = 0;
+        let lastProgress = 0;
 
-        function updateProgress(percent, message) {
+        function updateProgress(percent, message, isWarning) {
           document.getElementById("progress").style.width = percent + "%";
           if (message) {
-            document.getElementById("status").textContent = message;
+            document.getElementById("status").innerHTML = isWarning ? 
+              '<span class="warning">' + message + '</span>' : 
+              message;
           }
+          lastProgress = percent;
         }
 
         function pollStatus() {
@@ -793,11 +836,26 @@ function categoriseTransactions(config) {
                 return;
               }
 
-              updateProgress(result.progress, result.message);
+              // Handle server updates/worker restarts
+              if (result.message && result.message.includes("Server")) {
+                updateProgress(lastProgress, result.message, true);
+              } else {
+                updateProgress(result.progress, result.message);
+              }
+              
               setTimeout(pollStatus, POLL_INTERVAL);
             })
             .withFailureHandler(function(error) {
-              updateProgress(50, "Processing continues...");
+              errorCount++;
+              
+              // After multiple errors, show warning but keep trying
+              if (errorCount > 3) {
+                updateProgress(lastProgress, "Server busy, still processing...", true);
+              } else {
+                updateProgress(lastProgress, "Processing continues...");
+              }
+
+              // Use fixed delay for retries
               setTimeout(pollStatus, POLL_INTERVAL);
             })
             .pollOperationStatus();
@@ -823,43 +881,84 @@ function categoriseTransactions(config) {
 function writeResultsToSheet(result, config, sheet) {
   try {
     Logger.log("Writing results to sheet with config: " + JSON.stringify(config));
-    Logger.log("Result object: " + JSON.stringify(result));
 
-    // Get results array from the response
-    var webhookResults;
+    // Extract the results array from the response, handling different response formats
+    var resultsData;
+
+    // Log the structure of the result object to help with debugging
+    Logger.log("Result object structure: " + JSON.stringify(Object.keys(result)));
+
     if (result.results && Array.isArray(result.results)) {
-      webhookResults = result.results;
+      Logger.log("Using result.results array");
+      resultsData = result.results;
     } else if (result.result && result.result.results && Array.isArray(result.result.results)) {
-      webhookResults = result.result.results;
+      Logger.log("Using result.result.results array");
+      resultsData = result.result.results;
     } else if (result.result && result.result.results && result.result.results.data) {
-      webhookResults = result.result.results.data;
+      Logger.log("Using result.result.results.data array");
+      resultsData = result.result.results.data;
+    } else if (result.data && Array.isArray(result.data)) {
+      Logger.log("Using result.data array");
+      resultsData = result.data;
     } else {
-      Logger.log("No valid results array found in response");
-      return false;
+      // Try to find any array in the result object
+      for (var key in result) {
+        if (Array.isArray(result[key])) {
+          Logger.log("Using result." + key + " array");
+          resultsData = result[key];
+          break;
+        }
+      }
     }
 
-    if (!webhookResults || webhookResults.length === 0) {
+    if (!resultsData || resultsData.length === 0) {
       Logger.log("No results to write");
       return false;
     }
 
-    // Get configuration
+    Logger.log("Found " + resultsData.length + " results to write");
+    Logger.log("Sample result: " + JSON.stringify(resultsData[0]));
+
+    // Get configuration from either the result or the provided config
     var categoryCol = result.config ? result.config.categoryColumn : config.categoryCol;
     var startRow = result.config ? parseInt(result.config.startRow) : parseInt(config.startRow);
-    var endRow = startRow + webhookResults.length - 1;
 
-    Logger.log("Writing " + webhookResults.length + " results to sheet");
+    // Validate configuration
+    if (!categoryCol || !startRow) {
+      Logger.log("Missing required configuration: categoryCol=" + categoryCol + ", startRow=" + startRow);
+      return false;
+    }
+
+    var endRow = startRow + resultsData.length - 1;
+
+    Logger.log("Writing " + resultsData.length + " results to sheet");
     Logger.log("Category column: " + categoryCol + ", Start row: " + startRow + ", End row: " + endRow);
+
+    // Safely extract categories, handling different property names
+    var categories = resultsData.map(function (r) {
+      return [r.predicted_category || r.category || r.Category || ""];
+    });
 
     // Write categories
     var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
-    categoryRange.setValues(webhookResults.map((r) => [r.predicted_category || r.category || ""]));
+    categoryRange.setValues(categories);
 
     // Write confidence scores if they exist
-    if (webhookResults[0].hasOwnProperty("similarity_score")) {
+    var hasConfidence = resultsData.some(function (r) {
+      return r.hasOwnProperty("similarity_score") || r.hasOwnProperty("confidence") || r.hasOwnProperty("score");
+    });
+
+    if (hasConfidence) {
       var confidenceCol = String.fromCharCode(categoryCol.charCodeAt(0) + 1);
       var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
-      confidenceRange.setValues(webhookResults.map((r) => [r.similarity_score || 0])).setNumberFormat("0.00%");
+
+      var confidenceValues = resultsData.map(function (r) {
+        var score = r.similarity_score || r.confidence || r.score || 0;
+        return [score];
+      });
+
+      confidenceRange.setValues(confidenceValues).setNumberFormat("0.00%");
+      Logger.log("Wrote confidence scores to column " + confidenceCol);
     }
 
     updateStatus("Categorisation completed successfully!");
@@ -959,14 +1058,13 @@ function showTrainingProgress(transactions, config) {
       .error { color: red; }
       .warning { color: orange; }
     </style>
-    <div class="status" id="status">Preparing training data...</div>
+    <div class="status" id="status">Preparing training data (${transactions.length} records)...</div>
     <div class="progress-bar">
       <div class="progress-fill" id="progress"></div>
     </div>
     <script>
       const POLL_INTERVAL = 5000;  // Fixed 5-second interval
-      const MAX_POLLS = 120;       // 10 minutes maximum
-      const RETRY_DELAY = 10000;   // 10 seconds between retries
+      const MAX_POLLS = 120;       // 10 minutes maximum (same as test script)
       let pollCount = 0;
       let errorCount = 0;
       let lastProgress = 0;
@@ -1003,8 +1101,7 @@ function showTrainingProgress(transactions, config) {
 
       function pollStatus() {
         if (pollCount >= MAX_POLLS) {
-          updateProgress(100, "Training completed!");
-          setTimeout(() => google.script.host.close(), 2000);
+          updateProgress(lastProgress, "Maximum polling time reached. Training may still be in progress.", true);
           return;
         }
 
@@ -1026,14 +1123,13 @@ function showTrainingProgress(transactions, config) {
             }
 
             // Handle server updates/worker restarts
-            if (result.message && result.message.includes("Server updating")) {
+            if (result.message && (result.message.includes("Server") || result.message.includes("processing"))) {
               updateProgress(lastProgress, result.message, true);
-              setTimeout(pollStatus, RETRY_DELAY); // Use longer delay for server updates
-              return;
+            } else {
+              updateProgress(result.progress, result.message);
             }
-
-            // Update progress and continue polling
-            updateProgress(result.progress, result.message);
+            
+            // Always use fixed interval
             setTimeout(pollStatus, POLL_INTERVAL);
           })
           .withFailureHandler(function(error) {
@@ -1046,8 +1142,8 @@ function showTrainingProgress(transactions, config) {
               updateProgress(lastProgress, "Processing continues...");
             }
 
-            // Use increasing delay for consecutive errors
-            setTimeout(pollStatus, Math.min(POLL_INTERVAL * errorCount, RETRY_DELAY));
+            // Always use fixed interval for retries
+            setTimeout(pollStatus, POLL_INTERVAL);
           })
           .pollOperationStatus();
       }
@@ -1064,8 +1160,8 @@ function showTrainingProgress(transactions, config) {
 }
 
 function calculateProgress(startTime) {
-  var elapsed = (new Date().getTime() - startTime) / 1000; // seconds
-  return Math.min(90, Math.round(elapsed / 30)); // ~3% per second up to 90%
+  var elapsedMinutes = (Date.now() - startTime) / (60 * 1000);
+  return Math.min(90, Math.round(elapsedMinutes * 10)); // ~10% per minute up to 90%
 }
 
 function pollOperationStatus() {
@@ -1080,120 +1176,72 @@ function pollOperationStatus() {
       return { error: "No operation in progress" };
     }
 
-    // Simple polling with fixed interval
+    // Simple polling with fixed interval - just like test-api-endpoints.js
     var options = {
       headers: { "X-API-Key": getServiceConfig().apiKey },
       muteHttpExceptions: true,
     };
 
-    try {
-      // First try status endpoint
-      var response = UrlFetchApp.fetch(serviceUrl + "/status/" + predictionId, options);
-      var responseCode = response.getResponseCode();
+    // Check the status endpoint
+    var response = UrlFetchApp.fetch(serviceUrl + "/status/" + predictionId, options);
+    var responseCode = response.getResponseCode();
 
-      // If we get a 502/503/504, the worker might have restarted
+    // If we get a non-200 response
+    if (responseCode !== 200) {
+      // For 502/503/504, the server might be restarting
       if (responseCode === 502 || responseCode === 503 || responseCode === 504) {
-        // Try webhook results before giving up
-        try {
-          var webhookResponse = UrlFetchApp.fetch(
-            serviceUrl + "/webhook-result?prediction_id=" + predictionId,
-            options
-          );
-          var webhookResult = JSON.parse(webhookResponse.getContentText());
-
-          if (webhookResult && webhookResult.status === "success") {
-            if (operationType === "categorise") {
-              var sheet = SpreadsheetApp.getActiveSheet();
-              writeResultsToSheet(webhookResult, config, sheet);
-            }
-            userProperties.deleteAllProperties();
-            return {
-              status: "completed",
-              message: "Operation completed successfully!",
-              progress: 100,
-            };
-          }
-        } catch (webhookError) {
-          Logger.log("Webhook check error: " + webhookError);
-        }
-
-        // If webhook check fails, return processing status
-        return {
-          status: "in_progress",
-          message: "Server updating, operation continues...",
-          progress: 50,
-        };
+        Logger.log(`Server returned ${responseCode}, server might be restarting`);
       }
 
-      var result = JSON.parse(response.getContentText());
-
-      // If we get a successful response
-      if (result.status === "completed" || result.status === "succeeded") {
-        if (result.results && operationType === "categorise") {
-          var sheet = SpreadsheetApp.getActiveSheet();
-          writeResultsToSheet(result, config, sheet);
-        }
-        userProperties.deleteAllProperties();
-        return {
-          status: "completed",
-          message: operationType === "categorise" ? "Categorisation completed!" : "Training completed!",
-          progress: 100,
-        };
-      }
-
-      // If the operation failed
-      if (result.status === "failed") {
-        userProperties.deleteAllProperties();
-        return {
-          status: "failed",
-          message: result.error || "Operation failed",
-          progress: 0,
-        };
-      }
-
-      // If still processing, calculate progress based on time
-      var startTime = parseInt(userProperties.getProperty("START_TIME"));
-      var elapsedMinutes = (Date.now() - startTime) / (60 * 1000);
-      var progress = Math.min(90, Math.round(elapsedMinutes * 10)); // ~10% per minute up to 90%
-
+      // Return processing status for any error
       return {
         status: "in_progress",
-        message: operationType === "categorise" ? "Categorising transactions..." : "Training in progress...",
-        progress: progress,
-      };
-    } catch (error) {
-      Logger.log("Status check error: " + error);
-
-      // Try webhook results as fallback
-      try {
-        var webhookResponse = UrlFetchApp.fetch(serviceUrl + "/webhook-result?prediction_id=" + predictionId, options);
-        var webhookResult = JSON.parse(webhookResponse.getContentText());
-
-        if (webhookResult && webhookResult.status === "success") {
-          if (operationType === "categorise") {
-            var sheet = SpreadsheetApp.getActiveSheet();
-            writeResultsToSheet(webhookResult, config, sheet);
-          }
-          userProperties.deleteAllProperties();
-          return {
-            status: "completed",
-            message: "Operation completed successfully!",
-            progress: 100,
-          };
-        }
-      } catch (webhookError) {
-        Logger.log("Webhook check error: " + webhookError);
-      }
-
-      // Return processing status if all checks fail
-      return {
-        status: "in_progress",
-        message: "Processing continues...",
+        message: "Server processing, please wait...",
         progress: 50,
       };
     }
+
+    // Parse the successful response
+    var result = JSON.parse(response.getContentText());
+
+    // Handle completed state
+    if (result.status === "completed" || result.status === "succeeded") {
+      if (result.results && operationType === "categorise") {
+        var sheet = SpreadsheetApp.getActiveSheet();
+        writeResultsToSheet(result, config, sheet);
+      }
+      userProperties.deleteAllProperties();
+      return {
+        status: "completed",
+        message: operationType === "categorise" ? "Categorisation completed!" : "Training completed!",
+        progress: 100,
+      };
+    }
+
+    // Handle failed state
+    if (result.status === "failed") {
+      userProperties.deleteAllProperties();
+      return {
+        status: "failed",
+        message: result.error || "Operation failed",
+        progress: 0,
+      };
+    }
+
+    // Handle in-progress state - simple progress calculation
+    var startTime = parseInt(userProperties.getProperty("START_TIME"));
+    var elapsedMinutes = (Date.now() - startTime) / (60 * 1000);
+    var progress = Math.min(90, Math.round(elapsedMinutes * 10)); // ~10% per minute up to 90%
+
+    return {
+      status: "in_progress",
+      message: result.message || (operationType === "categorise" ? "Categorising..." : "Training..."),
+      progress: progress,
+    };
   } catch (error) {
-    Logger.log("Polling error: " + error);
+    Logger.log("Error in pollOperationStatus: " + error);
+
+    // On error, return processing status
     return {
       status: "in_progress",
       message: "Processing continues...",
@@ -1218,7 +1266,22 @@ function startTraining() {
     var originalSheetName = userProperties.getProperty("TEMP_SHEET_NAME");
     var serviceUrl = userProperties.getProperty("TEMP_SERVICE_URL");
 
-    // Make API call
+    // Validate required data
+    if (!transactions || !transactions.length) {
+      return { error: "No training data available" };
+    }
+
+    if (!serviceConfig || !serviceConfig.apiKey) {
+      return { error: "API key not configured" };
+    }
+
+    // Make API call with retry logic
+    var maxRetries = 3;
+    var retryCount = 0;
+    var response;
+    var error;
+
+    // Prepare payload
     var payload = JSON.stringify({
       transactions: transactions,
       userId: serviceConfig.userId,
@@ -1241,19 +1304,48 @@ function startTraining() {
       muteHttpExceptions: true,
     };
 
-    // Make the API call and get prediction ID
-    var response = UrlFetchApp.fetch(serviceUrl + "/train", options);
-    var responseCode = response.getResponseCode();
+    // Retry logic for API call
+    while (retryCount < maxRetries) {
+      try {
+        if (retryCount > 0) {
+          Logger.log(`Retrying training request (attempt ${retryCount + 1}/${maxRetries})...`);
+          // Simple delay for retries
+          Utilities.sleep(Math.pow(2, retryCount) * 1000);
+        }
 
-    // Handle non-200 responses
-    if (responseCode !== 200 && responseCode !== 201) {
-      return {
-        error: `Server returned error code: ${responseCode}`,
-        details: response.getContentText(),
-      };
+        // Make the API call
+        response = UrlFetchApp.fetch(serviceUrl + "/train", options);
+        var responseCode = response.getResponseCode();
+
+        // Handle different response codes
+        if (responseCode === 200 || responseCode === 201) {
+          break; // Success, exit retry loop
+        } else if (responseCode === 502 || responseCode === 503 || responseCode === 504) {
+          // Retry on gateway errors
+          error = `Server returned ${responseCode}`;
+          retryCount++;
+          continue;
+        } else {
+          // Don't retry on other errors
+          throw new Error(`Server returned error code: ${responseCode}`);
+        }
+      } catch (e) {
+        error = e;
+        if (retryCount === maxRetries - 1) {
+          // Last attempt failed
+          return { error: `Training failed after ${maxRetries} attempts: ${e.toString()}` };
+        }
+        retryCount++;
+      }
     }
 
-    var result = JSON.parse(response.getContentText());
+    // Parse the response
+    var result;
+    try {
+      result = JSON.parse(response.getContentText());
+    } catch (e) {
+      return { error: "Invalid response from server: " + e.toString() };
+    }
 
     if (!result.prediction_id) {
       return { error: "No prediction ID received from server" };
@@ -1275,6 +1367,7 @@ function startTraining() {
     userProperties.deleteProperty("TEMP_SHEET_NAME");
     userProperties.deleteProperty("TEMP_SERVICE_URL");
 
+    Logger.log(`Training started with prediction ID: ${result.prediction_id}`);
     return { prediction_id: result.prediction_id };
   } catch (error) {
     Logger.log("Training API call error: " + error.toString());
