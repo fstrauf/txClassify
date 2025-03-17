@@ -1,19 +1,32 @@
 {
-    "banks": [
-      {
-        "name": "Wise",
-        "file_path": "txConverter/data/wise.csv",
-        "separator": ",",
-        "date_format": "%Y-%m-%d %H:%M:%S",
-        "column_mapping": {
-          "date": "Created on",
-          "amount": "Source amount (after fees)",
-          "description": "Target name",
-          "currency": "Source currency",
-          "direction": "Direction"
-        },
-        "defaultCurrency": "NZD",
-        "skip_rows": 0
-      }
-    ]
-  }
+  "banks": [
+    {
+      "name": "Wise",
+      "file_path": "txConverter/data/wise.csv",
+      "separator": ",",
+      "date_format": "%Y-%m-%d %H:%M:%S",
+      "column_mapping": {
+        "date": "Created on",
+        "amount": "Source amount (after fees)",
+        "description": "Target name",
+        "currency": "Source currency",
+        "direction": "Direction"
+      },
+      "defaultCurrency": "NZD",
+      "skip_rows": 0
+    },
+    {
+      "name": "ANZ",
+      "file_path": "txConverter/data/anz.csv",
+      "separator": ",",
+      "date_format": "%d/%m/%Y",
+      "column_mapping": {
+        "date": "Date",
+        "amount": "Amount",
+        "description": ["Code", "Reference"],
+        "currency": null
+      },
+      "defaultCurrency": "NZD"
+    }
+  ]
+}
