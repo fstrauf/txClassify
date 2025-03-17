@@ -28,6 +28,12 @@ export default function ProfileClient({ user }) {
         </div>
         <div className="mt-8 border-t pt-4">
           <a
+            href="/api-key"
+            className="px-4 py-2 bg-primary text-white rounded hover:bg-primary-dark inline-block mt-4 mr-2"
+          >
+            Manage API Key
+          </a>
+          <a
             href="/api/auth/logout?returnTo=/"
             className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 inline-block mt-4"
           >
