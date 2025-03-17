@@ -207,12 +207,25 @@ const startFlaskServer = async (port) => {
 const loadTrainingData = () => {
   return new Promise((resolve, reject) => {
     const results = [];
+    const startTime = Date.now();
 
-    fs.createReadStream(path.join(__dirname, "test_data", "training_data.csv"))
+    // Use full_train.csv instead of training_data.csv
+    fs.createReadStream(path.join(__dirname, "test_data", "full_train.csv"))
       .pipe(csv())
-      .on("data", (data) => results.push(data))
+      .on("data", (data) => {
+        // Map fields to match expected format
+        const transaction = {
+          Narrative: data.description || data.Narrative || data.narrative,
+          Category: data.category || data.Category,
+        };
+        if (transaction.Narrative && transaction.Category) {
+          results.push(transaction);
+        }
+      })
       .on("end", () => {
-        logInfo(`Loaded training data with ${results.length} rows`);
+        const duration = (Date.now() - startTime) / 1000;
+        logInfo(`Loaded ${results.length} training records in ${duration.toFixed(1)}s`);
+        logDebug(`Sample transaction: ${JSON.stringify(results[0])}`);
         resolve(results);
       })
       .on("error", (error) => {
@@ -403,8 +416,10 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
   const maxTime = 30 * 60 * 1000; // 30 minutes timeout
   const pollInterval = 5000; // 5 seconds between polls
   const apiUrl = config.serviceUrl || `http://localhost:${API_PORT}`;
-  const maxPolls = 30; // Maximum number of polling attempts
+  const maxPolls = 120; // Maximum number of polling attempts (10 minutes)
   let pollCount = 0;
+  let consecutiveErrors = 0;
+  const maxConsecutiveErrors = 3;
 
   // Check if there's a webhook completion in the logs
   let webhookCompleted = false;
@@ -416,11 +431,13 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
     try {
       // Check if we've been running for more than the max time
       const currentTime = new Date().getTime();
+      const elapsedMinutes = Math.floor((currentTime - startTime) / (60 * 1000));
+
       if (currentTime - startTime > maxTime) {
         process.stdout.write("\n");
-        logError("Training timed out after 30 minutes");
+        logError(`Training timed out after ${elapsedMinutes} minutes`);
         return {
-          error: "Training timed out after 30 minutes",
+          error: `Training timed out after ${elapsedMinutes} minutes`,
           status: "timeout",
         };
       }
@@ -428,11 +445,35 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
       // Check if we've exceeded the maximum number of polls
       if (pollCount >= maxPolls) {
         process.stdout.write("\n");
-        logInfo(`Reached maximum number of polling attempts (${maxPolls}). Assuming completion.`);
+        logInfo(`Reached maximum number of polling attempts (${maxPolls}). Checking webhook results...`);
+
+        // Try to get webhook results before giving up
+        try {
+          const webhookResponse = await fetch(`${apiUrl}/webhook-result?prediction_id=${predictionId}`, {
+            headers: {
+              "X-API-Key": config.apiKey || TEST_API_KEY,
+              Accept: "application/json",
+            },
+          });
+
+          if (webhookResponse.ok) {
+            const webhookResult = await webhookResponse.json();
+            if (webhookResult && webhookResult.status === "success") {
+              return {
+                status: "completed",
+                message: "Training completed successfully (webhook confirmation)",
+                result: webhookResult,
+              };
+            }
+          }
+        } catch (webhookError) {
+          logError(`Error checking webhook results: ${webhookError}`);
+        }
+
         return {
-          status: "completed",
-          message: "Training assumed completed after maximum polling attempts",
-          result: { status: "completed", message: "Maximum polling attempts reached" },
+          status: "unknown",
+          message: "Maximum polling attempts reached without confirmation",
+          elapsedMinutes,
         };
       }
 
@@ -445,7 +486,7 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
       await new Promise((resolve) => setTimeout(resolve, pollInterval));
 
       // Call the service to check status
-      logDebug(`Checking training status for prediction ID: ${predictionId}`);
+      logDebug(`Checking training status for prediction ID: ${predictionId} (attempt ${pollCount}/${maxPolls})`);
       const response = await fetch(`${apiUrl}/status/${predictionId}`, {
         headers: {
           "X-API-Key": config.apiKey || TEST_API_KEY,
@@ -460,23 +501,62 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
       });
       logTrace(`Status response headers: ${JSON.stringify(headers, null, 2)}`);
 
-      // Check HTTP response code
-      if (response.status !== 200) {
-        logDebug(`Server returned error code: ${response.status} for prediction ID: ${predictionId}`);
+      // Handle different response codes
+      if (!response.ok) {
+        const statusCode = response.status;
+        logDebug(`Server returned error code: ${statusCode} for prediction ID: ${predictionId}`);
 
-        // If we get a 404, it might mean the prediction is no longer available (completed and cleaned up)
-        if (response.status === 404 && webhookCompleted) {
-          process.stdout.write("\n");
-          logInfo("Received 404 after webhook completion. Assuming training is complete.");
-          return {
-            status: "completed",
-            message: "Training completed successfully (inferred from webhook)",
-            result: { status: "completed", message: "Webhook completion detected" },
-          };
+        // If we get a 502/503/504, the worker might have restarted
+        if (statusCode === 502 || statusCode === 503 || statusCode === 504) {
+          consecutiveErrors++;
+          logWarning(`Worker error (${statusCode}) on attempt ${pollCount}, consecutive errors: ${consecutiveErrors}`);
+
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            process.stdout.write("\n");
+            logError(`Too many consecutive worker errors (${consecutiveErrors})`);
+            return {
+              error: `Training failed after ${consecutiveErrors} consecutive worker errors`,
+              status: "failed",
+            };
+          }
+
+          // Use longer delay after worker error
+          await new Promise((resolve) => setTimeout(resolve, pollInterval * 2));
+          continue;
         }
 
-        continue; // Continue polling
+        // For 404, check webhook results
+        if (statusCode === 404) {
+          try {
+            const webhookResponse = await fetch(`${apiUrl}/webhook-result?prediction_id=${predictionId}`, {
+              headers: {
+                "X-API-Key": config.apiKey || TEST_API_KEY,
+                Accept: "application/json",
+              },
+            });
+
+            if (webhookResponse.ok) {
+              const webhookResult = await webhookResponse.json();
+              if (webhookResult && webhookResult.status === "success") {
+                process.stdout.write("\n");
+                logInfo("Found successful webhook result after 404 status");
+                return {
+                  status: "completed",
+                  message: "Training completed successfully (webhook confirmation)",
+                  result: webhookResult,
+                };
+              }
+            }
+          } catch (webhookError) {
+            logError(`Error checking webhook results: ${webhookError}`);
+          }
+        }
+
+        continue; // Continue polling for other error codes
       }
+
+      // Reset consecutive errors on successful response
+      consecutiveErrors = 0;
 
       // Parse the response
       const responseText = await response.text();
@@ -493,9 +573,6 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
       // Log the full response for debugging
       logTrace(`Status response: ${JSON.stringify(result, null, 2)}`);
 
-      // Calculate elapsed time
-      const minutesElapsed = Math.floor((currentTime - startTime) / (60 * 1000));
-
       // Check for webhook completion in the logs
       if (
         result.webhook_completed ||
@@ -509,11 +586,12 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
       // Handle completed status
       if (result.status === "completed" || webhookCompleted) {
         process.stdout.write("\n");
-        logInfo("Training completed successfully!");
+        logInfo(`Training completed successfully after ${elapsedMinutes} minutes!`);
         return {
           status: "completed",
           message: "Training completed successfully!",
           result: result,
+          elapsedMinutes,
         };
       } else if (result.status === "failed") {
         // Extract more detailed error information
@@ -525,45 +603,28 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
           errorMessage = result.message;
         } else if (result.result && result.result.error) {
           errorMessage = result.result.error;
-        } else if (result.result && result.result.message && result.result.message.includes("error")) {
-          errorMessage = result.result.message;
-        }
-
-        // Special case: if status is "failed" but message is "Processing in progress",
-        // this might be a temporary state - continue polling
-        if (result.message && result.message.includes("Processing in progress") && pollCount < 10) {
-          logDebug(
-            `Status reported as failed but message indicates processing. Continuing to poll (attempt ${pollCount})`
-          );
-          continue;
         }
 
         process.stdout.write("\n");
-        logError(`Training failed with detailed error: ${errorMessage}`);
+        logError(`Training failed with error: ${errorMessage}`);
         logDebug(`Full error response: ${JSON.stringify(result, null, 2)}`);
 
         return {
           error: errorMessage,
           status: "failed",
           fullResponse: result,
+          elapsedMinutes,
         };
       }
 
       // Still in progress, log status information
-      let statusMessage = `Training in progress... (${minutesElapsed} min)`;
+      let statusMessage = `Training in progress... (${elapsedMinutes} min)`;
 
       if (result.status) {
         statusMessage += ` - ${result.status}`;
       }
       if (result.message) {
         statusMessage += ` - ${result.message}`;
-      }
-
-      // Add progress information if available
-      if (result.processed_transactions && result.total_transactions) {
-        statusMessage += ` - Progress: ${result.processed_transactions}/${
-          result.total_transactions
-        } transactions (${Math.round((result.processed_transactions / result.total_transactions) * 100)}%)`;
       }
 
       // Only log status updates occasionally to reduce verbosity
@@ -575,6 +636,17 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
     } catch (error) {
       logError(`Error in polling: ${error.toString()}`);
       logDebug(`Error stack: ${error.stack}`);
+
+      consecutiveErrors++;
+      if (consecutiveErrors >= maxConsecutiveErrors) {
+        process.stdout.write("\n");
+        logError(`Too many consecutive errors (${consecutiveErrors})`);
+        return {
+          error: `Training failed after ${consecutiveErrors} consecutive errors: ${error.toString()}`,
+          status: "failed",
+        };
+      }
+
       // Continue polling despite errors
     }
   }

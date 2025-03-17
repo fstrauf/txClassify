@@ -3,13 +3,13 @@ generator client {
   previewFeatures = ["metrics"]
 }
 
-// Skip Python client generation if SKIP_PYTHON_CLIENT is set
+// Only include Python client when explicitly enabled
 generator python_client {
   provider             = "prisma-client-py"
   interface            = "sync"
   recursive_type_depth = "5"
   engineType           = "binary"
-  condition            = "env('SKIP_PYTHON_CLIENT') != '1'"
+  condition            = "env('SKIP_PYTHON_CLIENT') == '0'"
 }
 
 datasource db {
