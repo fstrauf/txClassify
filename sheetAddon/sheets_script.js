@@ -957,6 +957,7 @@ function showTrainingProgress(transactions, config) {
       }
       .status { margin: 10px 0; }
       .error { color: red; }
+      .warning { color: orange; }
     </style>
     <div class="status" id="status">Preparing training data...</div>
     <div class="progress-bar">
@@ -965,13 +966,19 @@ function showTrainingProgress(transactions, config) {
     <script>
       const POLL_INTERVAL = 5000;  // Fixed 5-second interval
       const MAX_POLLS = 120;       // 10 minutes maximum
+      const RETRY_DELAY = 10000;   // 10 seconds between retries
       let pollCount = 0;
+      let errorCount = 0;
+      let lastProgress = 0;
 
-      function updateProgress(percent, message) {
+      function updateProgress(percent, message, isWarning) {
         document.getElementById("progress").style.width = percent + "%";
         if (message) {
-          document.getElementById("status").textContent = message;
+          document.getElementById("status").innerHTML = isWarning ? 
+            '<span class="warning">' + message + '</span>' : 
+            message;
         }
+        lastProgress = percent;
       }
 
       function startTraining() {
@@ -1005,6 +1012,8 @@ function showTrainingProgress(transactions, config) {
         
         google.script.run
           .withSuccessHandler(function(result) {
+            errorCount = 0; // Reset error count on success
+            
             if (result.status === "completed") {
               updateProgress(100, "Training completed successfully!");
               setTimeout(() => google.script.host.close(), 2000);
@@ -1016,14 +1025,29 @@ function showTrainingProgress(transactions, config) {
               return;
             }
 
+            // Handle server updates/worker restarts
+            if (result.message && result.message.includes("Server updating")) {
+              updateProgress(lastProgress, result.message, true);
+              setTimeout(pollStatus, RETRY_DELAY); // Use longer delay for server updates
+              return;
+            }
+
             // Update progress and continue polling
             updateProgress(result.progress, result.message);
             setTimeout(pollStatus, POLL_INTERVAL);
           })
           .withFailureHandler(function(error) {
-            // On error, just continue polling with a generic message
-            updateProgress(50, "Processing continues...");
-            setTimeout(pollStatus, POLL_INTERVAL);
+            errorCount++;
+            
+            // After multiple errors, show warning but keep trying
+            if (errorCount > 3) {
+              updateProgress(lastProgress, "Server busy, still processing...", true);
+            } else {
+              updateProgress(lastProgress, "Processing continues...");
+            }
+
+            // Use increasing delay for consecutive errors
+            setTimeout(pollStatus, Math.min(POLL_INTERVAL * errorCount, RETRY_DELAY));
           })
           .pollOperationStatus();
       }
@@ -1062,69 +1086,114 @@ function pollOperationStatus() {
       muteHttpExceptions: true,
     };
 
-    // First try status endpoint
-    var response = UrlFetchApp.fetch(serviceUrl + "/status/" + predictionId, options);
-    var result = JSON.parse(response.getContentText());
-
-    // If we get a successful response
-    if (result.status === "completed" || result.status === "succeeded") {
-      if (result.results && operationType === "categorise") {
-        var sheet = SpreadsheetApp.getActiveSheet();
-        writeResultsToSheet(result, config, sheet);
-      }
-      userProperties.deleteAllProperties();
-      return {
-        status: "completed",
-        message: operationType === "categorise" ? "Categorisation completed!" : "Training completed!",
-        progress: 100,
-      };
-    }
-
-    // If the operation failed
-    if (result.status === "failed") {
-      userProperties.deleteAllProperties();
-      return {
-        status: "failed",
-        message: result.error || "Operation failed",
-        progress: 0,
-      };
-    }
-
-    // If still processing, calculate progress based on time
-    var startTime = parseInt(userProperties.getProperty("START_TIME"));
-    var elapsedMinutes = (Date.now() - startTime) / (60 * 1000);
-    var progress = Math.min(90, Math.round(elapsedMinutes * 10)); // ~10% per minute up to 90%
-
-    return {
-      status: "in_progress",
-      message: operationType === "categorise" ? "Categorising transactions..." : "Training in progress...",
-      progress: progress,
-    };
-  } catch (error) {
-    Logger.log("Polling error: " + error);
-
-    // On error, try to check webhook results
     try {
-      var webhookResponse = UrlFetchApp.fetch(serviceUrl + "/webhook-result?prediction_id=" + predictionId, options);
-      var webhookResult = JSON.parse(webhookResponse.getContentText());
+      // First try status endpoint
+      var response = UrlFetchApp.fetch(serviceUrl + "/status/" + predictionId, options);
+      var responseCode = response.getResponseCode();
 
-      if (webhookResult && webhookResult.status === "success") {
-        if (operationType === "categorise") {
+      // If we get a 502/503/504, the worker might have restarted
+      if (responseCode === 502 || responseCode === 503 || responseCode === 504) {
+        // Try webhook results before giving up
+        try {
+          var webhookResponse = UrlFetchApp.fetch(
+            serviceUrl + "/webhook-result?prediction_id=" + predictionId,
+            options
+          );
+          var webhookResult = JSON.parse(webhookResponse.getContentText());
+
+          if (webhookResult && webhookResult.status === "success") {
+            if (operationType === "categorise") {
+              var sheet = SpreadsheetApp.getActiveSheet();
+              writeResultsToSheet(webhookResult, config, sheet);
+            }
+            userProperties.deleteAllProperties();
+            return {
+              status: "completed",
+              message: "Operation completed successfully!",
+              progress: 100,
+            };
+          }
+        } catch (webhookError) {
+          Logger.log("Webhook check error: " + webhookError);
+        }
+
+        // If webhook check fails, return processing status
+        return {
+          status: "in_progress",
+          message: "Server updating, operation continues...",
+          progress: 50,
+        };
+      }
+
+      var result = JSON.parse(response.getContentText());
+
+      // If we get a successful response
+      if (result.status === "completed" || result.status === "succeeded") {
+        if (result.results && operationType === "categorise") {
           var sheet = SpreadsheetApp.getActiveSheet();
-          writeResultsToSheet(webhookResult, config, sheet);
+          writeResultsToSheet(result, config, sheet);
         }
         userProperties.deleteAllProperties();
         return {
           status: "completed",
-          message: "Operation completed successfully!",
+          message: operationType === "categorise" ? "Categorisation completed!" : "Training completed!",
           progress: 100,
         };
       }
-    } catch (webhookError) {
-      Logger.log("Webhook check error: " + webhookError);
-    }
 
-    // If all checks fail, return processing status
+      // If the operation failed
+      if (result.status === "failed") {
+        userProperties.deleteAllProperties();
+        return {
+          status: "failed",
+          message: result.error || "Operation failed",
+          progress: 0,
+        };
+      }
+
+      // If still processing, calculate progress based on time
+      var startTime = parseInt(userProperties.getProperty("START_TIME"));
+      var elapsedMinutes = (Date.now() - startTime) / (60 * 1000);
+      var progress = Math.min(90, Math.round(elapsedMinutes * 10)); // ~10% per minute up to 90%
+
+      return {
+        status: "in_progress",
+        message: operationType === "categorise" ? "Categorising transactions..." : "Training in progress...",
+        progress: progress,
+      };
+    } catch (error) {
+      Logger.log("Status check error: " + error);
+
+      // Try webhook results as fallback
+      try {
+        var webhookResponse = UrlFetchApp.fetch(serviceUrl + "/webhook-result?prediction_id=" + predictionId, options);
+        var webhookResult = JSON.parse(webhookResponse.getContentText());
+
+        if (webhookResult && webhookResult.status === "success") {
+          if (operationType === "categorise") {
+            var sheet = SpreadsheetApp.getActiveSheet();
+            writeResultsToSheet(webhookResult, config, sheet);
+          }
+          userProperties.deleteAllProperties();
+          return {
+            status: "completed",
+            message: "Operation completed successfully!",
+            progress: 100,
+          };
+        }
+      } catch (webhookError) {
+        Logger.log("Webhook check error: " + webhookError);
+      }
+
+      // Return processing status if all checks fail
+      return {
+        status: "in_progress",
+        message: "Processing continues...",
+        progress: 50,
+      };
+    }
+  } catch (error) {
+    Logger.log("Polling error: " + error);
     return {
       status: "in_progress",
       message: "Processing continues...",
