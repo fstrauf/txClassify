@@ -792,10 +792,27 @@ function categoriseTransactions(config) {
         .status { margin: 10px 0; }
         .error { color: red; }
         .warning { color: orange; }
+        .success { color: green; font-weight: bold; }
+        .button-container { 
+          margin-top: 15px; 
+          text-align: right; 
+          display: none; 
+        }
+        .close-button {
+          padding: 8px 15px;
+          background: #4285f4;
+          color: white;
+          border: none;
+          border-radius: 3px;
+          cursor: pointer;
+        }
       </style>
       <div class="status" id="status">Processing ${descriptions.length} transactions...</div>
       <div class="progress-bar">
         <div class="progress-fill" id="progress"></div>
+      </div>
+      <div class="button-container" id="buttonContainer">
+        <button class="close-button" onclick="closeDialog()">Close</button>
       </div>
       <script>
         const POLL_INTERVAL = 5000;  // Fixed 5-second interval
@@ -803,21 +820,35 @@ function categoriseTransactions(config) {
         let pollCount = 0;
         let errorCount = 0;
         let lastProgress = 0;
+        let isCompleted = false;
 
-        function updateProgress(percent, message, isWarning) {
+        function closeDialog() {
+          google.script.host.close();
+        }
+
+        function updateProgress(percent, message, isWarning, isSuccess) {
           document.getElementById("progress").style.width = percent + "%";
           if (message) {
-            document.getElementById("status").innerHTML = isWarning ? 
-              '<span class="warning">' + message + '</span>' : 
-              message;
+            if (isSuccess) {
+              document.getElementById("status").innerHTML = '<span class="success">' + message + '</span>';
+            } else if (isWarning) {
+              document.getElementById("status").innerHTML = '<span class="warning">' + message + '</span>';
+            } else {
+              document.getElementById("status").innerHTML = message;
+            }
           }
           lastProgress = percent;
+          
+          // Show close button if operation is completed or failed
+          if (isCompleted || percent === 100 || isSuccess) {
+            document.getElementById("buttonContainer").style.display = "block";
+          }
         }
 
         function pollStatus() {
           if (pollCount >= MAX_POLLS) {
-            updateProgress(100, "Categorisation completed!");
-            setTimeout(() => google.script.host.close(), 2000);
+            updateProgress(100, "Categorisation completed!", false, true);
+            isCompleted = true;
             return;
           }
 
@@ -837,13 +868,15 @@ function categoriseTransactions(config) {
               errorCount = 0;
               
               if (result.status === "completed") {
-                updateProgress(100, "Categorisation completed successfully!");
-                setTimeout(() => google.script.host.close(), 2000);
+                updateProgress(100, "Categorisation completed successfully!", false, true);
+                isCompleted = true;
                 return;
               }
               
               if (result.status === "failed") {
                 document.getElementById("status").innerHTML = '<span class="error">Error: ' + (result.message || "Unknown error") + '</span>';
+                document.getElementById("buttonContainer").style.display = "block";
+                isCompleted = true;
                 return;
               }
 
@@ -854,7 +887,9 @@ function categoriseTransactions(config) {
                 updateProgress(result.progress, result.message || "Processing...");
               }
               
-              setTimeout(pollStatus, POLL_INTERVAL);
+              if (!isCompleted) {
+                setTimeout(pollStatus, POLL_INTERVAL);
+              }
             })
             .withFailureHandler(function(error) {
               errorCount++;
@@ -867,7 +902,9 @@ function categoriseTransactions(config) {
               }
 
               // Use fixed delay for retries
-              setTimeout(pollStatus, POLL_INTERVAL);
+              if (!isCompleted) {
+                setTimeout(pollStatus, POLL_INTERVAL);
+              }
             })
             .pollOperationStatus();
         }
@@ -878,7 +915,7 @@ function categoriseTransactions(config) {
     `
     )
       .setWidth(400)
-      .setHeight(150);
+      .setHeight(180);
 
     SpreadsheetApp.getUi().showModalDialog(html, "Categorisation Progress");
   } catch (error) {
@@ -1068,10 +1105,27 @@ function showTrainingProgress(transactions, config) {
       .status { margin: 10px 0; }
       .error { color: red; }
       .warning { color: orange; }
+      .success { color: green; font-weight: bold; }
+      .button-container { 
+        margin-top: 15px; 
+        text-align: right; 
+        display: none; 
+      }
+      .close-button {
+        padding: 8px 15px;
+        background: #4285f4;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+      }
     </style>
     <div class="status" id="status">Preparing training data (${transactions.length} records)...</div>
     <div class="progress-bar">
       <div class="progress-fill" id="progress"></div>
+    </div>
+    <div class="button-container" id="buttonContainer">
+      <button class="close-button" onclick="closeDialog()">Close</button>
     </div>
     <script>
       const POLL_INTERVAL = 5000;  // Fixed 5-second interval
@@ -1079,15 +1133,29 @@ function showTrainingProgress(transactions, config) {
       let pollCount = 0;
       let errorCount = 0;
       let lastProgress = 0;
+      let isCompleted = false;
 
-      function updateProgress(percent, message, isWarning) {
+      function closeDialog() {
+        google.script.host.close();
+      }
+
+      function updateProgress(percent, message, isWarning, isSuccess) {
         document.getElementById("progress").style.width = percent + "%";
         if (message) {
-          document.getElementById("status").innerHTML = isWarning ? 
-            '<span class="warning">' + message + '</span>' : 
-            message;
+          if (isSuccess) {
+            document.getElementById("status").innerHTML = '<span class="success">' + message + '</span>';
+          } else if (isWarning) {
+            document.getElementById("status").innerHTML = '<span class="warning">' + message + '</span>';
+          } else {
+            document.getElementById("status").innerHTML = message;
+          }
         }
         lastProgress = percent;
+        
+        // Show close button if operation is completed or failed
+        if (isCompleted || percent === 100 || isSuccess) {
+          document.getElementById("buttonContainer").style.display = "block";
+        }
       }
 
       function startTraining() {
@@ -1097,6 +1165,8 @@ function showTrainingProgress(transactions, config) {
           .withSuccessHandler(function(result) {
             if (result.error) {
               document.getElementById("status").innerHTML = '<span class="error">Error: ' + result.error + '</span>';
+              document.getElementById("buttonContainer").style.display = "block";
+              isCompleted = true;
               return;
             }
             if (result.prediction_id) {
@@ -1106,6 +1176,8 @@ function showTrainingProgress(transactions, config) {
           })
           .withFailureHandler(function(error) {
             document.getElementById("status").innerHTML = '<span class="error">Error: ' + error + '</span>';
+            document.getElementById("buttonContainer").style.display = "block";
+            isCompleted = true;
           })
           .startTraining();
       }
@@ -1113,6 +1185,7 @@ function showTrainingProgress(transactions, config) {
       function pollStatus() {
         if (pollCount >= MAX_POLLS) {
           updateProgress(lastProgress, "Maximum polling time reached. Training may still be in progress.", true);
+          isCompleted = true;
           return;
         }
 
@@ -1124,20 +1197,24 @@ function showTrainingProgress(transactions, config) {
             if (!result) {
               errorCount++;
               updateProgress(lastProgress, "Received invalid response from server, retrying...", true);
-              setTimeout(pollStatus, POLL_INTERVAL);
+              if (!isCompleted) {
+                setTimeout(pollStatus, POLL_INTERVAL);
+              }
               return;
             }
             
             errorCount = 0; // Reset error count on success
             
             if (result.status === "completed") {
-              updateProgress(100, "Training completed successfully!");
-              setTimeout(() => google.script.host.close(), 2000);
+              updateProgress(100, "Training completed successfully!", false, true);
+              isCompleted = true;
               return;
             }
             
             if (result.status === "failed") {
               document.getElementById("status").innerHTML = '<span class="error">Error: ' + (result.message || "Unknown error") + '</span>';
+              document.getElementById("buttonContainer").style.display = "block";
+              isCompleted = true;
               return;
             }
 
@@ -1149,7 +1226,9 @@ function showTrainingProgress(transactions, config) {
             }
             
             // Always use fixed interval
-            setTimeout(pollStatus, POLL_INTERVAL);
+            if (!isCompleted) {
+              setTimeout(pollStatus, POLL_INTERVAL);
+            }
           })
           .withFailureHandler(function(error) {
             errorCount++;
@@ -1162,7 +1241,9 @@ function showTrainingProgress(transactions, config) {
             }
 
             // Always use fixed interval for retries
-            setTimeout(pollStatus, POLL_INTERVAL);
+            if (!isCompleted) {
+              setTimeout(pollStatus, POLL_INTERVAL);
+            }
           })
           .pollOperationStatus();
       }
@@ -1173,7 +1254,7 @@ function showTrainingProgress(transactions, config) {
   `
   )
     .setWidth(400)
-    .setHeight(150);
+    .setHeight(180);
 
   SpreadsheetApp.getUi().showModalDialog(html, "Training Progress");
 }
