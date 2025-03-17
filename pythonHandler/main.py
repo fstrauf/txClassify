@@ -614,12 +614,11 @@ def train_model():
                 return jsonify({"status": "failed", "error": prediction.error}), 500
 
             try:
-                # Use initial delays for first few attempts, then exponential backoff
+                # Use initial delays for first few attempts, then fixed delay
                 if attempt < len(initial_delays):
                     delay = initial_delays[attempt]
                 else:
-                    # Cap at 30 seconds to avoid worker timeouts
-                    delay = min(15 * (1.2 ** (attempt - len(initial_delays))), 30)
+                    delay = 5  # Fixed 5-second delay after initial attempts
 
                 logger.info(
                     f"Waiting {delay} seconds before checking training prediction status again (attempt {attempt+1}/{max_attempts})"
@@ -640,7 +639,7 @@ def train_model():
             except Exception as e:
                 logger.warning(f"Error during training status check: {e}")
                 # Don't increment attempt on error, just continue with shorter delay
-                time.sleep(5)
+                time.sleep(2)
                 continue
 
         if attempt >= max_attempts:
@@ -920,12 +919,11 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
                 return
 
             try:
-                # Use initial delays for first few attempts, then exponential backoff
+                # Use initial delays for first few attempts, then fixed delay
                 if attempt < len(initial_delays):
                     delay = initial_delays[attempt]
                 else:
-                    # Cap at 30 seconds to avoid worker timeouts
-                    delay = min(15 * (1.2 ** (attempt - len(initial_delays))), 30)
+                    delay = 5  # Fixed 5-second delay after initial attempts
 
                 logger.info(
                     f"Waiting {delay} seconds before checking prediction status again (attempt {attempt+1}/{max_attempts})"
@@ -951,7 +949,7 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
             except Exception as e:
                 logger.warning(f"Error during status check: {e}")
                 # Don't increment attempt on error, just continue with shorter delay
-                time.sleep(5)
+                time.sleep(2)
                 continue
 
         if attempt >= max_attempts:
