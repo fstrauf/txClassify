@@ -7,22 +7,12 @@ alwaysApply: false
 # Simple Workflow of the Python Algo
 
 
-Training:
-1. Get training data from Google Sheets
-2. Process and clean the data
-3. Get embeddings via Replicate
-4. Store embeddings in Supabase
-5. Update status
-
-Classification:
-1. Get new transactions from Google Sheets
-2. Get embeddings for new transactions
-3. Compare with stored embeddings
-4. Write results back to sheets
+1. train some transaction names with corresponding catregories. store embeddings in db.
+2. categorise new transactions based on trained data, creating embeddings of the new transactions and comparing similarity of the trained. write results back to sheet so that a pair of transaction and category exists.
 
 
 # Infrastructure
 All of this runs on the lowest tiers, so it can happen that they are temporarily paused or need time to wake up.
-1. DB runs on Supabase
+1. DB runs on neon via prisma
 2. Replicate handles the embeddings model
 3. Render is where the python service is deployed.
