@@ -10,6 +10,7 @@ services:
       npm install -g prisma@5.17.0
       mkdir -p prisma
       cp ../prisma/schema.prisma prisma/
+      export GENERATE_PYTHON_CLIENT=1
       npx prisma@5.17.0 generate
     preDeployCommand: |
       cd ../prisma
@@ -23,6 +24,8 @@ services:
         value: 18.x
       - key: PYTHONPATH
         value: /opt/render/project/src
+      - key: GENERATE_PYTHON_CLIENT
+        value: "1"
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
