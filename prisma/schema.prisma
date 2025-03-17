@@ -3,7 +3,7 @@ generator client {
   previewFeatures = ["metrics"]
 }
 
-// Only generate Python client when not on Vercel
+// Python client generator
 generator python_client {
   provider             = "prisma-client-py"
   interface            = "sync"
