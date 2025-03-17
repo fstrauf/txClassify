@@ -226,69 +226,30 @@ const loadTrainingData = () => {
 const loadCategorizationData = () => {
   return new Promise((resolve, reject) => {
     const results = [];
+    const targetCsvPath = path.join(process.cwd(), "txConverter", "data", "target.csv");
 
-    logDebug("Loading categorization data...");
-
-    // Check if the file exists
-    if (!fs.existsSync(CATEGORIZATION_DATA_PATH)) {
-      logDebug(`Categorization data file not found: ${CATEGORIZATION_DATA_PATH}`);
-      // Return some minimal test data
-      const testData = [
-        { Narrative: "TRANSPORTFORNSW TAP SYDNEY AUS Card" },
-        { Narrative: "WOOLWORTHS 2099 Dee Why AU AUS Card" },
-        { Narrative: "GOOGLE*GOOGLE STORAGE Sydney AU AUS Card" },
-      ];
-      logInfo(`Using ${testData.length} test transactions`);
-      return resolve(testData);
-    }
+    logDebug("Loading categorization data from target.csv...");
 
     // Read the CSV file
-    fs.createReadStream(CATEGORIZATION_DATA_PATH)
+    fs.createReadStream(targetCsvPath)
       .pipe(csv())
       .on("data", (data) => {
-        // Ensure the Narrative field exists
-        if (data.Narrative) {
-          results.push(data);
-        } else if (data.description) {
-          // If we have 'description' instead of 'Narrative', rename it
-          data.Narrative = data.description;
-          delete data.description;
-          results.push(data);
-        } else if (data.Description) {
-          // If we have 'Description' instead of 'Narrative', rename it
-          data.Narrative = data.Description;
-          delete data.Description;
-          results.push(data);
-        } else {
-          logDebug(`Skipping row without Narrative field: ${JSON.stringify(data)}`);
-        }
+        // Map the fields to match expected format
+        const transaction = {
+          Narrative: data.description,
+          amount: parseFloat(data.amount),
+          currency: data.currency,
+          date: data.date,
+        };
+        results.push(transaction);
       })
       .on("end", () => {
-        logInfo(`Loaded categorization data with ${results.length} rows`);
-
-        // If no valid data was loaded, return some test data
-        if (results.length === 0) {
-          const testData = [
-            { Narrative: "TRANSPORTFORNSW TAP SYDNEY AUS Card" },
-            { Narrative: "WOOLWORTHS 2099 Dee Why AU AUS Card" },
-            { Narrative: "GOOGLE*GOOGLE STORAGE Sydney AU AUS Card" },
-          ];
-          logInfo(`No valid data found, using ${testData.length} test transactions`);
-          return resolve(testData);
-        }
-
+        logInfo(`Loaded ${results.length} transactions from target.csv`);
         resolve(results);
       })
       .on("error", (error) => {
-        logError(`Error loading categorization data: ${error.message}`);
-        // Return minimal data if loading fails
-        const testData = [
-          { Narrative: "TRANSPORTFORNSW TAP SYDNEY AUS Card" },
-          { Narrative: "WOOLWORTHS 2099 Dee Why AU AUS Card" },
-          { Narrative: "GOOGLE*GOOGLE STORAGE Sydney AU AUS Card" },
-        ];
-        logInfo(`Error loading data, using ${testData.length} test transactions`);
-        resolve(testData);
+        logError(`Error loading target.csv: ${error.message}`);
+        reject(error);
       });
   });
 };

@@ -10,7 +10,6 @@ import tempfile
 from sklearn.metrics.pairwise import cosine_similarity
 import re
 import logging
-import gc
 import sys
 import uuid
 import time
@@ -614,26 +613,56 @@ def train_model():
                 update_process_status("failed", "training", user_id)
                 return jsonify({"status": "failed", "error": prediction.error}), 500
 
-            # Use initial delays for first few attempts, then exponential backoff
-            if attempt < len(initial_delays):
-                delay = initial_delays[attempt]
-            else:
-                # Cap at 60 seconds for later attempts
-                delay = min(20 * (1.5 ** (attempt - len(initial_delays))), 60)
+            try:
+                # Use initial delays for first few attempts, then exponential backoff
+                if attempt < len(initial_delays):
+                    delay = initial_delays[attempt]
+                else:
+                    # Cap at 30 seconds to avoid worker timeouts
+                    delay = min(15 * (1.2 ** (attempt - len(initial_delays))), 30)
 
-            logger.info(
-                f"Waiting {delay} seconds before checking training prediction status again (attempt {attempt+1}/{max_attempts})"
-            )
-            time.sleep(delay)
+                logger.info(
+                    f"Waiting {delay} seconds before checking training prediction status again (attempt {attempt+1}/{max_attempts})"
+                )
+                time.sleep(delay)
 
-            # Reload prediction status
-            prediction.reload()
-            attempt += 1
+                # Reload prediction status
+                try:
+                    prediction.reload()
+                except Exception as reload_error:
+                    logger.warning(f"Error reloading prediction status: {reload_error}")
+                    # If reload fails, continue to next attempt rather than failing
+                    attempt += 1
+                    continue
+
+                attempt += 1
+
+            except Exception as e:
+                logger.warning(f"Error during training status check: {e}")
+                # Don't increment attempt on error, just continue with shorter delay
+                time.sleep(5)
+                continue
 
         if attempt >= max_attempts:
             logger.warning(
-                f"Timed out waiting for training prediction to complete, but continuing anyway"
+                f"Timed out waiting for training prediction to complete, checking local database"
             )
+
+            # Check if we have a webhook result
+            try:
+                webhook_result = prisma_client.get_webhook_result(prediction.id)
+                if webhook_result and webhook_result.get("status") == "success":
+                    logger.info("Found successful webhook result, training completed")
+                    return jsonify(
+                        {"status": "completed", "prediction_id": prediction.id}
+                    )
+            except Exception as db_error:
+                logger.warning(f"Error checking webhook result: {db_error}")
+
+            # If no webhook result but we haven't failed, continue processing
+            logger.info("No webhook result found, but continuing with processing")
+            return jsonify({"status": "processing", "prediction_id": prediction.id})
+
         elif prediction.status == "succeeded":
             logger.info("Training prediction completed successfully")
 
@@ -654,6 +683,15 @@ def train_model():
                     # Store the embeddings
                     store_result = store_embeddings(embeddings, f"{sheet_id}")
                     logger.info(f"Stored embeddings for {sheet_id}: {store_result}")
+
+                    # Store webhook result
+                    result = {
+                        "user_id": user_id,
+                        "status": "success",
+                        "embeddings_shape": str(embeddings.shape),
+                        "spreadsheet_id": sheet_id,
+                    }
+                    prisma_client.insert_webhook_result(prediction.id, result)
                 except Exception as e:
                     logger.error(f"Error processing training embeddings: {e}")
             else:
@@ -881,30 +919,60 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
                 predictions_db[prediction_id]["error"] = prediction.error
                 return
 
-            # Use initial delays for first few attempts, then exponential backoff
-            if attempt < len(initial_delays):
-                delay = initial_delays[attempt]
-            else:
-                # Cap at 60 seconds for later attempts
-                delay = min(20 * (1.5 ** (attempt - len(initial_delays))), 60)
+            try:
+                # Use initial delays for first few attempts, then exponential backoff
+                if attempt < len(initial_delays):
+                    delay = initial_delays[attempt]
+                else:
+                    # Cap at 30 seconds to avoid worker timeouts
+                    delay = min(15 * (1.2 ** (attempt - len(initial_delays))), 30)
 
-            logger.info(
-                f"Waiting {delay} seconds before checking prediction status again (attempt {attempt+1}/{max_attempts})"
-            )
-            time.sleep(delay)
+                logger.info(
+                    f"Waiting {delay} seconds before checking prediction status again (attempt {attempt+1}/{max_attempts})"
+                )
+                time.sleep(delay)
 
-            # Reload prediction status
-            prediction.reload()
-            attempt += 1
+                # Reload prediction status
+                try:
+                    prediction.reload()
+                except Exception as reload_error:
+                    logger.warning(f"Error reloading prediction status: {reload_error}")
+                    # If reload fails, continue to next attempt rather than failing
+                    attempt += 1
+                    continue
 
-            # Update progress information
-            predictions_db[prediction_id][
-                "status_message"
-            ] = f"Waiting for embeddings (attempt {attempt}/{max_attempts})"
+                # Update progress information
+                predictions_db[prediction_id][
+                    "status_message"
+                ] = f"Processing embeddings (attempt {attempt}/{max_attempts})"
+
+                attempt += 1
+
+            except Exception as e:
+                logger.warning(f"Error during status check: {e}")
+                # Don't increment attempt on error, just continue with shorter delay
+                time.sleep(5)
+                continue
 
         if attempt >= max_attempts:
-            predictions_db[prediction_id]["status"] = "failed"
-            predictions_db[prediction_id]["error"] = "Timed out waiting for embeddings"
+            # Check if we have the prediction in our local database
+            try:
+                local_prediction = prisma_client.get_webhook_result(prediction_id)
+                if local_prediction and local_prediction.get("status") == "success":
+                    logger.info(
+                        f"Found completed prediction {prediction_id} in local database"
+                    )
+                    predictions_db[prediction_id]["status"] = "completed"
+                    predictions_db[prediction_id]["results"] = local_prediction.get(
+                        "data", []
+                    )
+                    return
+            except Exception as db_error:
+                logger.warning(f"Error checking local database: {db_error}")
+
+            # If we reach max attempts but haven't failed, assume it's still processing
+            predictions_db[prediction_id]["status"] = "processing"
+            predictions_db[prediction_id]["status_message"] = "Processing continues..."
             return
 
         # Process the results
@@ -913,6 +981,23 @@ def process_classification(prediction_id: str, transactions: List[dict], user_id
         try:
             # Get new embeddings from the prediction output
             if not prediction.output:
+                # Check local database before failing
+                try:
+                    local_prediction = prisma_client.get_webhook_result(prediction_id)
+                    if local_prediction and local_prediction.get("status") == "success":
+                        logger.info(
+                            f"Found results in local database for prediction {prediction_id}"
+                        )
+                        predictions_db[prediction_id]["status"] = "completed"
+                        predictions_db[prediction_id]["results"] = local_prediction.get(
+                            "data", []
+                        )
+                        return
+                except Exception as db_error:
+                    logger.warning(
+                        f"Error checking local database for results: {db_error}"
+                    )
+
                 predictions_db[prediction_id]["status"] = "failed"
                 predictions_db[prediction_id][
                     "error"
