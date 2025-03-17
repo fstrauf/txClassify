@@ -1,5 +1,5 @@
-// const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
-const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
+const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
+// const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
 
 // Add menu to the spreadsheet
 function onOpen(e) {
@@ -825,6 +825,17 @@ function categoriseTransactions(config) {
           
           google.script.run
             .withSuccessHandler(function(result) {
+              // Handle invalid or null result
+              if (!result) {
+                errorCount++;
+                updateProgress(lastProgress, "Received invalid response from server, retrying...", true);
+                setTimeout(pollStatus, POLL_INTERVAL);
+                return;
+              }
+              
+              // Reset error count on success
+              errorCount = 0;
+              
               if (result.status === "completed") {
                 updateProgress(100, "Categorisation completed successfully!");
                 setTimeout(() => google.script.host.close(), 2000);
@@ -832,7 +843,7 @@ function categoriseTransactions(config) {
               }
               
               if (result.status === "failed") {
-                document.getElementById("status").innerHTML = '<span class="error">Error: ' + result.message + '</span>';
+                document.getElementById("status").innerHTML = '<span class="error">Error: ' + (result.message || "Unknown error") + '</span>';
                 return;
               }
 
@@ -840,7 +851,7 @@ function categoriseTransactions(config) {
               if (result.message && result.message.includes("Server")) {
                 updateProgress(lastProgress, result.message, true);
               } else {
-                updateProgress(result.progress, result.message);
+                updateProgress(result.progress, result.message || "Processing...");
               }
               
               setTimeout(pollStatus, POLL_INTERVAL);
@@ -850,9 +861,9 @@ function categoriseTransactions(config) {
               
               // After multiple errors, show warning but keep trying
               if (errorCount > 3) {
-                updateProgress(lastProgress, "Server busy, still processing...", true);
+                updateProgress(lastProgress, "Server busy, still processing... (" + errorCount + " errors)", true);
               } else {
-                updateProgress(lastProgress, "Processing continues...");
+                updateProgress(lastProgress, "Processing continues... (Error: " + error + ")", true);
               }
 
               // Use fixed delay for retries
@@ -1109,6 +1120,14 @@ function showTrainingProgress(transactions, config) {
         
         google.script.run
           .withSuccessHandler(function(result) {
+            // Handle invalid or null result
+            if (!result) {
+              errorCount++;
+              updateProgress(lastProgress, "Received invalid response from server, retrying...", true);
+              setTimeout(pollStatus, POLL_INTERVAL);
+              return;
+            }
+            
             errorCount = 0; // Reset error count on success
             
             if (result.status === "completed") {
@@ -1118,7 +1137,7 @@ function showTrainingProgress(transactions, config) {
             }
             
             if (result.status === "failed") {
-              document.getElementById("status").innerHTML = '<span class="error">Error: ' + result.message + '</span>';
+              document.getElementById("status").innerHTML = '<span class="error">Error: ' + (result.message || "Unknown error") + '</span>';
               return;
             }
 
@@ -1126,7 +1145,7 @@ function showTrainingProgress(transactions, config) {
             if (result.message && (result.message.includes("Server") || result.message.includes("processing"))) {
               updateProgress(lastProgress, result.message, true);
             } else {
-              updateProgress(result.progress, result.message);
+              updateProgress(result.progress, result.message || "Processing...");
             }
             
             // Always use fixed interval
@@ -1137,9 +1156,9 @@ function showTrainingProgress(transactions, config) {
             
             // After multiple errors, show warning but keep trying
             if (errorCount > 3) {
-              updateProgress(lastProgress, "Server busy, still processing...", true);
+              updateProgress(lastProgress, "Server busy, still processing... (" + errorCount + " errors)", true);
             } else {
-              updateProgress(lastProgress, "Processing continues...");
+              updateProgress(lastProgress, "Processing continues... (Error: " + error + ")", true);
             }
 
             // Always use fixed interval for retries
@@ -1201,8 +1220,21 @@ function pollOperationStatus() {
       };
     }
 
-    // Parse the successful response
-    var result = JSON.parse(response.getContentText());
+    // Parse the successful response with error handling
+    var result;
+    try {
+      var responseText = response.getContentText();
+      Logger.log("Response text: " + responseText);
+      result = JSON.parse(responseText);
+    } catch (parseError) {
+      Logger.log("Error parsing JSON response: " + parseError + ", Response: " + responseText);
+      // If we can't parse the response, assume processing is still ongoing
+      return {
+        status: "in_progress",
+        message: "Processing continues (server response error)...",
+        progress: 50,
+      };
+    }
 
     // Handle completed state
     if (result.status === "completed" || result.status === "succeeded") {
@@ -1342,8 +1374,11 @@ function startTraining() {
     // Parse the response
     var result;
     try {
-      result = JSON.parse(response.getContentText());
+      var responseText = response.getContentText();
+      Logger.log("Response text: " + responseText);
+      result = JSON.parse(responseText);
     } catch (e) {
+      Logger.log("Error parsing JSON response: " + e + ", Response: " + responseText);
       return { error: "Invalid response from server: " + e.toString() };
     }
 
