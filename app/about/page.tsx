@@ -10,12 +10,12 @@ export default function About() {
           </h1>
           <div className="max-w-3xl mx-auto space-y-8">
             <p className="text-xl text-gray-700 text-center">
-              This is how I do my expenses. I thought the approach was quite good,
-              so I built this page to share it with others.
+              This is how I do my expenses. I thought the approach was quite good, so I built this page to share it with
+              others.
             </p>
             <p className="text-gray-700 text-center">
               I regularly post updates and other content on this topic -{" "}
-              <a 
+              <a
                 className="text-primary hover:text-primary-dark underline transition-colors"
                 href="https://twitter.com/ffstrauf"
                 target="_blank"
@@ -24,9 +24,9 @@ export default function About() {
                 follow me on Twitter
               </a>{" "}
               or{" "}
-              <a 
+              <a
                 className="text-primary hover:text-primary-dark underline transition-colors"
-                href="https://florianstrauf.substack.com/"
+                href="https://ffstrauf.substack.com/"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -35,14 +35,12 @@ export default function About() {
               .
             </p>
             <div className="pt-8">
-              <h2 className="text-3xl font-bold text-gray-900 text-center mb-6">
-                Our Mission
-              </h2>
+              <h2 className="text-3xl font-bold text-gray-900 text-center mb-6">Our Mission</h2>
               <p className="text-xl text-gray-700 text-center">
-                Most people currently use something like rule-based categorisation.
-                I want to simplify this. I hope that by using the{" "}
-                <Link 
-                  href="/fuck-you-money-sheet" 
+                Most people currently use something like rule-based categorisation. I want to simplify this. I hope that
+                by using the{" "}
+                <Link
+                  href="/fuck-you-money-sheet"
                   className="text-primary hover:text-primary-dark underline transition-colors"
                 >
                   Google Sheets™ Template
