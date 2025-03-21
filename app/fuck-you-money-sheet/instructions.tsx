@@ -96,7 +96,7 @@ export default function Instructions() {
             />
           </div>
         </li>
-        <li>Start saving up fuck you money</li>
+        <li>Start building your financial freedom fund</li>
       </ol>
       <p className="text-gray-700 mt-6">
         To get into the right mood of why to use this, I recommend reading this:{" "}
@@ -104,7 +104,7 @@ export default function Instructions() {
           href="https://ffstrauf.substack.com/p/fuck-you-money-doesnt-mean-you-need"
           className="text-primary hover:text-primary-dark underline"
         >
-          Fuck You Money Doesn't Mean You Need To Be Rich
+          Financial Freedom Doesn't Mean You Need To Be Rich
         </a>
       </p>
     </section>
