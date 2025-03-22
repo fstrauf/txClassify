@@ -182,21 +182,21 @@ const startFlaskServer = async (port) => {
 };
 
 // Load training data from CSV
-const loadTrainingData = () => {
+const loadTrainingData = (file_name) => {
   return new Promise((resolve, reject) => {
     const results = [];
     const startTime = Date.now();
 
     // Use full_train.csv instead of training_data.csv
-    fs.createReadStream(path.join(__dirname, "test_data", "full_train.csv"))
+    fs.createReadStream(path.join(__dirname, "test_data", file_name))
       .pipe(csv())
       .on("data", (data) => {
         // Map fields to match expected format
         const transaction = {
-          Narrative: data.description || data.Narrative || data.narrative,
+          description: data.description,
           Category: data.category || data.Category,
         };
-        if (transaction.Narrative && transaction.Category) {
+        if (transaction.description && transaction.Category) {
           results.push(transaction);
         }
       })
@@ -214,32 +214,30 @@ const loadTrainingData = () => {
 };
 
 // Load categorization data
-const loadCategorizationData = () => {
+const loadCategorizationData = (file_name) => {
   return new Promise((resolve, reject) => {
-    const results = [];
-    const targetCsvPath = path.join(process.cwd(), "txConverter", "data", "target.csv");
+    const descriptions = [];
+    const targetCsvPath = path.join(__dirname, "test_data", file_name);
 
-    logDebug("Loading categorization data from target.csv...");
+    logDebug(`Loading categorization data from ${file_name}...`);
 
-    // Read the CSV file
+    // Read the CSV file - our file has no headers and description is in column 3
     fs.createReadStream(targetCsvPath)
-      .pipe(csv())
+      .pipe(csv({ headers: false }))
       .on("data", (data) => {
-        // Map the fields to match expected format
-        const transaction = {
-          Narrative: data.description,
-          amount: parseFloat(data.amount),
-          currency: data.currency,
-          date: data.date,
-        };
-        results.push(transaction);
+        // Extract the description from the 3rd column (index 2)
+        if (data[2]) {
+          descriptions.push(data[2]);
+        } else {
+          logDebug(`Skipping row with missing description: ${JSON.stringify(data)}`);
+        }
       })
       .on("end", () => {
-        logInfo(`Loaded ${results.length} transactions from target.csv`);
-        resolve(results);
+        logInfo(`Loaded ${descriptions.length} descriptions from ${file_name}`);
+        resolve(descriptions);
       })
       .on("error", (error) => {
-        logError(`Error loading target.csv: ${error.message}`);
+        logError(`Error loading ${file_name}: ${error.message}`);
         reject(error);
       });
   });
@@ -256,8 +254,7 @@ const trainModel = async (config) => {
       throw new Error("Configuration object is missing");
     }
 
-    // Load training data
-    const trainingData = await loadTrainingData();
+    const trainingData = config.trainingDataFile;
 
     if (trainingData.length === 0) {
       logError("Error: No training data found");
@@ -633,17 +630,13 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
 // Test categorization flow
 const categoriseTransactions = async (config) => {
   try {
-    console.log("Categorizing transactions...");
-
-    // Load test data
-    const transactions = await loadCategorizationData();
-    logInfo(`Processing ${transactions.length} transactions for categorisation...`);
-
-    // Prepare request data
+    // Prepare request data with formatted transactions
     const requestData = {
-      transactions,
+      transactions: config.categorizationDataFile,
       spreadsheetId: "test-sheet-id",
-      userId: config.userId,
+      sheetName: "test-sheet",
+      categoryColumn: "E",
+      startRow: "1",
     };
 
     // Send request to classify endpoint
@@ -688,7 +681,6 @@ const categoriseTransactions = async (config) => {
 
     while (pollingAttempt < maxPollingAttempts) {
       process.stdout.write(".");
-
       try {
         statusResponse = await axios.get(`${config.serviceUrl}/status/${predictionId}`, {
           headers: {
@@ -696,6 +688,8 @@ const categoriseTransactions = async (config) => {
             "X-API-Key": config.apiKey,
           },
         });
+
+        console.log("statusResponse.data", statusResponse.data);
 
         const status = statusResponse.data.status;
         const message = statusResponse.data.message || "Processing in progress";
@@ -732,12 +726,21 @@ const categoriseTransactions = async (config) => {
     let results = [];
 
     if (statusResponse && statusResponse.data) {
-      if (statusResponse.data.results) {
+      logInfo(`Status response data: ${JSON.stringify(statusResponse.data)}`);
+
+      if (statusResponse.data.results && Array.isArray(statusResponse.data.results)) {
         results = statusResponse.data.results;
-        logInfo("Found results array directly in response");
+        logInfo(`Found ${results.length} results directly in response.results`);
       } else if (statusResponse.data.result && statusResponse.data.result.results) {
-        results = statusResponse.data.result.results.data;
-        logInfo("Found results array in result.results");
+        results = statusResponse.data.result.results;
+        logInfo(`Found results in result.results`);
+      } else if (statusResponse.data.message && statusResponse.data.status === "completed") {
+        // No results array but completed status - success with no data
+        logInfo("No detailed results array found, but status is completed");
+        console.log(`\n===== CATEGORISATION COMPLETED =====`);
+        console.log(`Message: ${statusResponse.data.message}`);
+        console.log(`=====================================\n`);
+        return { status: "completed", message: statusResponse.data.message };
       } else {
         console.log("No results array found in the response");
       }
@@ -866,7 +869,7 @@ const main = async () => {
             api_key: TEST_API_KEY,
             categorisationRange: "A:D",
             categorisationTab: "Sheet1",
-            columnOrderCategorisation: JSON.stringify(["Date", "Amount", "Description", "Currency"]),
+            // columnOrderCategorisation: JSON.stringify(["Date", "Amount", "Description", "Currency"]),
           },
         });
       }
@@ -886,10 +889,10 @@ const main = async () => {
     logDebug(`Using API URL: ${apiUrl}`);
 
     // Load test data
-    const trainingData = await loadTrainingData();
+    const trainingData = await loadTrainingData("training_test.csv");
     logInfo(`Loaded training data with ${trainingData.length} rows`);
 
-    const categorizationData = await loadCategorizationData();
+    const categorizationData = await loadCategorizationData("categorise_test.csv");
     logInfo(`Loaded categorization data with ${categorizationData.length} rows`);
 
     // Create test configuration
@@ -901,6 +904,8 @@ const main = async () => {
       categoryCol: "C", // Column containing categories
       startRow: 2, // Start row (assuming header in row 1)
       testMode: true, // Flag to indicate we're in test mode
+      trainingDataFile: trainingData,
+      categorizationDataFile: categorizationData, // Just pass the filename
     };
 
     logDebug(`Test configuration: ${JSON.stringify(config, null, 2)}`);

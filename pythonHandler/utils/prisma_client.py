@@ -354,30 +354,11 @@ class PrismaClient:
             # Ensure client is connected
             self.connect()
 
-            # Convert results to a JSON string
+            # Just store the results exactly as they are
             import json
 
-            # Create a simple structure with the results
-            if (
-                isinstance(results, dict)
-                and "data" in results
-                and isinstance(results["data"], list)
-            ):
-                # Use the provided data
-                json_data = {
-                    "status": "success",
-                    "message": "Classification completed",
-                    "data": results["data"],
-                }
-            else:
-                # Create a simple structure
-                json_data = {
-                    "status": "success",
-                    "message": "Results available in logs",
-                }
-
             # Convert to JSON string
-            json_string = json.dumps(json_data)
+            json_string = json.dumps(results)
 
             # Escape single quotes in the JSON string for SQL
             json_string = json_string.replace("'", "''")
@@ -429,22 +410,12 @@ class PrismaClient:
                     return {
                         "id": result["id"],
                         "prediction_id": result["prediction_id"],
-                        "results": json_data,
+                        "results": results,
                         "created_at": result["created_at"],
                     }
             except Exception as db_error:
                 logger.error(f"Error executing raw SQL: {str(db_error)}")
-
-                # Fall back to returning a dummy result
-                logger.info(
-                    f"Returning dummy result for prediction_id: {prediction_id}"
-                )
-                return {
-                    "id": "generated-id",
-                    "prediction_id": prediction_id,
-                    "results": json_data,
-                    "created_at": None,
-                }
+                return None
 
             return None
         except Exception as e:
@@ -463,13 +434,26 @@ class PrismaClient:
             )
 
             if webhook_result:
+                # Log the raw webhook result for debugging
+                logger.info(f"Raw webhook result: {webhook_result}")
+
                 # Convert to dictionary for consistent access
-                return {
+                result = {
                     "id": webhook_result.id,
                     "prediction_id": webhook_result.prediction_id,
-                    "results": webhook_result.results,
                     "created_at": webhook_result.created_at,
                 }
+
+                # Add results field if it exists and is valid
+                if hasattr(webhook_result, "results") and webhook_result.results:
+                    try:
+                        # Directly return the results field which contains our config data
+                        return webhook_result.results
+                    except Exception as e:
+                        logger.error(f"Error parsing webhook result: {str(e)}")
+                        result["results"] = webhook_result.results
+
+                return result
             return None
         except Exception as e:
             logger.error(f"Error getting webhook result: {str(e)}")
