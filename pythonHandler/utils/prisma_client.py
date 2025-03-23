@@ -4,6 +4,7 @@ from prisma import Prisma
 from prisma.errors import PrismaError
 import base64
 from datetime import datetime
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -354,70 +355,77 @@ class PrismaClient:
             # Ensure client is connected
             self.connect()
 
-            # Just store the results exactly as they are
-            import json
+            logger.info(f"Inserting webhook result for prediction_id: {prediction_id}")
 
-            # Convert to JSON string
-            json_string = json.dumps(results)
-
-            # Escape single quotes in the JSON string for SQL
-            json_string = json_string.replace("'", "''")
-
-            # Create a raw SQL query
-            raw_sql = f"""
-            INSERT INTO webhook_results (prediction_id, results)
-            VALUES ('{prediction_id}', '{json_string}'::jsonb)
-            ON CONFLICT (prediction_id) 
-            DO UPDATE SET results = '{json_string}'::jsonb
-            RETURNING id, prediction_id, created_at;
-            """
-
-            # Log the SQL query for debugging
-            logger.debug(f"Raw SQL query: {raw_sql}")
+            # Ensure results is properly JSON serialized
+            if isinstance(results, dict) or isinstance(results, list):
+                try:
+                    # Convert dict/list to json string
+                    results_json = json.dumps(results)
+                    logger.info(
+                        f"Converted dict/list to JSON string for webhook result storage"
+                    )
+                except Exception as json_error:
+                    logger.error(f"Error converting results to JSON: {json_error}")
+                    # If JSON conversion fails, try to store a minimal dict with just spreadsheet_id
+                    if isinstance(results, dict) and "spreadsheet_id" in results:
+                        try:
+                            results_json = json.dumps(
+                                {"spreadsheet_id": results["spreadsheet_id"]}
+                            )
+                            logger.info("Created minimal JSON with just spreadsheet_id")
+                        except:
+                            results_json = json.dumps(
+                                {"error": "Failed to convert original data"}
+                            )
+                    else:
+                        results_json = json.dumps(
+                            {"error": "Failed to convert original data"}
+                        )
+            else:
+                # If it's already a string, assume it's JSON
+                results_json = (
+                    results
+                    if isinstance(results, str)
+                    else json.dumps({"error": "Invalid data type"})
+                )
 
             try:
-                # Execute the raw SQL query using psycopg2
-                import psycopg2
-                from psycopg2.extras import RealDictCursor
+                # Use Prisma client to create or update webhook result
+                webhook_result = self.client.webhookresult.upsert(
+                    where={"prediction_id": prediction_id},
+                    data={
+                        "create": {
+                            "prediction_id": prediction_id,
+                            "results": results_json,
+                        },
+                        "update": {"results": results_json},
+                    },
+                )
 
-                # Get the database URL from environment
-                database_url = os.environ.get("DATABASE_URL")
-                if not database_url:
-                    logger.error("DATABASE_URL environment variable not set")
-                    return None
-
-                # Connect to the database
-                conn = psycopg2.connect(database_url)
-                cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-                # Execute the query
-                cursor.execute(raw_sql)
-
-                # Get the result
-                result = cursor.fetchone()
-
-                # Commit the transaction
-                conn.commit()
-
-                # Close the cursor and connection
-                cursor.close()
-                conn.close()
-
-                if result:
+                if webhook_result:
                     logger.info(
                         f"Successfully stored webhook result for prediction_id: {prediction_id}"
                     )
                     return {
-                        "id": result["id"],
-                        "prediction_id": result["prediction_id"],
+                        "id": webhook_result.id,
+                        "prediction_id": webhook_result.prediction_id,
                         "results": results,
-                        "created_at": result["created_at"],
+                        "created_at": webhook_result.created_at,
                     }
-            except Exception as db_error:
-                logger.error(f"Error executing raw SQL: {str(db_error)}")
                 return None
 
-            return None
+            except Exception as prisma_error:
+                logger.error(
+                    f"Error using Prisma to insert webhook result: {str(prisma_error)}"
+                )
+
+                # If Prisma fails, log the issue
+                logger.warning(
+                    f"Prisma operation failed, webhook result may not be stored properly"
+                )
+                return None
+
         except Exception as e:
             logger.error(f"Error inserting webhook result: {str(e)}")
             # Don't raise the exception, just log it and return None
@@ -447,10 +455,29 @@ class PrismaClient:
                 # Add results field if it exists and is valid
                 if hasattr(webhook_result, "results") and webhook_result.results:
                     try:
-                        # Directly return the results field which contains our config data
-                        return webhook_result.results
+                        # First check if it's already a dictionary or other object
+                        if isinstance(webhook_result.results, (dict, list)):
+                            return webhook_result.results
+
+                        # If it's a string, try to parse it as JSON
+                        if isinstance(webhook_result.results, str):
+                            try:
+                                parsed_results = json.loads(webhook_result.results)
+                                logger.info(
+                                    f"Successfully parsed JSON results from webhook_result"
+                                )
+                                return parsed_results
+                            except json.JSONDecodeError as e:
+                                logger.error(f"Error parsing webhook result JSON: {e}")
+                                result["results"] = webhook_result.results
+                        else:
+                            # Non-string, non-dict, just return it as is
+                            logger.warning(
+                                f"Webhook result is neither string nor dict: {type(webhook_result.results)}"
+                            )
+                            return webhook_result.results
                     except Exception as e:
-                        logger.error(f"Error parsing webhook result: {str(e)}")
+                        logger.error(f"Error processing webhook result: {str(e)}")
                         result["results"] = webhook_result.results
 
                 return result
