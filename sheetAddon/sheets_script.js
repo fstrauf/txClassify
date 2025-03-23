@@ -1,5 +1,5 @@
-const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
-// const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
+// const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
+const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
 
 // Add menu to the spreadsheet
 function onOpen(e) {
@@ -692,7 +692,24 @@ function categoriseTransactions(config) {
       .filter((row) => row[0] && row[0].toString().trim() !== "");
 
     // Store original descriptions for logging
-    var originalDescriptions = descriptionsData.map((row) => row[0].toString().trim());
+    var originalDescriptions = descriptionsData.map((row) => {
+      var desc = row[0];
+      // Ensure it's a string
+      if (typeof desc !== "string") {
+        desc = String(desc);
+      }
+      return desc.toString().trim();
+    });
+
+    // Validate descriptions
+    var invalidDescriptions = originalDescriptions.filter((desc) => !desc || desc.length === 0);
+    if (invalidDescriptions.length > 0) {
+      Logger.log(
+        `Found ${invalidDescriptions.length} invalid descriptions out of ${originalDescriptions.length} total`
+      );
+      // Filter out invalid descriptions
+      originalDescriptions = originalDescriptions.filter((desc) => desc && desc.length > 0);
+    }
 
     // Extract just the strings for the updated API format
     var descriptions = originalDescriptions;
@@ -712,6 +729,13 @@ function categoriseTransactions(config) {
       startRow: startRow.toString(),
       categoryColumn: config.categoryCol,
     });
+
+    // Log payload size for debugging
+    Logger.log("Payload size: " + payload.length + " bytes");
+    if (payload.length > 1000000) {
+      // If payload is very large, log a warning
+      Logger.log("Warning: Large payload size may cause issues with the API");
+    }
 
     // Make API call with retry logic
     var maxRetries = 3;
@@ -760,8 +784,21 @@ function categoriseTransactions(config) {
       }
     }
 
-    var result = JSON.parse(response.getContentText());
-    Logger.log("Categorisation response: " + JSON.stringify(result));
+    var result;
+    try {
+      var responseText = response.getContentText();
+      Logger.log("Raw response: " + responseText);
+      result = JSON.parse(responseText);
+
+      if (result.error) {
+        throw new Error("API error: " + result.error);
+      }
+
+      Logger.log("Categorisation response: " + JSON.stringify(result));
+    } catch (parseError) {
+      Logger.log("Error parsing response: " + parseError);
+      throw new Error("Error processing server response: " + parseError.toString());
+    }
 
     if (!result.prediction_id) {
       throw new Error("No prediction ID received from server");
@@ -956,11 +993,37 @@ function trainModel(config) {
     // Prepare training data
     var transactions = [];
     for (var i = 0; i < narratives.length; i++) {
-      if (narratives[i][0] && categories[i][0]) {
+      try {
+        // Skip empty rows or rows with invalid data
+        if (!narratives[i][0] || !categories[i][0]) {
+          continue;
+        }
+
+        // Ensure both values are strings
+        var narrative = String(narratives[i][0]).trim();
+        var category = String(categories[i][0]).trim();
+
+        // Skip rows with empty data after trimming
+        if (narrative === "" || category === "") {
+          continue;
+        }
+
+        // Check for descriptions that might be cut off or have formatting issues
+        if (narrative.length > 200) {
+          // Truncate long descriptions to prevent issues
+          Logger.log(`Truncating long description (${narrative.length} chars): ${narrative.substring(0, 30)}...`);
+          narrative = narrative.substring(0, 200);
+        }
+
+        // Add valid transaction to the array
         transactions.push({
-          Narrative: narratives[i][0],
-          Category: categories[i][0],
+          Narrative: narrative,
+          Category: category,
         });
+      } catch (rowError) {
+        // Log error but continue processing
+        Logger.log(`Error processing row ${i + 1}: ${rowError}`);
+        continue;
       }
     }
 
@@ -1164,12 +1227,46 @@ function startTraining() {
 
     // Transform data format to match the updated API requirements
     // The API expects Transaction objects with description and Category fields
-    var transformedTransactions = transactions.map(function (t) {
+    var transformedTransactions = transactions
+      .map(function (t) {
+        // Make sure description is a valid string
+        var description = t.Narrative || t.description || t.Description || "";
+        if (typeof description !== "string") {
+          description = String(description);
+        }
+        // Trim and ensure it's not empty
+        description = description.trim();
+        if (!description) {
+          description = "Unknown transaction";
+        }
+
+        var category = t.Category || t.category || "";
+        if (typeof category !== "string") {
+          category = String(category);
+        }
+
+        return {
+          description: description,
+          Category: category,
+        };
+      })
+      // Filter out any potentially problematic transactions
+      .filter(function (t) {
+        // Remove entries with empty descriptions or categories
+        return t.description.length > 0 && t.Category.length > 0;
+      });
+
+    // Log transaction counts for debugging
+    Logger.log(
+      `Original transaction count: ${transactions.length}, Validated transaction count: ${transformedTransactions.length}`
+    );
+
+    // Check if we have enough valid transactions
+    if (transformedTransactions.length < 10) {
       return {
-        description: t.Narrative || t.description || t.Description || "",
-        Category: t.Category || t.category || "",
+        error: `Not enough valid transactions. Found only ${transformedTransactions.length} valid transactions after validation. At least 10 are required.`,
       };
-    });
+    }
 
     // Prepare payload with the new format
     var payload = JSON.stringify({
@@ -1232,7 +1329,36 @@ function startTraining() {
 
     // Parse response
     try {
-      var result = JSON.parse(response.getContentText());
+      var responseText = response.getContentText();
+      Logger.log("Raw training response: " + responseText);
+
+      var result;
+      try {
+        result = JSON.parse(responseText);
+      } catch (jsonError) {
+        Logger.log("Error parsing JSON response: " + jsonError);
+        return { error: "Invalid JSON response from server" };
+      }
+
+      // Check for error response
+      if (result.error) {
+        Logger.log("API returned error: " + result.error);
+
+        // Special handling for validation errors
+        if (result.details && Array.isArray(result.details)) {
+          var validationErrors = result.details
+            .map((err) => {
+              return `Field ${err.location}: ${err.message}`;
+            })
+            .join(", ");
+
+          Logger.log("Validation errors: " + validationErrors);
+          return { error: "Validation error: " + validationErrors };
+        }
+
+        return { error: "API error: " + result.error };
+      }
+
       Logger.log("Training response: " + JSON.stringify(result));
 
       if (!result.prediction_id) {
@@ -1249,7 +1375,7 @@ function startTraining() {
 
       // Track the training operation in stats
       updateStats("training_operations", 1);
-      updateStats("trained_transactions", transactions.length);
+      updateStats("trained_transactions", transformedTransactions.length);
 
       // Show the polling dialog
       showPollingDialog();

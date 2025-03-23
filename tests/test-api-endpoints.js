@@ -897,7 +897,8 @@ const main = async () => {
     logDebug(`Using API URL: ${apiUrl}`);
 
     // Load test data
-    const trainingData = await loadTrainingData("training_test.csv");
+    // const trainingData = await loadTrainingData("training_test.csv");
+    const trainingData = await loadTrainingData("full_train.csv");
     logInfo(`Loaded training data with ${trainingData.length} rows`);
 
     const categorizationData = await loadCategorizationData("categorise_test.csv");
