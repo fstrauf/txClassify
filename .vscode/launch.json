@@ -1,0 +1,24 @@
+// .vscode/launch.json
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python Debugger: Flask",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "flask",
+        "env": {
+          "FLASK_APP": "pythonHandler/main.py",
+          "FLASK_DEBUG": "1"
+        },
+        "args": [
+          "run",
+          "--port=5003",          // <--- add this
+          "--no-debugger",
+          "--no-reload"
+        ],
+        "jinja": true,
+        "autoStartBrowser": false
+      }
+    ]
+  }
