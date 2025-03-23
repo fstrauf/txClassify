@@ -15,7 +15,6 @@ import uuid
 import time
 from typing import List, Optional
 from utils.prisma_client import prisma_client
-import psycopg2
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -193,25 +192,10 @@ def health():
 
     # Check database connection
     try:
-        # Use psycopg2 to check database connection
-        conn = psycopg2.connect(
-            host=os.environ.get("PGHOST_UNPOOLED"),
-            database=os.environ.get("PGDATABASE"),
-            user=os.environ.get("PGUSER"),
-            password=os.environ.get("PGPASSWORD"),
-            sslmode="require",
-            connect_timeout=5,
-        )
+        # Use prisma_client to check database connection
+        connected = prisma_client.connect()
 
-        # Execute a simple query
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            result = cur.fetchone()
-
-        # Close the connection
-        conn.close()
-
-        if result and result[0] == 1:
+        if connected:
             health_status["components"]["database"] = "healthy"
         else:
             health_status["components"]["database"] = "unhealthy"
@@ -226,8 +210,21 @@ def health():
     return jsonify(health_status)
 
 
-def validate_api_key(api_key: str) -> str:
-    """Validate API key and return user ID if valid."""
+def validate_api_key(api_key: str, track_usage: bool = True) -> str:
+    """
+    Validate API key and return user ID if valid.
+
+    Args:
+        api_key: The API key to validate
+        track_usage: Whether to track API usage (default: True)
+
+    Returns:
+        str: User ID if valid, empty string if invalid
+    """
+    if not api_key:
+        logger.error("Empty API key provided")
+        return ""
+
     try:
         # Clean the API key
         api_key = api_key.strip()
@@ -244,32 +241,34 @@ def validate_api_key(api_key: str) -> str:
             logger.error(
                 f"No account found for API key: {api_key[:4]}...{api_key[-4:]}"
             )
-            raise Exception("Invalid API key - no matching account found")
+            return ""
 
         # Log the found user data (excluding sensitive info)
         logger.info(f"Found user data - userId: {account['userId']}")
 
         if not account["userId"]:
             logger.error("User data found but missing userId")
-            raise Exception("Invalid user configuration - missing userId")
+            return ""
 
-        # Track API usage on successful validation
-        try:
-            prisma_client.track_api_usage(api_key)
-            logger.debug(f"Tracked API usage for key: {api_key[:4]}...{api_key[-4:]}")
-        except Exception as tracking_error:
-            # Don't fail the validation if tracking fails
-            logger.warning(f"Error tracking API usage: {tracking_error}")
+        # Track API usage on successful validation if requested
+        if track_usage:
+            try:
+                prisma_client.track_api_usage(api_key)
+                logger.debug(
+                    f"Tracked API usage for key: {api_key[:4]}...{api_key[-4:]}"
+                )
+            except Exception as tracking_error:
+                # Don't fail the validation if tracking fails
+                logger.warning(f"Error tracking API usage: {tracking_error}")
 
         return account["userId"]
 
     except Exception as e:
         logger.error(f"Error validating API key: {str(e)}")
-        logger.error(f"Full error details: {e}")
         logger.error(
-            f"API key validation failed for key: {api_key[:4]}...{api_key[-4:]}"
+            f"API key validation failed for key: {api_key[:4] if len(api_key) >= 4 else ''}...{api_key[-4:] if len(api_key) >= 4 else ''}"
         )
-        raise Exception(f"API key validation failed: {str(e)}")
+        return ""
 
 
 def update_process_status(status_text: str, mode: str, user_id: str) -> None:
@@ -454,26 +453,25 @@ def train_model():
         user_id = None
         api_key = request.headers.get("X-API-Key")
 
-        # First try to validate API key if provided
+        # First try to validate API key if provided - simplified
         if api_key:
-            try:
-                user_id = validate_api_key(api_key)
+            user_id = validate_api_key(api_key)
+            if user_id:
                 logger.info(f"Got user_id from API key validation: {user_id}")
-
-                # Track API usage explicitly for the training endpoint
-                prisma_client.track_api_usage(api_key)
-                logger.info(f"Tracked API usage for training endpoint")
-            except Exception as e:
-                # If API key validation fails and we're not in fallback mode, return error
-                if not validated_data.userId:
-                    logger.error(
-                        f"API key validation failed and no userId provided in payload: {str(e)}"
-                    )
-                    return create_error_response(
-                        f"API key validation failed: {str(e)}", 401
-                    )
-                logger.error(f"API key validation failed: {str(e)}")
-                logger.info("Falling back to userId from payload")
+            elif not validated_data.userId:
+                return create_error_response(
+                    "Invalid API key and no userId provided in payload", 401
+                )
+            else:
+                logger.info(
+                    "API key validation failed, falling back to userId from payload"
+                )
+                user_id = validated_data.userId
+        else:
+            # If no API key, use userId from payload
+            user_id = validated_data.userId
+            if not user_id:
+                return create_error_response("No API key or userId provided", 401)
 
         # Create or update user configuration
         try:
@@ -708,16 +706,12 @@ def classify_transactions():
             f"Processing classify request with spreadsheet_id: {spreadsheet_id}"
         )
 
-        # Validate API key and get user ID
-        try:
-            user_id = validate_api_key(api_key)
-            logger.info(f"API key validated for user: {user_id}")
+        # Validate API key and get user ID - simplified
+        user_id = validate_api_key(api_key)
+        if not user_id:
+            return create_error_response("Invalid API key", 401)
 
-            # Track API usage
-            prisma_client.track_api_usage(api_key)
-        except Exception as e:
-            logger.error(f"API key validation failed: {e}")
-            return create_error_response(f"API key validation failed: {str(e)}", 401)
+        logger.info(f"API key validated for user: {user_id}")
 
         # Verify training data exists
         try:
@@ -778,18 +772,52 @@ def classify_transactions():
         logger.info(f"Storing config data: {json.dumps(config_data)}")
 
         # Store the configuration
-        store_result = prisma_client.insert_webhook_result(prediction.id, config_data)
+        try:
+            # First try to see if there's already a record for this prediction ID
+            existing_config = prisma_client.get_webhook_result(prediction.id)
+            if existing_config:
+                logger.info(
+                    f"Found existing configuration for prediction {prediction.id}, updating it"
+                )
+                # If it exists, make sure we merge rather than overwrite it
+                if isinstance(existing_config, dict):
+                    existing_config.update(config_data)
+                    store_result = prisma_client.insert_webhook_result(
+                        prediction.id, existing_config
+                    )
+                else:
+                    # If it's not a dict, just overwrite
+                    store_result = prisma_client.insert_webhook_result(
+                        prediction.id, config_data
+                    )
+            else:
+                # If it doesn't exist, create a new record
+                store_result = prisma_client.insert_webhook_result(
+                    prediction.id, config_data
+                )
 
-        # Verify storage was successful
-        if store_result:
-            logger.info(
-                f"Successfully stored configuration with spreadsheet_id: {spreadsheet_id}"
-            )
-        else:
-            logger.warning(
-                f"Failed to store configuration, will attempt direct database access"
-            )
-            # Additional fallback could be implemented here if needed
+            if store_result:
+                logger.info(
+                    f"Successfully stored configuration with spreadsheet_id: {spreadsheet_id}"
+                )
+            else:
+                logger.warning("Failed to store configuration - trying direct approach")
+                # Try a more direct approach
+                minimal_config = {
+                    "spreadsheet_id": str(spreadsheet_id),
+                    "user_id": user_id,
+                }
+                prisma_client.insert_webhook_result(prediction.id, minimal_config)
+        except Exception as e:
+            logger.error(f"Error storing configuration: {e}")
+            # Create a minimal configuration record
+            try:
+                minimal_config = {"spreadsheet_id": str(spreadsheet_id)}
+                prisma_client.insert_webhook_result(prediction.id, minimal_config)
+                logger.info("Created minimal configuration after error")
+            except Exception as inner_e:
+                logger.error(f"Failed to create minimal configuration: {inner_e}")
+                # Continue anyway to provide the prediction ID to the client
 
         # Return the prediction ID for status checking
         return jsonify(
@@ -812,11 +840,14 @@ def get_prediction_status(prediction_id):
         logger.info(f"Getting status for prediction: {prediction_id}")
 
         # Get prediction directly from Replicate
-        prediction = replicate.predictions.get(prediction_id)
-
-        if not prediction:
-            logger.warning(f"Prediction {prediction_id} not found in Replicate")
-            return create_error_response("Prediction not found", 404)
+        try:
+            prediction = replicate.predictions.get(prediction_id)
+            if not prediction:
+                logger.warning(f"Prediction {prediction_id} not found in Replicate")
+                return create_error_response("Prediction not found", 404)
+        except Exception as e:
+            logger.error(f"Error fetching prediction from Replicate: {e}")
+            return create_error_response(f"Error fetching prediction: {str(e)}", 500)
 
         # Get basic prediction status
         status = prediction.status
@@ -824,22 +855,96 @@ def get_prediction_status(prediction_id):
 
         # Get config data for this prediction if it exists
         config_data = prisma_client.get_webhook_result(prediction_id)
+        logger.info(
+            f"Raw config data: {json.dumps(config_data) if config_data else 'None'}"
+        )
 
-        # Log retrieved config data
-        logger.info(f"Retrieved webhook result for {prediction_id}: {config_data}")
-
-        # Log config data for debugging
-        if config_data and isinstance(config_data, dict) and config_data.get("results"):
-            config_data = config_data.get("results")
-            logger.info(f"Using results field from webhook_result")
-
-        if config_data and isinstance(config_data, dict):
-            spreadsheet_id = config_data.get("spreadsheet_id")
-            logger.info(f"Retrieved config with spreadsheet_id: {spreadsheet_id}")
-        else:
-            logger.warning(f"No config data found for prediction {prediction_id}")
-            # Create empty config_data if it doesn't exist
+        if not config_data:
             config_data = {}
+
+        # Ensure config_data is a dictionary
+        if not isinstance(config_data, dict):
+            logger.warning(f"Non-dictionary config data retrieved: {type(config_data)}")
+            try:
+                # Try to convert to dictionary if it's string JSON
+                if isinstance(config_data, str):
+                    config_data = json.loads(config_data)
+                else:
+                    config_data = {}
+            except Exception as json_error:
+                logger.error(
+                    f"Error converting config data to dictionary: {json_error}"
+                )
+                config_data = {}
+
+        # Get spreadsheet_id from config_data, handling different possible locations
+        spreadsheet_id = None
+
+        # Try direct access first
+        if "spreadsheet_id" in config_data:
+            spreadsheet_id = config_data.get("spreadsheet_id")
+            logger.info(
+                f"Found spreadsheet_id directly in config_data: {spreadsheet_id}"
+            )
+
+        # Try nested in results
+        elif isinstance(config_data, dict) and "results" in config_data:
+            if (
+                isinstance(config_data["results"], dict)
+                and "spreadsheet_id" in config_data["results"]
+            ):
+                spreadsheet_id = config_data["results"].get("spreadsheet_id")
+                logger.info(f"Found spreadsheet_id in nested results: {spreadsheet_id}")
+                # Update config_data to use the nested structure
+                config_data = config_data["results"]
+
+        # Try nested in config
+        elif isinstance(config_data, dict) and "config" in config_data:
+            if (
+                isinstance(config_data["config"], dict)
+                and "spreadsheet_id" in config_data["config"]
+            ):
+                spreadsheet_id = config_data["config"].get("spreadsheet_id")
+                logger.info(f"Found spreadsheet_id in config section: {spreadsheet_id}")
+
+        # Look for spreadsheetId (camelCase variant)
+        elif "spreadsheetId" in config_data:
+            spreadsheet_id = config_data.get("spreadsheetId")
+            logger.info(
+                f"Found spreadsheetId (camelCase) in config_data: {spreadsheet_id}"
+            )
+
+        # Final fallback - try to search all nested dictionaries for spreadsheet_id
+        if not spreadsheet_id:
+
+            def search_dict_for_key(d, target_key):
+                if isinstance(d, dict):
+                    for k, v in d.items():
+                        if k == target_key:
+                            return v
+                        if isinstance(v, (dict, list)):
+                            result = search_dict_for_key(v, target_key)
+                            if result:
+                                return result
+                elif isinstance(d, list):
+                    for item in d:
+                        if isinstance(item, (dict, list)):
+                            result = search_dict_for_key(item, target_key)
+                            if result:
+                                return result
+                return None
+
+            spreadsheet_id = search_dict_for_key(
+                config_data, "spreadsheet_id"
+            ) or search_dict_for_key(config_data, "spreadsheetId")
+            if spreadsheet_id:
+                logger.info(
+                    f"Found spreadsheet_id through deep search: {spreadsheet_id}"
+                )
+            else:
+                logger.warning(
+                    f"No spreadsheet_id found anywhere in config for prediction {prediction_id}"
+                )
 
         # If prediction is still processing, return simple status
         if status == "processing":
@@ -864,24 +969,27 @@ def get_prediction_status(prediction_id):
                     "Prediction succeeded but has no output", 500
                 )
 
-            # If we have config data, process the results
-            if config_data:
+            # If we have config data with spreadsheet_id, process the results
+            if spreadsheet_id:
                 try:
-                    spreadsheet_id = config_data.get("spreadsheet_id")
-                    user_id = config_data.get("user_id")
-                    original_descriptions = config_data.get("original_descriptions", [])
+                    user_id = config_data.get("user_id", "unknown")
 
-                    # Handle missing spreadsheet_id
-                    if not spreadsheet_id:
-                        logger.error(
-                            f"Missing spreadsheet_id in config data for prediction {prediction_id}"
+                    # Get original descriptions from config data
+                    original_descriptions = []
+                    if "original_descriptions" in config_data:
+                        original_descriptions = config_data.get(
+                            "original_descriptions", []
                         )
-                        return create_error_response(
-                            "Configuration error: Missing spreadsheet ID", 400
-                        )
+                    elif isinstance(config_data, dict) and "data" in config_data:
+                        if isinstance(config_data["data"], list):
+                            original_descriptions = [
+                                item.get("narrative", "")
+                                for item in config_data["data"]
+                                if "narrative" in item
+                            ]
 
                     logger.info(
-                        f"Processing results with config: spreadsheet_id={spreadsheet_id}, user_id={user_id}"
+                        f"Processing results with config: spreadsheet_id={spreadsheet_id}, user_id={user_id}, descriptions={len(original_descriptions)}"
                     )
 
                     # Get trained embeddings
@@ -898,103 +1006,11 @@ def get_prediction_status(prediction_id):
                             400,
                         )
 
-                    # Process embeddings from Replicate
+                    # Process embeddings from Replicate - ensure output is valid
                     if (
-                        isinstance(prediction.output, list)
-                        and len(prediction.output) > 0
+                        not isinstance(prediction.output, list)
+                        or len(prediction.output) == 0
                     ):
-                        # Extract embeddings from the prediction output
-                        new_embeddings = np.array(
-                            [item["embedding"] for item in prediction.output],
-                            dtype=np.float32,
-                        )
-                        logger.info(
-                            f"Extracted {len(new_embeddings)} embeddings from prediction output"
-                        )
-
-                        # Calculate similarities
-                        similarities = cosine_similarity(
-                            new_embeddings, trained_embeddings
-                        )
-                        best_matches = similarities.argmax(axis=1)
-
-                        # Get predicted categories and confidence scores
-                        results = []
-                        for i, idx in enumerate(best_matches):
-                            try:
-                                # Extract the category directly from the structured array
-                                category = None
-
-                                # Try different field names and positions to get the category
-                                if "category" in trained_data.dtype.names:
-                                    category = str(trained_data[idx]["category"])
-                                elif "Category" in trained_data.dtype.names:
-                                    category = str(trained_data[idx]["Category"])
-                                else:
-                                    # Fallback to index 2 which should be the category field
-                                    category = str(trained_data[idx][2])
-
-                                similarity_score = float(similarities[i][idx])
-
-                                results.append(
-                                    {
-                                        "predicted_category": category,
-                                        "similarity_score": similarity_score,
-                                        "narrative": (
-                                            original_descriptions[i]
-                                            if i < len(original_descriptions)
-                                            else ""
-                                        ),
-                                    }
-                                )
-                            except Exception as e:
-                                logger.error(
-                                    f"Error processing prediction {i}: {str(e)}"
-                                )
-                                results.append(
-                                    {
-                                        "predicted_category": "Unknown",
-                                        "similarity_score": 0.0,
-                                        "narrative": (
-                                            original_descriptions[i]
-                                            if i < len(original_descriptions)
-                                            else ""
-                                        ),
-                                    }
-                                )
-
-                        # Store the results in a simple format
-                        result_data = {
-                            "status": "success",
-                            "data": results,
-                            "config": {
-                                "spreadsheet_id": spreadsheet_id,
-                                "sheet_name": config_data.get("sheet_name"),
-                                "category_column": config_data.get("category_column"),
-                                "start_row": config_data.get("start_row"),
-                            },
-                        }
-
-                        # Store the results in the database
-                        prisma_client.insert_webhook_result(prediction.id, result_data)
-
-                        # Return the results
-                        return jsonify(
-                            {
-                                "status": "completed",
-                                "message": "Processing completed successfully",
-                                "results": results,
-                                "config": {
-                                    "categoryColumn": config_data.get(
-                                        "category_column"
-                                    ),
-                                    "startRow": config_data.get("start_row"),
-                                    "sheetName": config_data.get("sheet_name"),
-                                    "spreadsheetId": spreadsheet_id,
-                                },
-                            }
-                        )
-                    else:
                         logger.warning(
                             f"Prediction output is not in expected format: {type(prediction.output)}"
                         )
@@ -1002,14 +1018,141 @@ def get_prediction_status(prediction_id):
                             "Prediction output is not in expected format", 500
                         )
 
+                    # Extract embeddings from the prediction output
+                    new_embeddings = np.array(
+                        [
+                            item.get("embedding", [0] * 768)
+                            for item in prediction.output
+                        ],
+                        dtype=np.float32,
+                    )
+                    logger.info(
+                        f"Extracted {len(new_embeddings)} embeddings from prediction output"
+                    )
+
+                    # Calculate similarities
+                    similarities = cosine_similarity(new_embeddings, trained_embeddings)
+                    best_matches = similarities.argmax(axis=1)
+
+                    # Get predicted categories and confidence scores
+                    results = []
+                    for i, idx in enumerate(best_matches):
+                        try:
+                            # Extract the category directly from the structured array
+                            category = "Unknown"
+
+                            # Try different field names and positions to get the category
+                            if "category" in trained_data.dtype.names:
+                                category = str(trained_data[idx]["category"])
+                            elif "Category" in trained_data.dtype.names:
+                                category = str(trained_data[idx]["Category"])
+                            else:
+                                # Fallback to index 2 which should be the category field
+                                try:
+                                    category = str(trained_data[idx][2])
+                                except:
+                                    logger.warning(
+                                        f"Failed to extract category from index 2, using default"
+                                    )
+
+                            similarity_score = float(similarities[i][idx])
+
+                            # Get original description or empty string if index is out of range
+                            narrative = (
+                                original_descriptions[i]
+                                if i < len(original_descriptions)
+                                else ""
+                            )
+
+                            results.append(
+                                {
+                                    "predicted_category": category,
+                                    "similarity_score": similarity_score,
+                                    "narrative": narrative,
+                                }
+                            )
+                        except Exception as e:
+                            logger.error(f"Error processing prediction {i}: {str(e)}")
+                            results.append(
+                                {
+                                    "predicted_category": "Unknown",
+                                    "similarity_score": 0.0,
+                                    "narrative": (
+                                        original_descriptions[i]
+                                        if i < len(original_descriptions)
+                                        else ""
+                                    ),
+                                }
+                            )
+
+                    # Store the results in a simple format
+                    result_data = {
+                        "status": "success",
+                        "data": results,
+                        "config": {
+                            "spreadsheet_id": spreadsheet_id,
+                            "sheet_name": config_data.get("sheet_name"),
+                            "category_column": config_data.get("category_column"),
+                            "start_row": config_data.get("start_row"),
+                        },
+                    }
+
+                    # Store the results in the database
+                    store_result = prisma_client.insert_webhook_result(
+                        prediction.id, result_data
+                    )
+                    if not store_result:
+                        logger.warning(
+                            f"Failed to store results for prediction {prediction_id}"
+                        )
+                        # Try a direct update as a fallback
+                        try:
+                            logger.info("Attempting direct update as fallback")
+                            # Make sure spreadsheet_id is explicitly included again for safety
+                            if (
+                                "config" in result_data
+                                and "spreadsheet_id" not in result_data["config"]
+                            ):
+                                result_data["config"]["spreadsheet_id"] = spreadsheet_id
+
+                            # Try a simpler structure if needed
+                            simple_result = {
+                                "status": "success",
+                                "spreadsheet_id": spreadsheet_id,
+                                "results": result_data["data"],
+                            }
+                            prisma_client.insert_webhook_result(
+                                prediction.id, simple_result
+                            )
+                        except Exception as fallback_error:
+                            logger.error(
+                                f"Fallback storage also failed: {fallback_error}"
+                            )
+
+                    # Return the results
+                    return jsonify(
+                        {
+                            "status": "completed",
+                            "message": "Processing completed successfully",
+                            "results": results,
+                            "config": {
+                                "categoryColumn": config_data.get("category_column"),
+                                "startRow": config_data.get("start_row"),
+                                "sheetName": config_data.get("sheet_name"),
+                                "spreadsheetId": spreadsheet_id,
+                            },
+                        }
+                    )
                 except Exception as e:
                     logger.error(f"Error processing classification results: {e}")
                     return create_error_response(
                         f"Error processing results: {str(e)}", 500
                     )
             else:
-                # If we don't have config data but have output, return raw output
-                logger.warning(f"No config data found for prediction {prediction_id}")
+                # If we don't have config data with spreadsheet_id but have output, return raw output
+                logger.warning(
+                    f"No spreadsheet_id found for prediction {prediction_id}"
+                )
                 return jsonify(
                     {
                         "status": "completed",
@@ -1051,24 +1194,14 @@ def manage_api_key():
             # Check for existing API key in header
             api_key = request.headers.get("X-API-Key")
             if api_key:
-                try:
-                    # Validate the API key
-                    user_id = validate_api_key(api_key)
+                user_id = validate_api_key(api_key)
+                if user_id:
                     logger.info(f"API key validated for user: {user_id}")
-
-                    # Track API usage explicitly for API key management
-                    prisma_client.track_api_usage(api_key)
-                    logger.info(f"Tracked API usage for API key management endpoint")
-
-                    # Return the API key
                     return jsonify(
                         {"status": "success", "user_id": user_id, "api_key": api_key}
                     )
-                except Exception as e:
-                    logger.error(f"API key validation failed: {e}")
-                    return create_error_response(
-                        f"API key validation failed: {str(e)}", 401
-                    )
+                else:
+                    return create_error_response("Invalid API key", 401)
 
             # If no API key in header, check for user_id in query params
             user_id = request.args.get("userId")
@@ -1079,46 +1212,32 @@ def manage_api_key():
             if "@" in user_id and not user_id.startswith("google-oauth2|"):
                 user_id = f"google-oauth2|{user_id}"
 
-            # Use psycopg2 to execute the query
-            conn = psycopg2.connect(
-                host=os.environ.get("PGHOST_UNPOOLED"),
-                database=os.environ.get("PGDATABASE"),
-                user=os.environ.get("PGUSER"),
-                password=os.environ.get("PGPASSWORD"),
-                sslmode="require",
-                connect_timeout=5,
-            )
+            # Use prisma client to get the account
+            account = prisma_client.get_account_by_user_id(user_id)
 
-            # Execute query to find account by user ID
-            with conn.cursor() as cur:
-                cur.execute(
-                    'SELECT "userId", api_key FROM "account" WHERE "userId" = %s',
-                    (user_id,),
+            if not account:
+                return create_error_response("User not found", 404)
+
+            # Return the API key if it exists
+            if account.get("api_key"):
+                return jsonify(
+                    {
+                        "status": "success",
+                        "user_id": user_id,
+                        "api_key": account.get("api_key"),
+                    }
                 )
-                result = cur.fetchone()
-
-                # Close the connection
-                conn.close()
-
-                if not result:
-                    return create_error_response("User not found", 404)
-
-                # Return the API key if it exists
-                if result[1]:  # api_key is the second column
-                    return jsonify(
-                        {"status": "success", "user_id": user_id, "api_key": result[1]}
-                    )
-                else:
-                    return (
-                        jsonify(
-                            {
-                                "status": "not_found",
-                                "user_id": user_id,
-                                "message": "No API key found for this user",
-                            }
-                        ),
-                        404,
-                    )
+            else:
+                return (
+                    jsonify(
+                        {
+                            "status": "not_found",
+                            "user_id": user_id,
+                            "message": "No API key found for this user",
+                        }
+                    ),
+                    404,
+                )
 
         # For POST requests, we generate a new API key
         elif request.method == "POST":
@@ -1140,47 +1259,29 @@ def manage_api_key():
             # Generate a new API key (UUID)
             new_api_key = str(uuid.uuid4())
 
-            # Use psycopg2 to execute the query
-            conn = psycopg2.connect(
-                host=os.environ.get("PGHOST_UNPOOLED"),
-                database=os.environ.get("PGDATABASE"),
-                user=os.environ.get("PGUSER"),
-                password=os.environ.get("PGPASSWORD"),
-                sslmode="require",
-                connect_timeout=5,
-            )
+            # Use prisma client to check if user exists
+            account = prisma_client.get_account_by_user_id(user_id)
 
-            # Check if user exists and update or create accordingly
-            with conn.cursor() as cur:
-                cur.execute(
-                    'SELECT "userId" FROM "account" WHERE "userId" = %s', (user_id,)
+            if account:
+                # Update existing account
+                updated_account = prisma_client.update_account(
+                    user_id, {"api_key": new_api_key}
                 )
-                user_exists = cur.fetchone() is not None
-
-                if user_exists:
-                    # Update existing account
-                    cur.execute(
-                        'UPDATE "account" SET api_key = %s WHERE "userId" = %s',
-                        (new_api_key, user_id),
-                    )
-                    logger.info(f"Updated API key for user {user_id}")
-                else:
-                    # Create new account with default config
-                    default_config = json.dumps(
-                        {"categoryColumn": "E", "descriptionColumn": "C"}
-                    )
-
-                    cur.execute(
-                        'INSERT INTO "account" ("userId", api_key, "categorisationRange", "categorisationTab", "columnOrderCategorisation") VALUES (%s, %s, %s, %s, %s)',
-                        (user_id, new_api_key, "A:Z", None, default_config),
-                    )
-                    logger.info(f"Created new user with API key: {user_id}")
-
-                # Commit the transaction
-                conn.commit()
-
-            # Close the connection
-            conn.close()
+                logger.info(f"Updated API key for user {user_id}")
+            else:
+                # Create new account with default config
+                default_config = {
+                    "userId": user_id,
+                    "categorisationRange": "A:Z",
+                    "categorisationTab": None,
+                    "columnOrderCategorisation": {
+                        "categoryColumn": "E",
+                        "descriptionColumn": "C",
+                    },
+                    "api_key": new_api_key,
+                }
+                prisma_client.insert_account(user_id, default_config)
+                logger.info(f"Created new user with API key: {user_id}")
 
             return jsonify(
                 {"status": "success", "user_id": user_id, "api_key": new_api_key}
@@ -1304,10 +1405,13 @@ def validate_request_data(model_class, data):
                 {"location": location, "message": error["msg"], "type": error["type"]}
             )
 
-        # Create error response
-        error_response = {"error": "Validation error", "details": error_details}
+        # Log validation errors
         logger.warning(f"Validation error: {error_details}")
-        return None, (jsonify(error_response), 400)
+
+        # Create error response using our helper function
+        return None, create_error_response(
+            message="Validation error", status_code=400, details=error_details
+        )
 
 
 def create_error_response(message, status_code=400, details=None):
@@ -1322,7 +1426,11 @@ def create_error_response(message, status_code=400, details=None):
     Returns:
         tuple: (jsonify(error_response), status_code)
     """
-    error_response = {"error": message}
+    # Log the error
+    logger.error(f"Error response being generated: {message} (Code: {status_code})")
+
+    # Create error response object
+    error_response = {"status": "error", "error": message, "code": status_code}
 
     if details:
         error_response["details"] = details

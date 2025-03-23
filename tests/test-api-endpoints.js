@@ -12,7 +12,6 @@ const axios = require("axios");
 const API_PORT = process.env.API_PORT || 3001;
 const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
 const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
-// const CATEGORIZATION_DATA_PATH = path.join(__dirname, "test_data", "categorise_test.csv");
 
 // Global variables
 let webhookServer;
@@ -187,23 +186,32 @@ const loadTrainingData = (file_name) => {
     const results = [];
     const startTime = Date.now();
 
-    // Use full_train.csv instead of training_data.csv
     fs.createReadStream(path.join(__dirname, "test_data", file_name))
       .pipe(csv())
       .on("data", (data) => {
-        // Map fields to match expected format
+        // Map fields to match expected format, check for both description and Narrative fields
         const transaction = {
-          description: data.description,
+          description: data.description || data.Narrative || data.narrative,
           Category: data.category || data.Category,
         };
         if (transaction.description && transaction.Category) {
           results.push(transaction);
+        } else {
+          logDebug(`Skipping invalid transaction: ${JSON.stringify(data)}`);
         }
       })
       .on("end", () => {
         const duration = (Date.now() - startTime) / 1000;
         logInfo(`Loaded ${results.length} training records in ${duration.toFixed(1)}s`);
-        logDebug(`Sample transaction: ${JSON.stringify(results[0])}`);
+
+        if (results.length === 0) {
+          logError(
+            "No valid training records found. Check CSV field names - needs 'description'/'Narrative' and 'Category' fields."
+          );
+        } else {
+          logDebug(`Sample transaction: ${JSON.stringify(results[0])}`);
+        }
+
         resolve(results);
       })
       .on("error", (error) => {
