@@ -1,0 +1,733 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Transaction Categorization API",
+    "version": "1.0.0",
+    "description": "API for training and using transaction categorization models"
+  },
+  "components": {
+    "schemas": {
+      "Transaction": {
+        "type": "object",
+        "required": ["description", "Category"],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "The transaction description or narrative"
+          },
+          "Category": {
+            "type": "string",
+            "description": "The category label for the transaction"
+          }
+        }
+      },
+      "TrainRequest": {
+        "type": "object",
+        "required": ["transactions", "expenseSheetId"],
+        "properties": {
+          "transactions": {
+            "type": "array",
+            "description": "Array of transaction objects with descriptions and categories",
+            "minItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/Transaction"
+            }
+          },
+          "expenseSheetId": {
+            "type": "string",
+            "description": "Unique identifier for the training dataset",
+            "minLength": 1
+          },
+          "userId": {
+            "type": "string",
+            "description": "Optional user identifier"
+          }
+        }
+      },
+      "ClassifyRequest": {
+        "type": "object",
+        "required": ["transactions", "spreadsheetId"],
+        "properties": {
+          "transactions": {
+            "type": "array",
+            "description": "Array of transaction descriptions (strings)",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "spreadsheetId": {
+            "type": "string",
+            "description": "Identifier matching the training dataset identifier",
+            "minLength": 1
+          },
+          "sheetName": {
+            "type": "string",
+            "description": "Name of the sheet where transactions are stored",
+            "default": "new_transactions"
+          },
+          "categoryColumn": {
+            "type": "string",
+            "description": "Column letter where categories should be placed",
+            "default": "E"
+          },
+          "startRow": {
+            "type": "string",
+            "description": "Starting row number for the data",
+            "default": "1"
+          }
+        }
+      },
+      "ApiKeyRequest": {
+        "type": "object",
+        "required": ["userId"],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "description": "User identifier for API key generation",
+            "minLength": 1
+          }
+        }
+      },
+      "UserConfigRequest": {
+        "type": "object",
+        "required": ["userId"],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "description": "User identifier to fetch configuration for",
+            "minLength": 1
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "Optional API key to update"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["healthy", "degraded", "unhealthy"],
+            "description": "Overall system health status"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp of the health check"
+          },
+          "components": {
+            "type": "object",
+            "properties": {
+              "app": {
+                "type": "string",
+                "enum": ["healthy", "unhealthy"],
+                "description": "Application component health"
+              },
+              "database": {
+                "type": "string",
+                "enum": ["healthy", "unhealthy"],
+                "description": "Database component health"
+              }
+            }
+          }
+        }
+      },
+      "TrainResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["processing", "failed"],
+            "description": "Current status of the training process"
+          },
+          "prediction_id": {
+            "type": "string",
+            "description": "Unique identifier for checking training status"
+          }
+        }
+      },
+      "ClassifyResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["processing", "failed"],
+            "description": "Current status of the classification process"
+          },
+          "prediction_id": {
+            "type": "string",
+            "description": "Unique identifier for checking classification status"
+          },
+          "message": {
+            "type": "string",
+            "description": "Additional information about the classification process"
+          }
+        }
+      },
+      "StatusResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": ["processing"],
+                "description": "Task is still being processed"
+              },
+              "message": {
+                "type": "string",
+                "description": "Additional information about the task status"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": ["completed"],
+                "description": "Task has completed successfully"
+              },
+              "message": {
+                "type": "string",
+                "description": "Additional information about the completed task"
+              },
+              "results": {
+                "type": "array",
+                "description": "Classification results (only for classification tasks)",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "predicted_category": {
+                      "type": "string",
+                      "description": "The predicted category for the transaction"
+                    },
+                    "similarity_score": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1,
+                      "description": "Confidence score for the prediction"
+                    },
+                    "narrative": {
+                      "type": "string",
+                      "description": "Original transaction description"
+                    }
+                  }
+                }
+              },
+              "config": {
+                "type": "object",
+                "description": "Configuration used for the classification",
+                "properties": {
+                  "categoryColumn": {
+                    "type": "string",
+                    "description": "Column where categories are placed"
+                  },
+                  "startRow": {
+                    "type": "string",
+                    "description": "Starting row for the data"
+                  },
+                  "sheetName": {
+                    "type": "string",
+                    "description": "Sheet name containing the transactions"
+                  },
+                  "spreadsheetId": {
+                    "type": "string",
+                    "description": "Identifier for the trained dataset used"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": ["error"],
+                "description": "Task has failed"
+              },
+              "error": {
+                "type": "string",
+                "description": "Detailed error message"
+              },
+              "code": {
+                "type": "integer",
+                "description": "HTTP status code for the error"
+              }
+            }
+          }
+        ]
+      },
+      "ApiKeyResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["success", "not_found", "error"],
+            "description": "Status of the API key operation"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "User identifier"
+          },
+          "api_key": {
+            "type": "string",
+            "description": "API key value (only present for success status)"
+          },
+          "message": {
+            "type": "string",
+            "description": "Additional information (present for not_found or error status)"
+          }
+        }
+      },
+      "UserConfigResponse": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "description": "User identifier"
+          },
+          "categorisationRange": {
+            "type": "string",
+            "description": "Range for categorization in spreadsheets"
+          },
+          "categorisationTab": {
+            "type": "string",
+            "description": "Default tab for categorization in spreadsheets"
+          },
+          "columnOrderCategorisation": {
+            "type": "object",
+            "properties": {
+              "categoryColumn": {
+                "type": "string",
+                "description": "Default column for categories"
+              },
+              "descriptionColumn": {
+                "type": "string",
+                "description": "Default column for transaction descriptions"
+              }
+            }
+          },
+          "api_key": {
+            "type": "string",
+            "description": "User's API key"
+          }
+        }
+      },
+      "ApiUsageResponse": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "description": "User identifier"
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "total_requests": {
+                "type": "integer",
+                "description": "Total number of API requests made"
+              },
+              "total_classifications": {
+                "type": "integer",
+                "description": "Total number of classifications performed"
+              },
+              "total_training": {
+                "type": "integer",
+                "description": "Total number of training operations performed"
+              },
+              "current_month_requests": {
+                "type": "integer",
+                "description": "Number of requests in the current month"
+              }
+            }
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "monthly_limit": {
+                "type": "integer",
+                "description": "Maximum requests allowed per month"
+              },
+              "rate_limit": {
+                "type": "string",
+                "description": "Rate limit description"
+              }
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["error"],
+            "description": "Error status indicator"
+          },
+          "error": {
+            "type": "string",
+            "description": "Detailed error message"
+          },
+          "code": {
+            "type": "integer",
+            "description": "HTTP status code"
+          },
+          "details": {
+            "type": "array",
+            "description": "Optional array of detailed error information",
+            "items": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string",
+                  "description": "Location of the error in the request"
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Specific error message for this location"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Type of validation error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Check API health",
+        "responses": {
+          "200": {
+            "description": "Health status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/train": {
+      "post": {
+        "summary": "Train a categorization model",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrainRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Training started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrainResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/classify": {
+      "post": {
+        "summary": "Classify transactions",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassifyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Classification started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/status/{prediction_id}": {
+      "get": {
+        "summary": "Check status of a prediction",
+        "parameters": [
+          {
+            "name": "prediction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "ID of the prediction to check"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prediction status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Prediction not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api-key": {
+      "get": {
+        "summary": "Retrieve an API key",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "User ID to retrieve API key for"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "API key retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a new API key",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "API key created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/user-config": {
+      "get": {
+        "summary": "Get user configuration",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "User ID to retrieve configuration for"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User configuration retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserConfigResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api-usage": {
+      "get": {
+        "summary": "Get API usage statistics",
+        "responses": {
+          "200": {
+            "description": "API usage statistics retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiUsageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
