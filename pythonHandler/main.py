@@ -767,7 +767,7 @@ def get_prediction_status(prediction_id):
         logger.info(f"Prediction {prediction_id} status: {status}")
 
         # Get config data for this prediction if it exists
-        config_data = prisma_data.get_webhook_result(prediction_id)
+        config_data = prisma_client.get_webhook_result(prediction_id)
         logger.info(
             f"Raw config data: {json.dumps(config_data) if config_data else 'None'}"
         )
