@@ -404,9 +404,6 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
   let consecutiveErrors = 0;
   const maxConsecutiveErrors = 3;
 
-  // Check if there's a webhook completion in the logs
-  let webhookCompleted = false;
-
   // Show a simple progress indicator
   process.stdout.write("Training progress: ");
 
@@ -428,31 +425,7 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
       // Check if we've exceeded the maximum number of polls
       if (pollCount >= maxPolls) {
         process.stdout.write("\n");
-        logInfo(`Reached maximum number of polling attempts (${maxPolls}). Checking webhook results...`);
-
-        // Try to get webhook results before giving up
-        try {
-          const webhookResponse = await fetch(`${apiUrl}/webhook-result?prediction_id=${predictionId}`, {
-            headers: {
-              "X-API-Key": config.apiKey || TEST_API_KEY,
-              Accept: "application/json",
-            },
-          });
-
-          if (webhookResponse.ok) {
-            const webhookResult = await webhookResponse.json();
-            if (webhookResult && webhookResult.status === "success") {
-              return {
-                status: "completed",
-                message: "Training completed successfully (webhook confirmation)",
-                result: webhookResult,
-              };
-            }
-          }
-        } catch (webhookError) {
-          logError(`Error checking webhook results: ${webhookError}`);
-        }
-
+        logInfo(`Reached maximum number of polling attempts (${maxPolls})`);
         return {
           status: "unknown",
           message: "Maximum polling attempts reached without confirmation",
@@ -468,7 +441,7 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
       // Wait for the poll interval
       await new Promise((resolve) => setTimeout(resolve, pollInterval));
 
-      // Call the service to check status
+      // Call the status endpoint
       logDebug(`Checking training status for prediction ID: ${predictionId} (attempt ${pollCount}/${maxPolls})`);
       const response = await fetch(`${apiUrl}/status/${predictionId}`, {
         headers: {
@@ -476,13 +449,6 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
           Accept: "application/json",
         },
       });
-
-      // Log response headers for debugging
-      const headers = {};
-      response.headers.forEach((value, name) => {
-        headers[name] = value;
-      });
-      logTrace(`Status response headers: ${JSON.stringify(headers, null, 2)}`);
 
       // Handle different response codes
       if (!response.ok) {
@@ -508,31 +474,14 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
           continue;
         }
 
-        // For 404, check webhook results
+        // For 404, the prediction might not exist
         if (statusCode === 404) {
-          try {
-            const webhookResponse = await fetch(`${apiUrl}/webhook-result?prediction_id=${predictionId}`, {
-              headers: {
-                "X-API-Key": config.apiKey || TEST_API_KEY,
-                Accept: "application/json",
-              },
-            });
-
-            if (webhookResponse.ok) {
-              const webhookResult = await webhookResponse.json();
-              if (webhookResult && webhookResult.status === "success") {
-                process.stdout.write("\n");
-                logInfo("Found successful webhook result after 404 status");
-                return {
-                  status: "completed",
-                  message: "Training completed successfully (webhook confirmation)",
-                  result: webhookResult,
-                };
-              }
-            }
-          } catch (webhookError) {
-            logError(`Error checking webhook results: ${webhookError}`);
-          }
+          process.stdout.write("\n");
+          logError(`Prediction ${predictionId} not found`);
+          return {
+            error: "Prediction not found",
+            status: "failed",
+          };
         }
 
         continue; // Continue polling for other error codes
@@ -542,32 +491,11 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
       consecutiveErrors = 0;
 
       // Parse the response
-      const responseText = await response.text();
-      logTrace(`Status response body: ${responseText}`);
-
-      let result;
-      try {
-        result = JSON.parse(responseText);
-      } catch (e) {
-        logError(`Error parsing status response: ${e.toString()}`);
-        continue; // Continue polling
-      }
-
-      // Log the full response for debugging
+      const result = await response.json();
       logTrace(`Status response: ${JSON.stringify(result, null, 2)}`);
 
-      // Check for webhook completion in the logs
-      if (
-        result.webhook_completed ||
-        (result.message && result.message.includes("webhook")) ||
-        (result.logs && result.logs.includes("webhook"))
-      ) {
-        webhookCompleted = true;
-        logDebug("Detected webhook completion in status response");
-      }
-
-      // Handle completed status
-      if (result.status === "completed" || webhookCompleted) {
+      // Handle different status cases
+      if (result.status === "completed") {
         process.stdout.write("\n");
         logInfo(`Training completed successfully after ${elapsedMinutes} minutes!`);
         return {
@@ -577,44 +505,28 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
           elapsedMinutes,
         };
       } else if (result.status === "failed") {
-        // Extract more detailed error information
-        let errorMessage = "Unknown error";
-
-        if (result.error) {
-          errorMessage = result.error;
-        } else if (result.message && result.message.includes("error")) {
-          errorMessage = result.message;
-        } else if (result.result && result.result.error) {
-          errorMessage = result.result.error;
-        }
-
         process.stdout.write("\n");
+        const errorMessage = result.error || result.message || "Unknown error";
         logError(`Training failed with error: ${errorMessage}`);
-        logDebug(`Full error response: ${JSON.stringify(result, null, 2)}`);
-
         return {
           error: errorMessage,
           status: "failed",
           fullResponse: result,
           elapsedMinutes,
         };
-      }
+      } else if (result.status === "processing") {
+        // Still in progress, log status information
+        let statusMessage = `Training in progress... (${elapsedMinutes} min)`;
+        if (result.message) {
+          statusMessage += ` - ${result.message}`;
+        }
 
-      // Still in progress, log status information
-      let statusMessage = `Training in progress... (${elapsedMinutes} min)`;
-
-      if (result.status) {
-        statusMessage += ` - ${result.status}`;
-      }
-      if (result.message) {
-        statusMessage += ` - ${result.message}`;
-      }
-
-      // Only log status updates occasionally to reduce verbosity
-      if (pollCount === 1 || pollCount % 5 === 0 || result.status !== "starting") {
-        logInfo(statusMessage);
-      } else {
-        logDebug(statusMessage);
+        // Only log status updates occasionally to reduce verbosity
+        if (pollCount === 1 || pollCount % 5 === 0) {
+          logInfo(statusMessage);
+        } else {
+          logDebug(statusMessage);
+        }
       }
     } catch (error) {
       logError(`Error in polling: ${error.toString()}`);
@@ -629,8 +541,6 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
           status: "failed",
         };
       }
-
-      // Continue polling despite errors
     }
   }
 };
@@ -654,6 +564,9 @@ const categoriseTransactions = async (config) => {
     let response;
     let attempt = 1;
     const maxAttempts = 3;
+
+    // Log the request data for debugging
+    logDebug(`Request data: ${JSON.stringify(requestData)}`);
 
     while (attempt <= maxAttempts) {
       try {
@@ -703,8 +616,6 @@ const categoriseTransactions = async (config) => {
         const message = statusResponse.data.message || "Processing in progress";
         const elapsedMinutes = Math.floor(pollingAttempt / 6); // Assuming 5-second intervals
 
-        logInfo(`Categorisation in progress... (${elapsedMinutes} min) - ${status} - ${message}`);
-
         if (status === "completed") {
           console.log("\n");
           console.log(`Categorisation completed successfully!`);
@@ -714,6 +625,7 @@ const categoriseTransactions = async (config) => {
           console.log(`Categorisation failed: ${statusResponse.data.error || "Unknown error"}`);
           return { status: "failed", error: statusResponse.data.error };
         }
+        logInfo(`Categorisation in progress... (${elapsedMinutes} min) - ${status} - ${message}`);
       } catch (error) {
         logError(`Error checking categorisation status: ${error.message}`);
       }
@@ -739,40 +651,28 @@ const categoriseTransactions = async (config) => {
       if (statusResponse.data.results && Array.isArray(statusResponse.data.results)) {
         results = statusResponse.data.results;
         logInfo(`Found ${results.length} results directly in response.results`);
-      } else if (statusResponse.data.result && statusResponse.data.result.results) {
-        results = statusResponse.data.result.results;
-        logInfo(`Found results in result.results`);
-      } else if (statusResponse.data.message && statusResponse.data.status === "completed") {
-        // No results array but completed status - success with no data
-        logInfo("No detailed results array found, but status is completed");
-        console.log(`\n===== CATEGORISATION COMPLETED =====`);
-        console.log(`Message: ${statusResponse.data.message}`);
-        console.log(`=====================================\n`);
-        return { status: "completed", message: statusResponse.data.message };
-      } else {
-        console.log("No results array found in the response");
+
+        // Add narratives from original transactions
+        if (results && results.length > 0) {
+          logInfo("Adding narratives from original transactions to results");
+
+          // Print results in a nice format
+          console.log("\n===== CATEGORISATION RESULTS =====");
+          console.log(`Total transactions categorised: ${results.length}`);
+
+          results.forEach((result, index) => {
+            const confidence = result.similarity_score ? `${(result.similarity_score * 100).toFixed(2)}%` : "N/A";
+            console.log(`${index + 1}. "${result.narrative}" → ${result.predicted_category} (${confidence})`);
+          });
+
+          console.log("=====================================\n");
+        } else {
+          console.log("\n===== CATEGORISATION RESULTS =====");
+          console.log("No results could be extracted from the API response.");
+          console.log("This is likely a bug in the Flask server.");
+          console.log("=====================================\n");
+        }
       }
-    }
-
-    // Add narratives from original transactions
-    if (results && results.length > 0) {
-      logInfo("Adding narratives from original transactions to results");
-
-      // Print results in a nice format
-      console.log("\n===== CATEGORISATION RESULTS =====");
-      console.log(`Total transactions categorised: ${results.length}`);
-
-      results.forEach((result, index) => {
-        const confidence = result.similarity_score ? `${(result.similarity_score * 100).toFixed(2)}%` : "N/A";
-        console.log(`${index + 1}. "${result.narrative}" → ${result.predicted_category} (${confidence})`);
-      });
-
-      console.log("=====================================\n");
-    } else {
-      console.log("\n===== CATEGORISATION RESULTS =====");
-      console.log("No results could be extracted from the API response.");
-      console.log("This is likely a bug in the Flask server.");
-      console.log("=====================================\n");
     }
 
     return { status: "completed", results };
@@ -897,8 +797,8 @@ const main = async () => {
     logDebug(`Using API URL: ${apiUrl}`);
 
     // Load test data
-    // const trainingData = await loadTrainingData("training_test.csv");
-    const trainingData = await loadTrainingData("full_train.csv");
+    const trainingData = await loadTrainingData("training_test.csv");
+    // const trainingData = await loadTrainingData("full_train.csv");
     logInfo(`Loaded training data with ${trainingData.length} rows`);
 
     const categorizationData = await loadCategorizationData("categorise_test.csv");
