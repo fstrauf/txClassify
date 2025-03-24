@@ -41,6 +41,28 @@
           "userId": {
             "type": "string",
             "description": "Optional user identifier"
+          },
+          "columnOrderCategorisation": {
+            "type": "object",
+            "description": "Defines which columns contain description and category data",
+            "properties": {
+              "descriptionColumn": {
+                "type": "string",
+                "description": "Column containing transaction descriptions"
+              },
+              "categoryColumn": {
+                "type": "string",
+                "description": "Column containing categories"
+              }
+            }
+          },
+          "categorisationRange": {
+            "type": "string",
+            "description": "Range of cells to process in the sheet"
+          },
+          "categorisationTab": {
+            "type": "string",
+            "description": "Name of the sheet tab"
           }
         }
       },
@@ -428,6 +450,67 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/TrainRequest"
+              },
+              "examples": {
+                "training": {
+                  "summary": "Basic training example",
+                  "value": {
+                    "transactions": [
+                      {
+                        "description": "TRANSPORTFORNSW TAP SYDNEY AUS Card Value Date: 23/01/2024",
+                        "Category": "Transport"
+                      },
+                      {
+                        "description": "WOOLWORTHS 2099 Dee Why AU AUS Card Value Date: 28/01/2024",
+                        "Category": "Groceries"
+                      },
+                      {
+                        "description": "RivaReno Gelato Barangaroo NS AUS Card Value Date: 28/01/2024",
+                        "Category": "DinnerBars"
+                      },
+                      {
+                        "description": "Harris Farm Markets NS AUS Card Value Date: 28/01/2024",
+                        "Category": "Groceries"
+                      },
+                      {
+                        "description": "TREACHERY CAMP PL SEAL ROCKS NS AUS Card Value Date: 27/01/2024",
+                        "Category": "Travel"
+                      },
+                      {
+                        "description": "MED*ALDIMobile CHATSWOOD AU AUS Card Value Date: 27/01/2024",
+                        "Category": "Utility"
+                      },
+                      {
+                        "description": "ADOBE CREATIVE CLOUD Sydney AU AUS Card Value Date: 27/01/2024",
+                        "Category": "Utility"
+                      },
+                      {
+                        "description": "COTTON ON MEGA 2957 FORSTER NS AUS Card Value Date: 27/01/2024",
+                        "Category": "Shopping"
+                      },
+                      {
+                        "description": "ALDI STORES - DEE WHY AU",
+                        "Category": "Groceries"
+                      },
+                      {
+                        "description": "Transfer to other Bank NetBank Dee Why Pde",
+                        "Category": "Living"
+                      },
+                      {
+                        "description": "GOOGLE*GOOGLE STORAGE Sydney AU AUS Card Value Date: 20/01/2024",
+                        "Category": "Business"
+                      }
+                    ],
+                    "userId": "test_user_fixed",
+                    "expenseSheetId": "test-sheet-id",
+                    "columnOrderCategorisation": {
+                      "descriptionColumn": "B",
+                      "categoryColumn": "C"
+                    },
+                    "categorisationRange": "A:Z",
+                    "categorisationTab": "TestSheet"
+                  }
+                }
               }
             }
           }
@@ -485,6 +568,22 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ClassifyRequest"
+              },
+              "examples": {
+                "classification": {
+                  "summary": "Basic classification example",
+                  "value": {
+                    "transactions": [
+                      "Google Storage Barangaroo AU AUS Card Value Date: 20/08/2024",
+                      "WOOLWORTHS 2723 INGHAM AU AUS Card Value Date: 21/08/2024",
+                      "TRANSPORTFORNSW TAP SYDNEY AUS Card Value Date: 21/08/2024"
+                    ],
+                    "spreadsheetId": "test-sheet-id",
+                    "sheetName": "test-sheet",
+                    "categoryColumn": "E",
+                    "startRow": "1"
+                  }
+                }
               }
             }
           }

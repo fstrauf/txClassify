@@ -11,12 +11,12 @@ from sklearn.metrics.pairwise import cosine_similarity
 import re
 import logging
 import sys
-import uuid
 import time
 from typing import List, Optional
 from utils.prisma_client import prisma_client
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from functools import wraps
 
 # Load environment variables
 load_dotenv()
@@ -73,12 +73,6 @@ class ClassifyRequest(BaseModel):
         if not v:
             raise ValueError("No transactions provided")
         return v
-
-
-class ApiKeyRequest(BaseModel):
-    """Request model for the /api-key endpoint."""
-
-    userId: str = Field(..., min_length=1)
 
 
 class UserConfigRequest(BaseModel):
@@ -172,7 +166,6 @@ def home():
                 "/classify",
                 "/train",
                 "/health",
-                "/api-key",
                 "/status/:prediction_id",
             ],
         }
@@ -425,11 +418,31 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
         return np.array([])
 
 
+def require_api_key(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        api_key = request.headers.get("X-API-Key")
+        if not api_key:
+            return create_error_response("No API key provided", 401)
+
+        user_id = validate_api_key(api_key)
+        if not user_id:
+            return create_error_response("Invalid API key", 401)
+
+        # Add user_id to request context
+        request.user_id = user_id
+        request.api_key = api_key
+
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
 @app.route("/train", methods=["POST"])
+@require_api_key
 def train_model():
     """Train the model with new data."""
     try:
-        # Log all incoming request details
         logger.info("=== Incoming Training Request ===")
         logger.info(f"Headers: {dict(request.headers)}")
 
@@ -449,37 +462,15 @@ def train_model():
         transactions = validated_data.transactions
         sheet_id = validated_data.expenseSheetId
 
-        # Get user ID either from API key validation or payload
-        user_id = None
-        api_key = request.headers.get("X-API-Key")
-
-        # First try to validate API key if provided - simplified
-        if api_key:
-            user_id = validate_api_key(api_key)
-            if user_id:
-                logger.info(f"Got user_id from API key validation: {user_id}")
-            elif not validated_data.userId:
-                return create_error_response(
-                    "Invalid API key and no userId provided in payload", 401
-                )
-            else:
-                logger.info(
-                    "API key validation failed, falling back to userId from payload"
-                )
-                user_id = validated_data.userId
-        else:
-            # If no API key, use userId from payload
-            user_id = validated_data.userId
-            if not user_id:
-                return create_error_response("No API key or userId provided", 401)
+        # Get user_id from request context (set by decorator)
+        user_id = request.user_id
+        logger.info(f"Processing request for user: {user_id}")
 
         # Create or update user configuration
         try:
-            # Check if user config exists
             account = prisma_client.get_account_by_user_id(user_id)
 
             if not account:
-                # Create new user config
                 default_config = {
                     "userId": user_id,
                     "categorisationRange": "A:Z",
@@ -488,25 +479,24 @@ def train_model():
                         "descriptionColumn": "C",
                     },
                     "categorisationTab": None,
-                    "api_key": api_key if api_key else None,
+                    "api_key": request.api_key,
                 }
                 prisma_client.insert_account(user_id, default_config)
                 logger.info(f"Created new user configuration for {user_id}")
             else:
-                # Update API key if it's provided and different from stored one
-                if api_key and (
-                    not account.get("api_key") or account.get("api_key") != api_key
+                if request.api_key and (
+                    not account.get("api_key")
+                    or account.get("api_key") != request.api_key
                 ):
-                    prisma_client.update_account(user_id, {"api_key": api_key})
+                    prisma_client.update_account(user_id, {"api_key": request.api_key})
                     logger.info(f"Updated API key for user {user_id}")
                 logger.info(f"Found existing user configuration for {user_id}")
 
         except Exception as e:
             logger.warning(f"Error managing user configuration: {str(e)}")
-            # Continue with training even if config creation fails
 
         # Convert transactions to DataFrame
-        transactions_data = [t.dict() for t in transactions]
+        transactions_data = [t.model_dump() for t in transactions]
         df = pd.DataFrame(transactions_data)
         logger.info(f"DataFrame created with columns: {df.columns.tolist()}")
 
@@ -562,109 +552,39 @@ def train_model():
 
         # Create prediction using the run_prediction function
         prediction = run_prediction(descriptions)
-
         logger.info(f"Created prediction with ID: {prediction.id}")
 
-        # Wait for the prediction to complete
-        attempt = 0
-        max_attempts = 60  # Maximum number of attempts
+        # Store initial configuration for status endpoint
+        config_data = {
+            "user_id": user_id,
+            "spreadsheet_id": str(sheet_id),
+            "status": "processing",
+            "embeddings_data": {
+                "index_data": index_data.tolist(),
+                "descriptions": descriptions,
+            },
+        }
 
-        # Start with shorter checks for the first few attempts
-        initial_delays = [2, 3, 5, 10, 15]  # First few checks are faster
-
-        while prediction.status != "succeeded" and attempt < max_attempts:
-            if prediction.status == "failed":
-                logger.error(f"Training prediction failed: {prediction.error}")
-                update_process_status("failed", "training", user_id)
-                return jsonify({"status": "failed", "error": prediction.error}), 500
-
-            try:
-                # Use initial delays for first few attempts, then fixed delay
-                if attempt < len(initial_delays):
-                    delay = initial_delays[attempt]
-                else:
-                    delay = 5  # Fixed 5-second delay after initial attempts
-
-                logger.info(
-                    f"Waiting {delay} seconds before checking training prediction status again (attempt {attempt+1}/{max_attempts})"
-                )
-                time.sleep(delay)
-
-                # Reload prediction status
-                try:
-                    prediction.reload()
-                except Exception as reload_error:
-                    logger.warning(f"Error reloading prediction status: {reload_error}")
-                    # If reload fails, continue to next attempt rather than failing
-                    attempt += 1
-                    continue
-
-                attempt += 1
-
-            except Exception as e:
-                logger.warning(f"Error during training status check: {e}")
-                # Don't increment attempt on error, just continue with shorter delay
-                time.sleep(2)
-                continue
-
-        if attempt >= max_attempts:
-            logger.warning(
-                f"Timed out waiting for training prediction to complete, checking local database"
+        # Store the configuration
+        try:
+            store_result = prisma_client.insert_webhook_result(
+                prediction.id, config_data
             )
-
-            # Check if we have a webhook result
-            try:
-                webhook_result = prisma_client.get_webhook_result(prediction.id)
-                if webhook_result and webhook_result.get("status") == "success":
-                    logger.info("Found successful webhook result, training completed")
-                    return jsonify(
-                        {"status": "completed", "prediction_id": prediction.id}
-                    )
-            except Exception as db_error:
-                logger.warning(f"Error checking webhook result: {db_error}")
-
-            # If no webhook result but we haven't failed, continue processing
-            logger.info("No webhook result found, but continuing with processing")
-            return jsonify({"status": "processing", "prediction_id": prediction.id})
-
-        elif prediction.status == "succeeded":
-            logger.info("Training prediction completed successfully")
-
-            # Process the embeddings from the prediction output
-            if (
-                prediction.output
-                and isinstance(prediction.output, list)
-                and len(prediction.output) > 0
-            ):
-                try:
-                    # Extract embeddings from the response
-                    embeddings = np.array(
-                        [item["embedding"] for item in prediction.output],
-                        dtype=np.float32,
-                    )
-                    logger.info(f"Extracted embeddings with shape: {embeddings.shape}")
-
-                    # Store the embeddings
-                    store_result = store_embeddings(embeddings, f"{sheet_id}")
-                    logger.info(f"Stored embeddings for {sheet_id}: {store_result}")
-
-                    # Store webhook result
-                    result = {
-                        "user_id": user_id,
-                        "status": "success",
-                        "embeddings_shape": str(embeddings.shape),
-                        "spreadsheet_id": sheet_id,
-                    }
-                    prisma_client.insert_webhook_result(prediction.id, result)
-                except Exception as e:
-                    logger.error(f"Error processing training embeddings: {e}")
-            else:
-                logger.warning("No embeddings found in training prediction output")
+            logger.info(f"Stored initial configuration for prediction {prediction.id}")
+        except Exception as e:
+            logger.error(f"Error storing initial configuration: {e}")
+            # Continue anyway to provide prediction ID to client
 
         # Update status
         update_process_status("processing", "training", user_id)
 
-        return jsonify({"status": "processing", "prediction_id": prediction.id})
+        return jsonify(
+            {
+                "status": "processing",
+                "prediction_id": prediction.id,
+                "message": "Training started. Check status endpoint for updates.",
+            }
+        )
 
     except Exception as e:
         logger.error(f"Error in train_model: {e}")
@@ -672,14 +592,10 @@ def train_model():
 
 
 @app.route("/classify", methods=["POST"])
+@require_api_key
 def classify_transactions():
-    """Classify transactions endpoint - directly using Replicate API."""
+    """Classify transactions endpoint."""
     try:
-        # Validate API key
-        api_key = request.headers.get("X-API-Key")
-        if not api_key:
-            return create_error_response("Missing API key", 401)
-
         # Get request data
         data = request.get_json()
         if not data:
@@ -695,7 +611,7 @@ def classify_transactions():
             return error_response
 
         # Extract validated data
-        transaction_descriptions = validated_data.transactions  # List of strings
+        transaction_descriptions = validated_data.transactions
         spreadsheet_id = validated_data.spreadsheetId
         sheet_name = validated_data.sheetName
         category_column = validated_data.categoryColumn
@@ -706,11 +622,8 @@ def classify_transactions():
             f"Processing classify request with spreadsheet_id: {spreadsheet_id}"
         )
 
-        # Validate API key and get user ID - simplified
-        user_id = validate_api_key(api_key)
-        if not user_id:
-            return create_error_response("Invalid API key", 401)
-
+        # Get user_id from request context (set by decorator)
+        user_id = request.user_id
         logger.info(f"API key validated for user: {user_id}")
 
         # Verify training data exists
@@ -969,8 +882,53 @@ def get_prediction_status(prediction_id):
                     "Prediction succeeded but has no output", 500
                 )
 
-            # If we have config data with spreadsheet_id, process the results
-            if spreadsheet_id:
+            # Get embeddings from prediction output
+            embeddings = np.array(
+                [item.get("embedding", [0] * 768) for item in prediction.output],
+                dtype=np.float32,
+            )
+            logger.info(
+                f"Extracted {len(embeddings)} embeddings from prediction output"
+            )
+
+            # Process based on whether this is a training or classification prediction
+            if "embeddings_data" in config_data:  # Training prediction
+                try:
+                    sheet_id = config_data.get("spreadsheet_id")
+                    if not sheet_id:
+                        return create_error_response(
+                            "Missing spreadsheet_id in config", 500
+                        )
+
+                    # Store the embeddings
+                    store_result = store_embeddings(embeddings, f"{sheet_id}")
+                    logger.info(f"Stored embeddings for {sheet_id}: {store_result}")
+
+                    # Store success result
+                    result = {
+                        "user_id": config_data.get("user_id"),
+                        "status": "success",
+                        "embeddings_shape": str(embeddings.shape),
+                        "spreadsheet_id": sheet_id,
+                    }
+                    prisma_client.insert_webhook_result(prediction.id, result)
+
+                    return jsonify(
+                        {
+                            "status": "completed",
+                            "message": "Training completed successfully",
+                            "spreadsheet_id": sheet_id,
+                        }
+                    )
+
+                except Exception as e:
+                    logger.error(f"Error processing training results: {e}")
+                    return create_error_response(
+                        f"Error processing training results: {str(e)}", 500
+                    )
+
+            # Handle classification prediction (existing code)
+            elif spreadsheet_id:
                 try:
                     user_id = config_data.get("user_id", "unknown")
 
@@ -1185,114 +1143,8 @@ def get_prediction_status(prediction_id):
         return create_error_response(str(e), 500)
 
 
-@app.route("/api-key", methods=["GET", "POST"])
-def manage_api_key():
-    """Get or generate API key for a user."""
-    try:
-        # For GET requests, we need to validate the user
-        if request.method == "GET":
-            # Check for existing API key in header
-            api_key = request.headers.get("X-API-Key")
-            if api_key:
-                user_id = validate_api_key(api_key)
-                if user_id:
-                    logger.info(f"API key validated for user: {user_id}")
-                    return jsonify(
-                        {"status": "success", "user_id": user_id, "api_key": api_key}
-                    )
-                else:
-                    return create_error_response("Invalid API key", 401)
-
-            # If no API key in header, check for user_id in query params
-            user_id = request.args.get("userId")
-            if not user_id:
-                return create_error_response("Missing userId parameter", 400)
-
-            # If user_id is an email, prefix it with google-oauth2|
-            if "@" in user_id and not user_id.startswith("google-oauth2|"):
-                user_id = f"google-oauth2|{user_id}"
-
-            # Use prisma client to get the account
-            account = prisma_client.get_account_by_user_id(user_id)
-
-            if not account:
-                return create_error_response("User not found", 404)
-
-            # Return the API key if it exists
-            if account.get("api_key"):
-                return jsonify(
-                    {
-                        "status": "success",
-                        "user_id": user_id,
-                        "api_key": account.get("api_key"),
-                    }
-                )
-            else:
-                return (
-                    jsonify(
-                        {
-                            "status": "not_found",
-                            "user_id": user_id,
-                            "message": "No API key found for this user",
-                        }
-                    ),
-                    404,
-                )
-
-        # For POST requests, we generate a new API key
-        elif request.method == "POST":
-            data = request.get_json()
-            if not data:
-                return create_error_response("Missing request data", 400)
-
-            # Validate request data
-            validated_data, error_response = validate_request_data(ApiKeyRequest, data)
-            if error_response:
-                return error_response
-
-            user_id = validated_data.userId
-
-            # If user_id is an email, prefix it with google-oauth2|
-            if "@" in user_id and not user_id.startswith("google-oauth2|"):
-                user_id = f"google-oauth2|{user_id}"
-
-            # Generate a new API key (UUID)
-            new_api_key = str(uuid.uuid4())
-
-            # Use prisma client to check if user exists
-            account = prisma_client.get_account_by_user_id(user_id)
-
-            if account:
-                # Update existing account
-                updated_account = prisma_client.update_account(
-                    user_id, {"api_key": new_api_key}
-                )
-                logger.info(f"Updated API key for user {user_id}")
-            else:
-                # Create new account with default config
-                default_config = {
-                    "userId": user_id,
-                    "categorisationRange": "A:Z",
-                    "categorisationTab": None,
-                    "columnOrderCategorisation": {
-                        "categoryColumn": "E",
-                        "descriptionColumn": "C",
-                    },
-                    "api_key": new_api_key,
-                }
-                prisma_client.insert_account(user_id, default_config)
-                logger.info(f"Created new user with API key: {user_id}")
-
-            return jsonify(
-                {"status": "success", "user_id": user_id, "api_key": new_api_key}
-            )
-
-    except Exception as e:
-        logger.error(f"Error managing API key: {e}")
-        return create_error_response(str(e), 500)
-
-
 @app.route("/user-config", methods=["GET"])
+@require_api_key
 def get_user_config():
     """Get user configuration."""
     try:
@@ -1310,14 +1162,8 @@ def get_user_config():
                 if error_response:
                     return error_response
                 user_id = validated_data.userId
-
-                # Check for API key in the validated data
-                api_key = validated_data.apiKey
             else:
                 return create_error_response("Missing userId parameter", 400)
-        else:
-            # Get API key from query params or headers
-            api_key = request.args.get("apiKey") or request.headers.get("X-API-Key")
 
         if not user_id:
             return create_error_response("Missing userId parameter", 400)
@@ -1326,22 +1172,14 @@ def get_user_config():
         if "@" in user_id and not user_id.startswith("google-oauth2|"):
             user_id = f"google-oauth2|{user_id}"
 
-        # Track API usage if API key is provided
-        if api_key:
-            try:
-                prisma_client.track_api_usage(api_key)
-                logger.info(f"Tracked API usage for user config endpoint")
-            except Exception as tracking_error:
-                # Don't fail the request if tracking fails
-                logger.warning(f"Error tracking API usage: {tracking_error}")
-
+        # Track API usage (already handled by decorator)
         response = prisma_client.get_account_by_user_id(user_id)
         if not response:
             return create_error_response("User not found", 404)
 
-        # Update API key if provided
-        if api_key:
-            prisma_client.update_account(user_id, {"api_key": api_key})
+        # Update API key if it changed
+        if request.api_key != response.get("api_key"):
+            prisma_client.update_account(user_id, {"api_key": request.api_key})
             logger.info(f"Updated API key for user {user_id}")
 
         return jsonify(response), 200
@@ -1352,21 +1190,13 @@ def get_user_config():
 
 
 @app.route("/api-usage", methods=["GET"])
+@require_api_key
 def get_api_usage():
     """Get API usage statistics for an account."""
     try:
-        # Require API key authentication
-        api_key = request.headers.get("X-API-Key")
-        if not api_key:
-            return create_error_response("Missing API key", 401)
-
-        # Validate API key and get user ID
-        try:
-            user_id = validate_api_key(api_key)
-            logger.info(f"API key validated for user: {user_id}")
-        except Exception as e:
-            logger.error(f"API key validation failed: {e}")
-            return create_error_response(f"API key validation failed: {str(e)}", 401)
+        # Get user_id from request context (set by decorator)
+        user_id = request.user_id
+        logger.info(f"Getting API usage stats for user: {user_id}")
 
         # Get usage statistics
         usage_stats = prisma_client.get_account_usage_stats(user_id)

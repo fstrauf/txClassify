@@ -1084,26 +1084,18 @@ function pollOperationStatus() {
       return { error: "No operation in progress" };
     }
 
-    // Simple polling with fixed interval
+    // Call the status endpoint
     var options = {
       headers: { "X-API-Key": getServiceConfig().apiKey },
       muteHttpExceptions: true,
     };
 
-    // Check the status endpoint
     var response = UrlFetchApp.fetch(serviceUrl + "/status/" + predictionId, options);
     var responseCode = response.getResponseCode();
 
-    // If we get a non-200 response
+    // Handle non-200 responses
     if (responseCode !== 200) {
-      // For 502/503/504, the server might be restarting
-      if (responseCode === 502 || responseCode === 503 || responseCode === 504) {
-        Logger.log(`Server returned ${responseCode}, server might be restarting`);
-      } else {
-        Logger.log(`Server returned error code: ${responseCode}`);
-      }
-
-      // Return processing status for any error
+      Logger.log(`Server returned ${responseCode} for prediction ${predictionId}`);
       return {
         status: "in_progress",
         message: "Server processing, please wait...",
@@ -1111,87 +1103,61 @@ function pollOperationStatus() {
       };
     }
 
-    // Parse the successful response with error handling
-    var result;
-    try {
-      var responseText = response.getContentText();
-      Logger.log("Response text: " + responseText);
-      result = JSON.parse(responseText);
-    } catch (parseError) {
-      Logger.log("Error parsing JSON response: " + parseError + ", Response: " + responseText);
-      // If we can't parse the response, assume processing is still ongoing
-      return {
-        status: "in_progress",
-        message: "Processing continues (server response error)...",
-        progress: 50,
-      };
-    }
+    // Parse the response
+    var result = JSON.parse(response.getContentText());
+    Logger.log("Status response: " + JSON.stringify(result));
 
-    // Log result structure for debugging
-    Logger.log("Status result structure: " + JSON.stringify(Object.keys(result)));
+    // Handle different status cases
+    switch (result.status) {
+      case "completed":
+      case "succeeded":
+        Logger.log("Operation completed successfully");
 
-    // Handle completed state - check for "completed" or "succeeded" status
-    if (result.status === "completed" || result.status === "succeeded") {
-      Logger.log("Operation completed successfully");
-
-      if (operationType === "categorise") {
-        try {
-          var sheet = SpreadsheetApp.getActiveSheet();
-          writeResultsToSheet(result, config, sheet);
-          Logger.log("Results written to sheet successfully");
-        } catch (writeError) {
-          Logger.log("Error writing results to sheet: " + writeError);
-          // Even if writing fails, we still consider the operation completed
+        // Handle categorization results if needed
+        if (operationType === "categorise" && result.results) {
+          try {
+            var sheet = SpreadsheetApp.getActiveSheet();
+            writeResultsToSheet(result, config, sheet);
+            Logger.log("Results written to sheet successfully");
+          } catch (writeError) {
+            Logger.log("Error writing results to sheet: " + writeError);
+          }
         }
-      } else {
-        // For training, just log completion
-        Logger.log("Training completed successfully");
-      }
 
-      // Clear operation state
-      userProperties.deleteAllProperties();
+        // Clear operation state
+        userProperties.deleteAllProperties();
 
-      return {
-        status: "completed",
-        message: operationType === "categorise" ? "Categorisation completed!" : "Training completed!",
-        progress: 100,
-      };
+        return {
+          status: "completed",
+          message: operationType === "categorise" ? "Categorisation completed!" : "Training completed!",
+          progress: 100,
+        };
+
+      case "failed":
+      case "error":
+        Logger.log("Operation failed: " + (result.error || result.message));
+        userProperties.deleteAllProperties();
+        return {
+          status: "failed",
+          message: result.error || result.message || "Operation failed",
+          progress: 0,
+        };
+
+      case "processing":
+      default:
+        var startTime = parseInt(userProperties.getProperty("START_TIME"));
+        var progress = calculateProgress(startTime);
+        var statusMessage = result.message || (operationType === "categorise" ? "Categorising..." : "Training...");
+
+        Logger.log(`Operation in progress (${progress}%): ${statusMessage}`);
+        return {
+          status: "in_progress",
+          message: statusMessage,
+          progress: progress,
+        };
     }
-
-    // Handle error state - check for "error" or "failed" status
-    if (result.status === "error" || result.status === "failed") {
-      // Extract error message
-      var errorMessage = result.error || result.message || "Operation failed";
-      Logger.log(`Operation failed: ${errorMessage}`);
-
-      // Clear operation state
-      userProperties.deleteAllProperties();
-
-      return {
-        status: "failed",
-        message: errorMessage,
-        progress: 0,
-      };
-    }
-
-    // Handle in-progress state - could be "processing" or anything else
-    var startTime = parseInt(userProperties.getProperty("START_TIME"));
-    var elapsedMinutes = (Date.now() - startTime) / (60 * 1000);
-    var progress = Math.min(90, Math.round(elapsedMinutes * 10)); // ~10% per minute up to 90%
-
-    var statusMessage = result.message || (operationType === "categorise" ? "Categorising..." : "Training...");
-
-    Logger.log(`Operation in progress (${result.status}): ${statusMessage}`);
-
-    return {
-      status: "in_progress",
-      message: statusMessage,
-      progress: progress,
-    };
   } catch (error) {
     Logger.log("Error in pollOperationStatus: " + error);
-
-    // On error, return processing status
     return {
       status: "in_progress",
       message: "Processing continues...",
