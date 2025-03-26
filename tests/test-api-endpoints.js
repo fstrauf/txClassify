@@ -9,7 +9,7 @@ const net = require("net");
 const axios = require("axios");
 
 // Configuration
-const API_PORT = process.env.API_PORT || 3001;
+const API_PORT = process.env.API_PORT || 3005;
 const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
 const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
 
@@ -87,120 +87,74 @@ const findFreePort = async (startPort) => {
 
 // Start Flask server
 const startFlaskServer = async (port) => {
-  log(`Starting Flask server on port ${port}...`);
-
-  // Check if the port is already in use
-  try {
-    const isPortInUse = await new Promise((resolve) => {
-      const server = net
-        .createServer()
-        .once("error", () => {
-          // Port is in use
-          resolve(true);
-        })
-        .once("listening", () => {
-          // Port is free
-          server.close();
-          resolve(false);
-        })
-        .listen(port);
-    });
-
-    if (isPortInUse) {
-      log(`Port ${port} is already in use. Trying to find a free port...`);
-      const newPort = await findFreePort(port + 1);
-      if (newPort) {
-        log(`Found free port: ${newPort}. Using this port instead.`);
-        console.log(`⚠️ PORT CHANGE: Using port ${newPort} instead of requested port ${port}`);
-        port = newPort;
-      } else {
-        log(`Could not find a free port. Attempting to use port ${port} anyway.`);
-      }
-    }
-  } catch (error) {
-    log(`Error checking port availability: ${error.message}`);
-  }
+  console.log(`Starting Flask server on port ${port}...`);
 
   // Start the Flask server
-  const env = { ...process.env };
-  env.FLASK_APP = "main";
-  env.FLASK_ENV = "testing";
-  env.PORT = port.toString();
+  const env = {
+    ...process.env,
+    FLASK_APP: "main",
+    FLASK_ENV: "testing",
+    PORT: port.toString(),
+  };
 
-  // Ensure BACKEND_API is set to an HTTPS URL if available, or default to localhost
-  if (!env.BACKEND_API || !env.BACKEND_API.startsWith("https://")) {
-    log("No HTTPS BACKEND_API set, but webhooks are not required");
-  } else {
-    log(`Using BACKEND_API: ${env.BACKEND_API}`);
-  }
-
-  // Change working directory to pythonHandler
   const options = {
     env,
     stdio: "pipe",
     cwd: path.join(process.cwd(), "pythonHandler"),
   };
 
-  flaskProcess = spawn("python", ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
+  return new Promise((resolve, reject) => {
+    let detectedPort = null;
+    let startTimeout = setTimeout(() => {
+      reject(new Error("Flask server failed to start within 30 seconds"));
+    }, 30000);
 
-  // Store the actual port used for reference
-  let actualPort = port;
-  let portChangeDetected = false;
+    flaskProcess = spawn("python", ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
 
-  flaskProcess.stdout.on("data", (data) => {
-    const output = data.toString().trim();
-    log(`Flask stdout: ${output}`);
+    flaskProcess.stdout.on("data", (data) => {
+      const output = data.toString().trim();
+      console.log(`Flask: ${output}`);
 
-    // Check if the server reports running on a different port
-    const runningMatch = output.match(/Running on http:\/\/127\.0\.0\.1:(\d+)/);
-    if (runningMatch && runningMatch[1] && parseInt(runningMatch[1]) !== actualPort) {
-      actualPort = parseInt(runningMatch[1]);
-      portChangeDetected = true;
-      log(`Detected server running on port ${actualPort} instead of requested port ${port}`);
-      console.log(`⚠️ PORT CHANGE: Server is running on port ${actualPort} instead of requested port ${port}`);
-    }
+      // Only look for the port in the "Running on" message
+      const match = output.match(/Running on http:\/\/[^:]+:(\d+)/);
+      if (match) {
+        detectedPort = parseInt(match[1]);
+        console.log(`\n✅ Flask server started on port ${detectedPort}`);
+        clearTimeout(startTimeout);
+        resolve(detectedPort);
+      }
+    });
+
+    flaskProcess.stderr.on("data", (data) => {
+      const error = data.toString().trim();
+      console.error(`Flask error: ${error}`);
+
+      // If port is in use, kill process and try next port
+      if (error.includes("Address already in use")) {
+        console.log(`\n⚠️ Port ${port} is in use, trying port ${port + 1}`);
+        flaskProcess.kill();
+        clearTimeout(startTimeout);
+        startFlaskServer(port + 1)
+          .then(resolve)
+          .catch(reject);
+      }
+    });
+
+    flaskProcess.on("error", (error) => {
+      console.error(`Failed to start Flask server: ${error.message}`);
+      clearTimeout(startTimeout);
+      reject(error);
+    });
+
+    flaskProcess.on("close", (code) => {
+      // Only handle unexpected exits
+      if (code !== 0 && !detectedPort) {
+        console.error(`Flask server exited with code ${code}`);
+        clearTimeout(startTimeout);
+        reject(new Error(`Flask server exited with code ${code}`));
+      }
+    });
   });
-
-  flaskProcess.stderr.on("data", (data) => {
-    const output = data.toString().trim();
-    log(`Flask stderr: ${output}`);
-
-    // Check for "Address already in use" error
-    if (output.includes("Address already in use")) {
-      log(`Flask server failed to start on port ${port}. Port is already in use.`);
-      // Try to find a new port and restart
-      findFreePort(port + 1).then((newPort) => {
-        if (newPort) {
-          log(`Found free port: ${newPort}. Restarting Flask server on this port.`);
-          console.log(`⚠️ PORT CHANGE: Restarting on port ${newPort} instead of port ${port}`);
-          actualPort = newPort;
-          portChangeDetected = true;
-          // Kill the current process
-          if (flaskProcess) {
-            flaskProcess.kill();
-          }
-          // Start a new process with the new port
-          startFlaskServer(newPort);
-        } else {
-          log(`Could not find a free port. Flask server will not start.`);
-        }
-      });
-    }
-  });
-
-  flaskProcess.on("close", (code) => {
-    log(`Flask server process exited with code ${code}`);
-  });
-
-  // Wait for Flask server to start
-  log(`Waiting for Flask server to start on port ${port}...`);
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-
-  // Return the actual port used, which might differ from the requested port
-  if (portChangeDetected) {
-    console.log(`⚠️ IMPORTANT: Using actual port ${actualPort} for all API requests`);
-  }
-  return actualPort;
 };
 
 // Load training data from CSV
@@ -804,184 +758,108 @@ const cleanup = async () => {
 // Main function
 const main = async () => {
   try {
-    // Only show this in verbose mode
-    logInfo(`Using TEST_USER_ID: ${TEST_USER_ID}`);
-    logInfo(`Using TEST_API_KEY: ${TEST_API_KEY.substring(0, 3)}${TEST_API_KEY.substring(3).replace(/./g, "*")}`);
+    console.log("\n=== Starting Test Script ===\n");
 
-    // Always show this regardless of log level
-    console.log("Starting test script...");
+    // 1. Start Flask Server
+    console.log("1. Starting Flask Server...");
+    const port = await startFlaskServer(API_PORT);
+    const apiUrl = `http://localhost:${port}`;
+    console.log(`   Server URL: ${apiUrl}\n`);
 
-    // Setup test user
-    logInfo("Setting up test user...");
-    const prisma = new PrismaClient({
-      log: ["error"],
-    });
-
+    // 2. Setup Test User
+    console.log("2. Setting up Test User...");
+    const prisma = new PrismaClient({ log: ["error"] });
     try {
-      logDebug(`Setting up test user with ID: ${TEST_USER_ID} and API key: ${TEST_API_KEY}`);
-
-      // Check if the user already exists
-      const existingAccount = await prisma.account.findUnique({
+      await prisma.account.upsert({
         where: { userId: TEST_USER_ID },
+        update: { api_key: TEST_API_KEY },
+        create: {
+          userId: TEST_USER_ID,
+          api_key: TEST_API_KEY,
+          categorisationRange: "A:D",
+          categorisationTab: "Sheet1",
+        },
       });
-
-      if (existingAccount) {
-        // Update the existing account
-        logDebug(`Test user already exists, updating API key`);
-
-        await prisma.account.update({
-          where: { userId: TEST_USER_ID },
-          data: { api_key: TEST_API_KEY },
-        });
-      } else {
-        // Create a new account
-        logDebug(`Creating new test user`);
-
-        await prisma.account.create({
-          data: {
-            userId: TEST_USER_ID,
-            api_key: TEST_API_KEY,
-            categorisationRange: "A:D",
-            categorisationTab: "Sheet1",
-            // columnOrderCategorisation: JSON.stringify(["Date", "Amount", "Description", "Currency"]),
-          },
-        });
-      }
-
-      logInfo("Test user setup complete");
+      console.log("   Test user ready\n");
     } finally {
       await prisma.$disconnect();
     }
 
-    // Start Flask server
-    const actualPort = await startFlaskServer(API_PORT);
-    logInfo(`Flask server started on port ${actualPort}`);
-    console.log("Flask server started successfully");
-
-    // Set API URL based on the ACTUAL port, not the requested port
-    const apiUrl = `http://localhost:${actualPort}`;
-    logInfo(`Using API URL: ${apiUrl}`);
-
-    // Load test data
-    // const trainingData = await loadTrainingData("training_test.csv");
+    // 3. Load Test Data
+    console.log("3. Loading Test Data...");
     const trainingData = await loadTrainingData("full_train.csv");
-    logInfo(`Loaded training data with ${trainingData.length} rows`);
-
-    const categorizationData = await loadCategorizationData("categorise_test.csv");
-    logInfo(`Loaded categorization data with ${categorizationData.length} rows`);
+    const categorizationData = await loadCategorizationData("categorise_full.csv");
+    // const categorizationData = await loadCategorizationData("categorise_test.csv");
+    console.log(`   Loaded ${trainingData.length} training records`);
+    console.log(`   Loaded ${categorizationData.length} categorization records\n`);
 
     // Create test configuration
     const config = {
       userId: TEST_USER_ID,
       apiKey: TEST_API_KEY,
       serviceUrl: apiUrl,
-      narrativeCol: "B", // Column containing transaction descriptions
-      categoryCol: "C", // Column containing categories
-      startRow: 2, // Start row (assuming header in row 1)
-      testMode: true, // Flag to indicate we're in test mode
+      narrativeCol: "B",
+      categoryCol: "C",
+      startRow: 2,
       trainingDataFile: trainingData,
-      categorizationDataFile: categorizationData, // Just pass the filename
+      categorizationDataFile: categorizationData,
     };
 
-    logInfo(`Test configuration serviceUrl: ${config.serviceUrl}`);
-    logDebug(`Test configuration: ${JSON.stringify(config, null, 2)}`);
+    // 4. Verify Server Health
+    console.log("4. Verifying Server Health...");
+    const healthCheck = await fetch(`${apiUrl}/health`, {
+      headers: { "X-API-Key": TEST_API_KEY },
+    });
 
-    let trainingSuccessful = false;
+    if (!healthCheck.ok) {
+      throw new Error(`Server health check failed: ${healthCheck.status}`);
+    }
+    console.log("   Server is healthy\n");
 
-    // ===== STEP 1: Run training flow =====
+    // 5. Run Training (if enabled)
     if (RUN_TRAINING) {
-      console.log("\n===== STEP 1: TRAINING MODEL =====");
+      console.log("5. Running Training...");
       const trainingResult = await trainModel(config);
 
-      if (trainingResult.status === "completed") {
-        console.log("✅ Training completed successfully");
-        trainingSuccessful = true;
-      } else {
-        console.log(`❌ Training failed: ${trainingResult.error || "Unknown error"}`);
-        trainingSuccessful =
-          trainingResult.status === "completed" ||
-          (trainingResult.message && trainingResult.message.includes("maximum polling attempts"));
+      if (trainingResult.status !== "completed") {
+        throw new Error(`Training failed: ${trainingResult.error || "Unknown error"}`);
       }
+      console.log("   Training completed successfully\n");
 
-      // Add a small delay to ensure the model is ready if we're also running categorization
-      if (RUN_CATEGORIZATION && trainingSuccessful) {
-        logInfo("Waiting for model to be fully ready...");
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-    } else {
-      console.log("\n===== SKIPPING TRAINING (--cat-only flag detected) =====");
-      // Assume training is successful if we're only running categorization
-      trainingSuccessful = true;
+      // Wait for model to be ready
+      console.log("   Waiting 5s for model to be ready...");
+      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
 
-    // ===== STEP 2: Run categorisation flow =====
+    // 6. Run Categorization (if enabled)
     if (RUN_CATEGORIZATION) {
-      if (trainingSuccessful || !RUN_TRAINING) {
-        console.log("\n===== STEP 2: CATEGORISATION MODEL =====");
+      console.log("6. Running Categorization...");
+      const categorizationResult = await categoriseTransactions(config);
 
-        // Double-check and log server URL and API key details
-        console.log(`Using server URL for categorization: ${config.serviceUrl}`);
-        console.log(`Server port: ${new URL(config.serviceUrl).port}`);
-        console.log(`API key defined: ${config.apiKey ? "Yes" : "No"}`);
-        console.log(`TEST_API_KEY defined: ${TEST_API_KEY ? "Yes" : "No"}`);
-        console.log(
-          `API key that will be used: ${(config.apiKey || TEST_API_KEY)?.substring(0, 4)}...${(
-            config.apiKey || TEST_API_KEY
-          )?.substring((config.apiKey || TEST_API_KEY)?.length - 4)}`
-        );
-
-        const categorisationResult = await categoriseTransactions(config);
-
-        if (categorisationResult.status === "completed") {
-          console.log("✅ Categorisation completed successfully");
-        } else {
-          console.log(`❌ Categorisation failed: ${categorisationResult.error || "Unknown error"}`);
-        }
-      } else {
-        console.log(`⚠️ Skipping categorisation step because training failed`);
+      if (categorizationResult.status !== "completed") {
+        throw new Error(`Categorization failed: ${categorizationResult.error || "Unknown error"}`);
       }
-    } else {
-      console.log("\n===== SKIPPING CATEGORISATION (--train-only flag detected) =====");
+      console.log("   Categorization completed successfully\n");
     }
 
-    // Cleanup
-    logInfo("Stopping Flask server...");
+    // 7. Cleanup
+    console.log("7. Cleaning up...");
     if (flaskProcess) {
       flaskProcess.kill();
+      console.log("   Flask server stopped");
     }
 
-    try {
-      logInfo("Cleaning up test user...");
-      await cleanup();
-      logInfo("Test user cleanup complete");
-    } catch (cleanupError) {
-      logError(`Error during cleanup: ${cleanupError.message}`);
-    }
-
-    // Add a small delay to ensure all cleanup operations complete
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    console.log("\n✅ Test completed successfully");
-    process.exit(0); // Exit with success code
+    console.log("\n=== Test Completed Successfully ===\n");
+    process.exit(0);
   } catch (error) {
-    // Handle any errors in the main function
-    console.log(`\n❌ ERROR: ${error.message}`);
-    logDebug(`Error stack: ${error.stack}`);
+    console.error(`\n❌ ERROR: ${error.message}`);
 
-    // Ensure Flask server is stopped even if there's an error
+    // Ensure cleanup on error
     if (flaskProcess) {
-      logInfo("Stopping Flask server due to error...");
       flaskProcess.kill();
+      console.log("   Flask server stopped");
     }
 
-    try {
-      // Run cleanup to ensure all resources are released
-      await cleanup();
-    } catch (cleanupError) {
-      logError(`Error during cleanup after main error: ${cleanupError.message}`);
-    }
-
-    // Exit with error code
     process.exit(1);
   }
 };

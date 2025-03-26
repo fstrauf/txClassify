@@ -312,10 +312,14 @@ def run_prediction(descriptions: list) -> dict:
         model = replicate.models.get(REPLICATE_MODEL_NAME)
         version = model.versions.get(REPLICATE_MODEL_VERSION)
 
-        # Create the prediction without webhook
+        # Format descriptions as a list and convert to JSON string
         prediction = replicate.predictions.create(
             version=version,
-            input={"text_batch": json.dumps(descriptions)},
+            input={
+                "texts": json.dumps(descriptions),  # The model expects a JSON string
+                "batch_size": 32,  # Standard batch size
+                "normalize_embeddings": True,  # Normalize embeddings for better similarity comparison
+            },
         )
 
         logger.info(
@@ -633,7 +637,12 @@ def classify_transactions():
 
         # Create prediction without webhook
         prediction = replicate.predictions.create(
-            version=version, input={"text_batch": json.dumps(cleaned_descriptions)}
+            version=version,
+            input={
+                "texts": json.dumps(cleaned_descriptions),
+                "batch_size": 32,
+                "normalize_embeddings": True,
+            },
         )
 
         logger.info(f"Classification prediction created with ID: {prediction.id}")
