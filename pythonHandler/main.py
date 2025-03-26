@@ -307,16 +307,18 @@ def clean_text(text: str) -> str:
 def run_prediction(descriptions: list) -> dict:
     """Run prediction using Replicate API."""
     try:
-        model = replicate.models.get("replicate/all-mpnet-base-v2")
+        model = replicate.models.get("beautyyuyanli/multilingual-e5-large")
         version = model.versions.get(
-            "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
+            "a06276a89f1a902d5fc225a9ca32b6e8e6292b7f3b136518878da97c458e2bad"
         )
 
         # Create the prediction without webhook
-        logger.info("Creating prediction without webhook (using polling)")
+        logger.info(
+            "Creating prediction with multilingual-e5-large model (using polling)"
+        )
         prediction = replicate.predictions.create(
             version=version,
-            input={"text_batch": json.dumps(descriptions)},
+            input={"texts": json.dumps(descriptions), "normalize_embeddings": True},
         )
 
         return prediction
@@ -535,7 +537,7 @@ def train_model():
 
         # Create a placeholder for the embeddings so we know it's expected
         # This will be replaced with the actual embeddings when the webhook is called
-        placeholder = np.array([[0.0] * 768])  # Standard embedding size
+        placeholder = np.array([[0.0] * 1024])  # E5-large embedding size is 1024
         store_embeddings(placeholder, f"{sheet_id}")
         logger.info(f"Stored placeholder embeddings for {sheet_id}")
 
@@ -659,14 +661,19 @@ def classify_transactions():
         logger.info(f"Getting embeddings for {len(cleaned_descriptions)} descriptions")
 
         # Create prediction
-        model = replicate.models.get("replicate/all-mpnet-base-v2")
+        model = replicate.models.get("beautyyuyanli/multilingual-e5-large")
         version = model.versions.get(
-            "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
+            "a06276a89f1a902d5fc225a9ca32b6e8e6292b7f3b136518878da97c458e2bad"
         )
 
         # Create prediction without webhook
+        logger.info("Creating prediction with multilingual-e5-large model")
         prediction = replicate.predictions.create(
-            version=version, input={"text_batch": json.dumps(cleaned_descriptions)}
+            version=version,
+            input={
+                "texts": json.dumps(cleaned_descriptions),
+                "normalize_embeddings": True,
+            },
         )
 
         logger.info(f"Created prediction with ID: {prediction.id}")
@@ -883,10 +890,8 @@ def get_prediction_status(prediction_id):
                 )
 
             # Get embeddings from prediction output
-            embeddings = np.array(
-                [item.get("embedding", [0] * 768) for item in prediction.output],
-                dtype=np.float32,
-            )
+            # The multilingual-e5-large model returns embeddings directly in an array of arrays
+            embeddings = np.array(prediction.output, dtype=np.float32)
             logger.info(
                 f"Extracted {len(embeddings)} embeddings from prediction output"
             )
@@ -977,13 +982,8 @@ def get_prediction_status(prediction_id):
                         )
 
                     # Extract embeddings from the prediction output
-                    new_embeddings = np.array(
-                        [
-                            item.get("embedding", [0] * 768)
-                            for item in prediction.output
-                        ],
-                        dtype=np.float32,
-                    )
+                    # The multilingual-e5-large model returns embeddings directly in an array of arrays
+                    new_embeddings = np.array(prediction.output, dtype=np.float32)
                     logger.info(
                         f"Extracted {len(new_embeddings)} embeddings from prediction output"
                     )
