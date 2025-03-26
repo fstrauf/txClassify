@@ -41,6 +41,7 @@ if (process.argv.includes("--verbose")) {
 // Check for test mode flags
 const RUN_TRAINING = !process.argv.includes("--cat-only");
 const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
+const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
 
 const log = (message, level = LOG_LEVELS.INFO) => {
   // Only log messages at or below the current log level
@@ -703,6 +704,142 @@ const categoriseTransactions = async (config) => {
   }
 };
 
+// Test clean_text functionality
+const testCleanText = async (apiUrl) => {
+  console.log("\n=== Testing clean_text Function ===\n");
+
+  try {
+    // 1. Load the training data
+    console.log("1. Loading training data...");
+    const trainingData = await loadTrainingData("full_train.csv");
+    console.log(`   Loaded ${trainingData.length} records\n`);
+
+    // 2. Send clean text requests
+    console.log("2. Testing clean_text endpoint...");
+    const descriptions = trainingData.map((t) => t.description);
+    const uniqueOriginal = new Set(descriptions).size;
+
+    console.log("\nOriginal Data Analysis:");
+    console.log(`Total transactions: ${descriptions.length}`);
+    console.log(`Unique descriptions: ${uniqueOriginal}`);
+    console.log(
+      `Duplicate ratio: ${(((descriptions.length - uniqueOriginal) / descriptions.length) * 100).toFixed(2)}%`
+    );
+
+    // Send batches of descriptions to clean_text endpoint
+    const batchSize = 100;
+    const cleanedDescriptions = [];
+    const cleaningResults = []; // Store before/after pairs
+
+    for (let i = 0; i < descriptions.length; i += batchSize) {
+      const batch = descriptions.slice(i, i + batchSize);
+      const response = await fetch(`${apiUrl}/clean_text`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": TEST_API_KEY,
+        },
+        body: JSON.stringify({ descriptions: batch }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to clean text batch: ${response.status}`);
+      }
+
+      const result = await response.json();
+      cleanedDescriptions.push(...result.cleaned_descriptions);
+
+      // Store before/after pairs
+      batch.forEach((desc, idx) => {
+        cleaningResults.push({
+          original: desc,
+          cleaned: result.cleaned_descriptions[idx],
+        });
+      });
+
+      // Show progress
+      process.stdout.write(`   Processing: ${Math.min(i + batchSize, descriptions.length)}/${descriptions.length}\r`);
+    }
+
+    console.log("\n"); // Clear progress line
+
+    // 3. Analyze results
+    const uniqueCleaned = new Set(cleanedDescriptions).size;
+
+    console.log("\nAfter Cleaning Analysis:");
+    console.log(`Total transactions: ${cleanedDescriptions.length}`);
+    console.log(`Unique cleaned descriptions: ${uniqueCleaned}`);
+    console.log(`Reduction ratio: ${(((uniqueOriginal - uniqueCleaned) / uniqueOriginal) * 100).toFixed(2)}%`);
+    console.log(
+      `Final duplicate ratio: ${(
+        ((cleanedDescriptions.length - uniqueCleaned) / cleanedDescriptions.length) *
+        100
+      ).toFixed(2)}%`
+    );
+
+    // 4. Analyze patterns
+    console.log("\nTop 10 most frequent cleaned descriptions:");
+    const frequency = {};
+    cleanedDescriptions.forEach((desc) => {
+      frequency[desc] = (frequency[desc] || 0) + 1;
+    });
+
+    const sortedFreq = Object.entries(frequency)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10);
+
+    for (const [desc, count] of sortedFreq) {
+      console.log(`\nCount: ${count} | ${desc}`);
+      console.log("Original variations:");
+      const variations = descriptions.filter((orig, idx) => cleanedDescriptions[idx] === desc);
+      const uniqueVariations = [...new Set(variations)];
+      uniqueVariations.slice(0, 3).forEach((v) => console.log(`  - ${v}`));
+      if (uniqueVariations.length > 3) {
+        console.log(`  ... and ${uniqueVariations.length - 3} more variations`);
+      }
+    }
+
+    // 5. Print detailed cleaning results
+    console.log("\nDetailed Cleaning Results (first 10 examples):");
+    console.log("----------------------------------------");
+    cleaningResults.slice(0, 10).forEach((result, idx) => {
+      console.log(`\nExample ${idx + 1}:`);
+      console.log(`Original: "${result.original}"`);
+      console.log(`Cleaned : "${result.cleaned}"`);
+    });
+
+    // Save full results to a file for further analysis
+    const resultsPath = path.join(__dirname, "test_data", "cleaning_results.json");
+    fs.writeFileSync(
+      resultsPath,
+      JSON.stringify(
+        {
+          summary: {
+            totalTransactions: descriptions.length,
+            uniqueOriginal,
+            uniqueCleaned,
+            reductionRatio: (((uniqueOriginal - uniqueCleaned) / uniqueOriginal) * 100).toFixed(2),
+            duplicateRatio: (((cleanedDescriptions.length - uniqueCleaned) / cleanedDescriptions.length) * 100).toFixed(
+              2
+            ),
+          },
+          topPatterns: sortedFreq,
+          allResults: cleaningResults,
+        },
+        null,
+        2
+      )
+    );
+    console.log(`\nFull results saved to: ${resultsPath}`);
+
+    console.log("\n=== clean_text Test Completed Successfully ===\n");
+    return true;
+  } catch (error) {
+    console.error(`\nclean_text test failed: ${error.message}`);
+    return false;
+  }
+};
+
 // Cleanup function
 const cleanup = async () => {
   // Stop Flask server
@@ -785,8 +922,28 @@ const main = async () => {
       await prisma.$disconnect();
     }
 
-    // 3. Load Test Data
-    console.log("3. Loading Test Data...");
+    // 3. Verify Server Health
+    console.log("3. Verifying Server Health...");
+    const healthCheck = await fetch(`${apiUrl}/health`, {
+      headers: { "X-API-Key": TEST_API_KEY },
+    });
+
+    if (!healthCheck.ok) {
+      throw new Error(`Server health check failed: ${healthCheck.status}`);
+    }
+    console.log("   Server is healthy\n");
+
+    // 4. Run specific test mode if selected
+    if (TEST_CLEAN_TEXT) {
+      const success = await testCleanText(apiUrl);
+      if (!success) {
+        throw new Error("clean_text test failed");
+      }
+      return;
+    }
+
+    // 5. Load Test Data
+    console.log("5. Loading Test Data...");
     const trainingData = await loadTrainingData("full_train.csv");
     const categorizationData = await loadCategorizationData("categorise_full.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
@@ -805,20 +962,9 @@ const main = async () => {
       categorizationDataFile: categorizationData,
     };
 
-    // 4. Verify Server Health
-    console.log("4. Verifying Server Health...");
-    const healthCheck = await fetch(`${apiUrl}/health`, {
-      headers: { "X-API-Key": TEST_API_KEY },
-    });
-
-    if (!healthCheck.ok) {
-      throw new Error(`Server health check failed: ${healthCheck.status}`);
-    }
-    console.log("   Server is healthy\n");
-
-    // 5. Run Training (if enabled)
+    // 6. Run Training (if enabled)
     if (RUN_TRAINING) {
-      console.log("5. Running Training...");
+      console.log("6. Running Training...");
       const trainingResult = await trainModel(config);
 
       if (trainingResult.status !== "completed") {
@@ -831,9 +977,9 @@ const main = async () => {
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
 
-    // 6. Run Categorization (if enabled)
+    // 7. Run Categorization (if enabled)
     if (RUN_CATEGORIZATION) {
-      console.log("6. Running Categorization...");
+      console.log("7. Running Categorization...");
       const categorizationResult = await categoriseTransactions(config);
 
       if (categorizationResult.status !== "completed") {
@@ -842,8 +988,8 @@ const main = async () => {
       console.log("   Categorization completed successfully\n");
     }
 
-    // 7. Cleanup
-    console.log("7. Cleaning up...");
+    // 8. Cleanup
+    console.log("8. Cleaning up...");
     if (flaskProcess) {
       flaskProcess.kill();
       console.log("   Flask server stopped");

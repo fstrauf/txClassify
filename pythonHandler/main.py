@@ -276,28 +276,93 @@ def update_process_status(status_text: str, mode: str, user_id: str) -> None:
 
 
 def clean_text(text: str) -> str:
-    """Clean transaction description text while preserving business names."""
+    """Clean transaction description text while preserving core business information."""
     # Convert to string and strip whitespace
-    text = str(text).strip()
+    text = str(text).strip().upper()
 
-    # Remove only transaction-specific metadata
+    # Remove common payment method patterns
+    payment_patterns = [
+        r"\s*(?:TAP AND PAY|CONTACTLESS|PIN PURCHASE|EFTPOS|DEBIT CARD|CREDIT CARD)",
+        r"\s*(?:PURCHASE|PAYMENT|TRANSFER|DIRECT DEBIT)",
+        r"\s*(?:APPLE PAY|GOOGLE PAY|SAMSUNG PAY)",
+        r"\s*(?:POS\s+PURCHASE|POS\s+PAYMENT)",
+    ]
+    for pattern in payment_patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+
+    # Remove transaction metadata
     patterns = [
-        r"\s*\d{2,4}[-/]\d{2}[-/]\d{2,4}",  # Dates
-        r"\s*\d{2}:\d{2}(?::\d{2})?",  # Times
-        r"\s*Card\s+[xX*]+\d{4}",  # Card numbers
-        r"\s*\|\s*[\d\.]+$",  # Amount at end
-        r"\s*\|\s*[A-Z0-9\s]+$",  # Reference codes
-        r"\s+(?:Value Date|Card ending|ref|reference)\s*:?.*$",  # Transaction metadata
-        r"(?i)\s+(?:AUS|USA|UK|NS|CYP)$",  # Country codes at end
-        r"\s+\([^)]*\)$",  # Anything in parentheses at the end
+        # Remove dates in various formats
+        r"\s*\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}",
+        r"\s*\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}",
+        # Remove times
+        r"\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?",
+        # Remove card numbers and references
+        r"\s*(?:CARD|REF|REFERENCE|TXN)\s*[#]?\s*[xX*]?\d+",
+        r"\s*\d{4}[xX*]+\d{4}",
+        # Remove amounts and currency
+        r"\s*\$?\d+\.\d{2}\s*(?:AUD|USD|EUR|GBP)?",
+        r"\s*(?:AUD|USD|EUR|GBP)\s*\$?\d+\.\d{2}",
+        # Remove common transaction IDs and references
+        r"\s*(?:ID|REF|REFERENCE|TXN|TRANS|INV|INVOICE)\s*[:#]?\s*\d+",
+        r"\s*\d{6,}",  # Remove long numbers (likely reference numbers)
+        # Remove dates and timestamps in various formats
+        r"\s*\d{8,14}",  # YYYYMMDD, YYYYMMDDHHmm, etc.
+        # Remove common location/terminal identifiers
+        r"\s+(?:T/C|QPS|AU|NS|TERMINAL|TID|MID)\s*[:#]?\s*\d*",
+        # Remove store/branch numbers
+        r"\s+(?:STORE|BRANCH|LOCATION|LOC)\s*[:#]?\s*\d+",
+        r"\s+#\s*\d+",
+        r"\s+\d{2,4}(?:\s|$)",  # Standalone 2-4 digit numbers (likely store numbers)
+        # Remove business suffixes
+        r"\s+(?:PTY\s*LTD|P/?L|LIMITED|AUSTRALIA(?:N)?|CORPORATION|CORP|INC|LLC)",
+        # Remove common prefixes
+        r"^(?:SQ|LIV|SMP|MWA|EZI|SP|PP)\s*[\*#]?\s*",
+        # Remove transaction types
+        r"^(?:POS|ATM|DD|SO|BP|AP)\s+",
+        r"^(?:CRED\s+VOUCHER|PENDING|RETURN|REFUND|CREDIT|DEBIT)\s+",
+        # Remove anything in parentheses or brackets
+        r"\s*\([^)]*\)",
+        r"\s*\[[^\]]*\]",
+        # Remove URLs and email addresses
+        r"\s*(?:WWW|HTTP|HTTPS).*$",
+        r"\s*\S+@\S+\.\S+",
+        # Remove state/country codes at the end
+        r"\s+(?:NSW|VIC|QLD|SA|WA|NT|ACT|TAS|AUS|USA|UK|NZ)$",
+        # Remove extra spaces between digits
+        r"(\d)\s+(\d)",
+        # Remove special characters and multiple spaces
+        r"[^\w\s-]",
     ]
 
     # Apply patterns one by one
     for pattern in patterns:
-        text = re.sub(pattern, "", text)
+        text = re.sub(
+            pattern, r"\1\2" if r"\1" in pattern else "", text, flags=re.IGNORECASE
+        )
 
-    # Remove extra whitespace
+    # Remove extra whitespace and normalize spaces
     text = " ".join(text.split())
+
+    # Trim long transaction names
+    words = text.split()
+    if len(words) > 4:  # If more than 4 words
+        text = " ".join(words[:3])
+
+    # Remove any remaining noise words at the end
+    noise_words = {
+        "VALUE",
+        "DATE",
+        "DIRECT",
+        "DEBIT",
+        "CREDIT",
+        "CARD",
+        "PAYMENT",
+        "PURCHASE",
+    }
+    words = text.split()
+    if len(words) > 1 and words[-1] in noise_words:
+        text = " ".join(words[:-1])
 
     return text.strip()
 
@@ -310,24 +375,29 @@ def run_prediction(descriptions: list) -> dict:
     """
     try:
         start_time = time.time()
+        total_items = len(descriptions)
         logger.info(
-            f"Starting prediction with model: {REPLICATE_MODEL_NAME} for {len(descriptions)} items"
+            f"Starting prediction with model: {REPLICATE_MODEL_NAME} for {total_items} items"
         )
+
+        # Clean descriptions and ensure they are strings
+        cleaned_descriptions = [str(desc).strip() for desc in descriptions]
 
         model = replicate.models.get(REPLICATE_MODEL_NAME)
         version = model.versions.get(REPLICATE_MODEL_VERSION)
 
-        # Format descriptions as a list and convert to JSON string
+        # Format input exactly as shown in documentation
+        # Note: The API expects 'texts' to be a JSON string of a list of strings
+        input_texts = json.dumps(cleaned_descriptions)
         prediction = replicate.predictions.create(
             version=version,
             input={
-                "texts": json.dumps(descriptions),  # The model expects a JSON string
-                "batch_size": 32,  # Standard batch size
-                "normalize_embeddings": True,  # Normalize embeddings for better similarity comparison
+                "texts": input_texts,
+                "batch_size": 32,
+                "normalize_embeddings": True,
             },
         )
 
-        # Check if prediction was created successfully
         if not prediction or not prediction.id:
             raise Exception("Failed to create prediction (no prediction ID returned)")
 
@@ -1191,6 +1261,95 @@ def get_api_usage():
     except Exception as e:
         logger.error(f"Error getting API usage statistics: {e}")
         return create_error_response(str(e), 500)
+
+
+@app.route("/clean_text", methods=["POST"])
+@require_api_key
+def clean_text_endpoint():
+    """Clean a batch of transaction descriptions."""
+    try:
+        data = request.get_json()
+        if not data or "descriptions" not in data:
+            return jsonify({"error": "Missing descriptions in request"}), 400
+
+        descriptions = data["descriptions"]
+        if not isinstance(descriptions, list):
+            return jsonify({"error": "Descriptions must be a list"}), 400
+
+        # Get user_id from request context (set by decorator)
+        user_id = request.user_id
+
+        # Track API usage
+        try:
+            # Get current usage
+            usage_stats = prisma_client.get_account_usage_stats(user_id)
+            if usage_stats:
+                daily_requests = usage_stats.get("daily_requests", 0)
+                if daily_requests > 10000:  # Limit to 10k requests per day
+                    return (
+                        jsonify(
+                            {
+                                "error": "Daily API limit exceeded. Please try again tomorrow or contact support to increase your limit."
+                            }
+                        ),
+                        429,
+                    )
+        except Exception as e:
+            logger.warning(f"Error checking API usage for user {user_id}: {e}")
+            # Continue processing if usage check fails
+
+        # Process descriptions
+        cleaned_descriptions = []
+        invalid_descriptions = []
+
+        for i, desc in enumerate(descriptions):
+            try:
+                if not isinstance(desc, str):
+                    invalid_descriptions.append(
+                        {
+                            "index": i,
+                            "description": str(desc),
+                            "error": "Description must be a string",
+                        }
+                    )
+                    cleaned_descriptions.append("")
+                    continue
+
+                if len(desc) > 500:  # Limit description length
+                    invalid_descriptions.append(
+                        {
+                            "index": i,
+                            "description": desc[:50] + "...",
+                            "error": "Description too long (max 500 characters)",
+                        }
+                    )
+                    cleaned_descriptions.append(desc[:500])
+                    continue
+
+                cleaned = clean_text(desc)
+                cleaned_descriptions.append(cleaned)
+
+            except Exception as e:
+                invalid_descriptions.append(
+                    {"index": i, "description": desc, "error": str(e)}
+                )
+                cleaned_descriptions.append("")
+
+        response = {
+            "cleaned_descriptions": cleaned_descriptions,
+        }
+
+        if invalid_descriptions:
+            response["warnings"] = {
+                "invalid_descriptions": invalid_descriptions,
+                "message": "Some descriptions could not be processed properly",
+            }
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Error in clean_text endpoint: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
 # === Helper Functions ===
