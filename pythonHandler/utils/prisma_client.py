@@ -443,7 +443,9 @@ class PrismaClient:
 
             if webhook_result:
                 # Log the raw webhook result for debugging
-                logger.info(f"Raw webhook result: {webhook_result}")
+                logger.info(
+                    f"Raw webhook result: id='{webhook_result.id}' prediction_id='{webhook_result.prediction_id}'"
+                )
 
                 # Convert to dictionary for consistent access
                 result = {

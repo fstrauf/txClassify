@@ -21,6 +21,13 @@ from functools import wraps
 # Load environment variables
 load_dotenv()
 
+# Define global constants for Replicate model
+REPLICATE_MODEL_NAME = "beautyyuyanli/multilingual-e5-large"
+REPLICATE_MODEL_VERSION = (
+    "a06276a89f1a902d5fc225a9ca32b6e8e6292b7f3b136518878da97c458e2bad"
+)
+EMBEDDING_DIMENSION = 1024  # Embedding dimension for the model
+
 
 # === Request Validation Models ===
 class TransactionBase(BaseModel):
@@ -85,7 +92,7 @@ class UserConfigRequest(BaseModel):
 # Configure logging
 logging.basicConfig(
     stream=sys.stdout,  # Log to stdout for Docker/Gunicorn to capture
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
@@ -101,6 +108,9 @@ logger.info(f"Backend API URL: {BACKEND_API}")
 # Log startup information
 logger.info("=== Main Application Starting ===")
 logger.info(f"Environment: {os.environ.get('FLASK_ENV', 'production')}")
+logger.info(
+    f"Using embedding model: {REPLICATE_MODEL_NAME}, version: {REPLICATE_MODEL_VERSION[:8]}..."
+)
 
 # Connect to the database with a simple retry mechanism
 connected = False
@@ -221,23 +231,16 @@ def validate_api_key(api_key: str, track_usage: bool = True) -> str:
     try:
         # Clean the API key
         api_key = api_key.strip()
-        logger.info(f"Validating API key (length: {len(api_key)})")
-        logger.debug(f"API key first/last 4 chars: {api_key[:4]}...{api_key[-4:]}")
-
-        # Log the query we're about to make
-        logger.info("Querying database for API key validation")
 
         # Use Prisma client to find account by API key
         account = prisma_client.get_account_by_api_key(api_key)
 
         if not account:
-            logger.error(
-                f"No account found for API key: {api_key[:4]}...{api_key[-4:]}"
-            )
+            logger.error("Invalid API key provided")
             return ""
 
         # Log the found user data (excluding sensitive info)
-        logger.info(f"Found user data - userId: {account['userId']}")
+        logger.info(f"API key validated for userId: {account['userId']}")
 
         if not account["userId"]:
             logger.error("User data found but missing userId")
@@ -247,9 +250,6 @@ def validate_api_key(api_key: str, track_usage: bool = True) -> str:
         if track_usage:
             try:
                 prisma_client.track_api_usage(api_key)
-                logger.debug(
-                    f"Tracked API usage for key: {api_key[:4]}...{api_key[-4:]}"
-                )
             except Exception as tracking_error:
                 # Don't fail the validation if tracking fails
                 logger.warning(f"Error tracking API usage: {tracking_error}")
@@ -258,9 +258,6 @@ def validate_api_key(api_key: str, track_usage: bool = True) -> str:
 
     except Exception as e:
         logger.error(f"Error validating API key: {str(e)}")
-        logger.error(
-            f"API key validation failed for key: {api_key[:4] if len(api_key) >= 4 else ''}...{api_key[-4:] if len(api_key) >= 4 else ''}"
-        )
         return ""
 
 
@@ -307,18 +304,23 @@ def clean_text(text: str) -> str:
 def run_prediction(descriptions: list) -> dict:
     """Run prediction using Replicate API."""
     try:
-        model = replicate.models.get("replicate/all-mpnet-base-v2")
-        version = model.versions.get(
-            "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
+        start_time = time.time()
+        logger.info(
+            f"Starting prediction with model: {REPLICATE_MODEL_NAME} for {len(descriptions)} items"
         )
 
+        model = replicate.models.get(REPLICATE_MODEL_NAME)
+        version = model.versions.get(REPLICATE_MODEL_VERSION)
+
         # Create the prediction without webhook
-        logger.info("Creating prediction without webhook (using polling)")
         prediction = replicate.predictions.create(
             version=version,
             input={"text_batch": json.dumps(descriptions)},
         )
 
+        logger.info(
+            f"Prediction created with ID: {prediction.id} (time: {time.time() - start_time:.2f}s)"
+        )
         return prediction
     except Exception as e:
         logger.error(f"Error running prediction: {e}")
@@ -326,17 +328,10 @@ def run_prediction(descriptions: list) -> dict:
 
 
 def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
-    """Store embeddings in database using Prisma.
-
-    Args:
-        data: The numpy array containing the embeddings
-        embedding_id: The identifier for the embeddings (e.g., spreadsheet_id or spreadsheet_id_index)
-
-    Returns:
-        bool: True if the embeddings were successfully stored, False otherwise
-    """
+    """Store embeddings in database using Prisma."""
     try:
         logger.info(f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}")
+        start_time = time.time()
 
         # Convert numpy array to bytes
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
@@ -346,14 +341,12 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
         # Read the compressed data as bytes
         with open(temp_file_path, "rb") as f:
             data_bytes = f.read()
-            logger.info(f"Read {len(data_bytes)} bytes from temporary file")
 
         # Clean up temp file
         os.unlink(temp_file_path)
 
         # Store in database using Prisma
         result = prisma_client.store_embedding(embedding_id, data_bytes)
-        logger.info(f"Embedding storage result: {result}")
 
         # Try to link embedding to account if we have an API key in the request context
         try:
@@ -361,11 +354,11 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
             if hasattr(request, "headers") and request.headers.get("X-API-Key"):
                 api_key = request.headers.get("X-API-Key")
                 prisma_client.track_embedding_creation(api_key, embedding_id)
-                logger.info(f"Linked embedding {embedding_id} to account via API key")
-        except Exception as tracking_error:
+        except Exception:
             # Don't fail the storage if tracking fails
-            logger.warning(f"Error tracking embedding creation: {tracking_error}")
+            pass
 
+        logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
         return result
     except Exception as e:
         logger.error(f"Error storing embeddings: {e}")
@@ -373,15 +366,9 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
 
 
 def fetch_embeddings(embedding_id: str) -> np.ndarray:
-    """Fetch embeddings from database.
-
-    Args:
-        embedding_id: The identifier for the embeddings to fetch
-
-    Returns:
-        np.ndarray: The embeddings as a numpy array, or empty array if not found
-    """
+    """Fetch embeddings from database."""
     try:
+        start_time = time.time()
         logger.info(f"Fetching embeddings with ID: {embedding_id}")
 
         # Fetch from database using Prisma
@@ -390,8 +377,6 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
         if not data_bytes:
             logger.warning(f"No embeddings found with ID: {embedding_id}")
             return np.array([])
-
-        logger.info(f"Retrieved {len(data_bytes)} bytes from database")
 
         # Convert bytes to numpy array
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
@@ -404,7 +389,6 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
                 # Get the first array in the npz file
                 array_name = list(data.files)[0]
                 embeddings = data[array_name]
-                logger.info(f"Loaded embeddings with shape: {embeddings.shape}")
         except Exception as e:
             logger.error(f"Error loading numpy array from bytes: {e}")
             embeddings = np.array([])
@@ -412,6 +396,9 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
             # Clean up temp file
             os.unlink(temp_file_path)
 
+        logger.info(
+            f"Embeddings loaded in {time.time() - start_time:.2f}s, shape: {embeddings.shape}"
+        )
         return embeddings
     except Exception as e:
         logger.error(f"Error fetching embeddings: {e}")
@@ -422,11 +409,14 @@ def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         api_key = request.headers.get("X-API-Key")
+
         if not api_key:
+            logger.error("No API key provided in request headers")
             return create_error_response("No API key provided", 401)
 
         user_id = validate_api_key(api_key)
         if not user_id:
+            logger.error("Invalid API key provided")
             return create_error_response("Invalid API key", 401)
 
         # Add user_id to request context
@@ -443,15 +433,13 @@ def require_api_key(f):
 def train_model():
     """Train the model with new data."""
     try:
+        start_time = time.time()
         logger.info("=== Incoming Training Request ===")
-        logger.info(f"Headers: {dict(request.headers)}")
 
         # Get request data
         data = request.get_json()
         if not data:
             return create_error_response("Missing request data", 400)
-
-        logger.info(f"Request data: {data}")
 
         # Validate request data
         validated_data, error_response = validate_request_data(TrainRequest, data)
@@ -464,7 +452,9 @@ def train_model():
 
         # Get user_id from request context (set by decorator)
         user_id = request.user_id
-        logger.info(f"Processing request for user: {user_id}")
+        logger.info(
+            f"Training request received - User: {user_id}, Items: {len(transactions)}"
+        )
 
         # Create or update user configuration
         try:
@@ -482,15 +472,12 @@ def train_model():
                     "api_key": request.api_key,
                 }
                 prisma_client.insert_account(user_id, default_config)
-                logger.info(f"Created new user configuration for {user_id}")
             else:
                 if request.api_key and (
                     not account.get("api_key")
                     or account.get("api_key") != request.api_key
                 ):
                     prisma_client.update_account(user_id, {"api_key": request.api_key})
-                    logger.info(f"Updated API key for user {user_id}")
-                logger.info(f"Found existing user configuration for {user_id}")
 
         except Exception as e:
             logger.warning(f"Error managing user configuration: {str(e)}")
@@ -498,7 +485,6 @@ def train_model():
         # Convert transactions to DataFrame
         transactions_data = [t.model_dump() for t in transactions]
         df = pd.DataFrame(transactions_data)
-        logger.info(f"DataFrame created with columns: {df.columns.tolist()}")
 
         # Clean descriptions
         df["description"] = df["description"].apply(clean_text)
@@ -510,9 +496,8 @@ def train_model():
         # Log the categories we're training with
         unique_categories = df["Category"].unique().tolist()
         logger.info(
-            f"Training with {len(unique_categories)} unique categories: {unique_categories}"
+            f"Training with {len(df)} transactions across {len(unique_categories)} categories"
         )
-        logger.info(f"Category column length: {df['Category'].str.len().describe()}")
 
         # Create structured array for index data
         index_data = np.array(
@@ -524,8 +509,8 @@ def train_model():
             ],
             dtype=[
                 ("item_id", np.int32),
-                ("description", "U256"),  # Unicode string up to 256 chars
-                ("category", "U128"),  # Unicode string up to 128 chars
+                ("description", "U256"),
+                ("category", "U128"),
             ],
         )
 
@@ -533,26 +518,15 @@ def train_model():
         store_embeddings(index_data, f"{sheet_id}_index")
         logger.info(f"Stored index data with {len(index_data)} entries")
 
-        # Create a placeholder for the embeddings so we know it's expected
-        # This will be replaced with the actual embeddings when the webhook is called
-        placeholder = np.array([[0.0] * 768])  # Standard embedding size
+        # Create a placeholder for the embeddings
+        placeholder = np.array([[0.0] * EMBEDDING_DIMENSION])
         store_embeddings(placeholder, f"{sheet_id}")
-        logger.info(f"Stored placeholder embeddings for {sheet_id}")
-
-        # Verify index data was stored correctly
-        try:
-            stored_index = fetch_embeddings(f"{sheet_id}_index")
-            logger.info(f"Verified index data with shape: {stored_index.shape}")
-        except Exception as e:
-            logger.warning(f"Could not verify stored index data: {e}")
 
         # Get descriptions for embedding
         descriptions = df["description"].tolist()
-        logger.info(f"Prepared {len(descriptions)} descriptions for embedding")
 
         # Create prediction using the run_prediction function
         prediction = run_prediction(descriptions)
-        logger.info(f"Created prediction with ID: {prediction.id}")
 
         # Store initial configuration for status endpoint
         config_data = {
@@ -567,16 +541,13 @@ def train_model():
 
         # Store the configuration
         try:
-            store_result = prisma_client.insert_webhook_result(
-                prediction.id, config_data
-            )
-            logger.info(f"Stored initial configuration for prediction {prediction.id}")
+            prisma_client.insert_webhook_result(prediction.id, config_data)
         except Exception as e:
             logger.error(f"Error storing initial configuration: {e}")
-            # Continue anyway to provide prediction ID to client
 
-        # Update status
-        update_process_status("processing", "training", user_id)
+        # Calculate elapsed time
+        elapsed_time = time.time() - start_time
+        logger.info(f"Training request processed in {elapsed_time:.2f}s")
 
         return jsonify(
             {
@@ -596,6 +567,8 @@ def train_model():
 def classify_transactions():
     """Classify transactions endpoint."""
     try:
+        start_time = time.time()
+
         # Get request data
         data = request.get_json()
         if not data:
@@ -617,14 +590,8 @@ def classify_transactions():
         category_column = validated_data.categoryColumn
         start_row = validated_data.startRow
 
-        # Log all important parameters
-        logger.info(
-            f"Processing classify request with spreadsheet_id: {spreadsheet_id}"
-        )
-
         # Get user_id from request context (set by decorator)
         user_id = request.user_id
-        logger.info(f"API key validated for user: {user_id}")
 
         # Verify training data exists
         try:
@@ -656,81 +623,58 @@ def classify_transactions():
             )
 
         # Get embeddings for descriptions using Replicate
-        logger.info(f"Getting embeddings for {len(cleaned_descriptions)} descriptions")
-
-        # Create prediction
-        model = replicate.models.get("replicate/all-mpnet-base-v2")
-        version = model.versions.get(
-            "b6b7585c9640cd7a9572c6e129c9549d79c9c31f0d3fdce7baac7c67ca38f305"
+        logger.info(
+            f"Processing {len(cleaned_descriptions)} descriptions for classification"
         )
+
+        # Create prediction using the model
+        model = replicate.models.get(REPLICATE_MODEL_NAME)
+        version = model.versions.get(REPLICATE_MODEL_VERSION)
 
         # Create prediction without webhook
         prediction = replicate.predictions.create(
             version=version, input={"text_batch": json.dumps(cleaned_descriptions)}
         )
 
-        logger.info(f"Created prediction with ID: {prediction.id}")
+        logger.info(f"Classification prediction created with ID: {prediction.id}")
 
         # Store config in database for later retrieval
         config_data = {
             "user_id": user_id,
-            "spreadsheet_id": str(spreadsheet_id),  # Ensure spreadsheet_id is a string
+            "spreadsheet_id": str(spreadsheet_id),
             "sheet_name": sheet_name,
             "category_column": category_column,
             "start_row": start_row,
             "original_descriptions": original_descriptions,
         }
 
-        # Log the config data before storage
-        logger.info(f"Storing config data: {json.dumps(config_data)}")
-
         # Store the configuration
         try:
             # First try to see if there's already a record for this prediction ID
             existing_config = prisma_client.get_webhook_result(prediction.id)
             if existing_config:
-                logger.info(
-                    f"Found existing configuration for prediction {prediction.id}, updating it"
-                )
                 # If it exists, make sure we merge rather than overwrite it
                 if isinstance(existing_config, dict):
                     existing_config.update(config_data)
-                    store_result = prisma_client.insert_webhook_result(
-                        prediction.id, existing_config
-                    )
+                    prisma_client.insert_webhook_result(prediction.id, existing_config)
                 else:
                     # If it's not a dict, just overwrite
-                    store_result = prisma_client.insert_webhook_result(
-                        prediction.id, config_data
-                    )
+                    prisma_client.insert_webhook_result(prediction.id, config_data)
             else:
                 # If it doesn't exist, create a new record
-                store_result = prisma_client.insert_webhook_result(
-                    prediction.id, config_data
-                )
-
-            if store_result:
-                logger.info(
-                    f"Successfully stored configuration with spreadsheet_id: {spreadsheet_id}"
-                )
-            else:
-                logger.warning("Failed to store configuration - trying direct approach")
-                # Try a more direct approach
-                minimal_config = {
-                    "spreadsheet_id": str(spreadsheet_id),
-                    "user_id": user_id,
-                }
-                prisma_client.insert_webhook_result(prediction.id, minimal_config)
+                prisma_client.insert_webhook_result(prediction.id, config_data)
         except Exception as e:
             logger.error(f"Error storing configuration: {e}")
             # Create a minimal configuration record
             try:
                 minimal_config = {"spreadsheet_id": str(spreadsheet_id)}
                 prisma_client.insert_webhook_result(prediction.id, minimal_config)
-                logger.info("Created minimal configuration after error")
             except Exception as inner_e:
                 logger.error(f"Failed to create minimal configuration: {inner_e}")
-                # Continue anyway to provide the prediction ID to the client
+
+        # Calculate elapsed time
+        elapsed_time = time.time() - start_time
+        logger.info(f"Classification request processed in {elapsed_time:.2f}s")
 
         # Return the prediction ID for status checking
         return jsonify(
@@ -750,6 +694,7 @@ def classify_transactions():
 def get_prediction_status(prediction_id):
     """Get the status of a prediction directly from Replicate API."""
     try:
+        start_time = time.time()
         logger.info(f"Getting status for prediction: {prediction_id}")
 
         # Get prediction directly from Replicate
@@ -768,38 +713,27 @@ def get_prediction_status(prediction_id):
 
         # Get config data for this prediction if it exists
         config_data = prisma_client.get_webhook_result(prediction_id)
-        logger.info(
-            f"Raw config data: {json.dumps(config_data) if config_data else 'None'}"
-        )
 
         if not config_data:
             config_data = {}
 
         # Ensure config_data is a dictionary
         if not isinstance(config_data, dict):
-            logger.warning(f"Non-dictionary config data retrieved: {type(config_data)}")
             try:
                 # Try to convert to dictionary if it's string JSON
                 if isinstance(config_data, str):
                     config_data = json.loads(config_data)
                 else:
                     config_data = {}
-            except Exception as json_error:
-                logger.error(
-                    f"Error converting config data to dictionary: {json_error}"
-                )
+            except Exception:
                 config_data = {}
 
-        # Get spreadsheet_id from config_data, handling different possible locations
+        # Get spreadsheet_id from config_data
         spreadsheet_id = None
 
         # Try direct access first
         if "spreadsheet_id" in config_data:
             spreadsheet_id = config_data.get("spreadsheet_id")
-            logger.info(
-                f"Found spreadsheet_id directly in config_data: {spreadsheet_id}"
-            )
-
         # Try nested in results
         elif isinstance(config_data, dict) and "results" in config_data:
             if (
@@ -807,10 +741,8 @@ def get_prediction_status(prediction_id):
                 and "spreadsheet_id" in config_data["results"]
             ):
                 spreadsheet_id = config_data["results"].get("spreadsheet_id")
-                logger.info(f"Found spreadsheet_id in nested results: {spreadsheet_id}")
                 # Update config_data to use the nested structure
                 config_data = config_data["results"]
-
         # Try nested in config
         elif isinstance(config_data, dict) and "config" in config_data:
             if (
@@ -818,14 +750,9 @@ def get_prediction_status(prediction_id):
                 and "spreadsheet_id" in config_data["config"]
             ):
                 spreadsheet_id = config_data["config"].get("spreadsheet_id")
-                logger.info(f"Found spreadsheet_id in config section: {spreadsheet_id}")
-
         # Look for spreadsheetId (camelCase variant)
         elif "spreadsheetId" in config_data:
             spreadsheet_id = config_data.get("spreadsheetId")
-            logger.info(
-                f"Found spreadsheetId (camelCase) in config_data: {spreadsheet_id}"
-            )
 
         # Final fallback - try to search all nested dictionaries for spreadsheet_id
         if not spreadsheet_id:
@@ -850,14 +777,6 @@ def get_prediction_status(prediction_id):
             spreadsheet_id = search_dict_for_key(
                 config_data, "spreadsheet_id"
             ) or search_dict_for_key(config_data, "spreadsheetId")
-            if spreadsheet_id:
-                logger.info(
-                    f"Found spreadsheet_id through deep search: {spreadsheet_id}"
-                )
-            else:
-                logger.warning(
-                    f"No spreadsheet_id found anywhere in config for prediction {prediction_id}"
-                )
 
         # If prediction is still processing, return simple status
         if status == "processing":
@@ -873,7 +792,8 @@ def get_prediction_status(prediction_id):
 
         # If prediction succeeded, process the results
         elif status == "succeeded":
-            logger.info(f"Prediction {prediction_id} succeeded")
+            logger.info(f"Prediction {prediction_id} succeeded, processing results")
+            process_start_time = time.time()
 
             # If succeeded but no output, return error
             if not prediction.output:
@@ -883,13 +803,8 @@ def get_prediction_status(prediction_id):
                 )
 
             # Get embeddings from prediction output
-            embeddings = np.array(
-                [item.get("embedding", [0] * 768) for item in prediction.output],
-                dtype=np.float32,
-            )
-            logger.info(
-                f"Extracted {len(embeddings)} embeddings from prediction output"
-            )
+            embeddings = np.array(prediction.output, dtype=np.float32)
+            logger.info(f"Received {len(embeddings)} embeddings from prediction")
 
             # Process based on whether this is a training or classification prediction
             if "embeddings_data" in config_data:  # Training prediction
@@ -902,7 +817,6 @@ def get_prediction_status(prediction_id):
 
                     # Store the embeddings
                     store_result = store_embeddings(embeddings, f"{sheet_id}")
-                    logger.info(f"Stored embeddings for {sheet_id}: {store_result}")
 
                     # Store success result
                     result = {
@@ -912,6 +826,12 @@ def get_prediction_status(prediction_id):
                         "spreadsheet_id": sheet_id,
                     }
                     prisma_client.insert_webhook_result(prediction.id, result)
+
+                    # Log total execution time
+                    total_time = time.time() - start_time
+                    logger.info(
+                        f"Status request for training processed in {total_time:.2f}s"
+                    )
 
                     return jsonify(
                         {
@@ -927,7 +847,7 @@ def get_prediction_status(prediction_id):
                         f"Error processing training results: {str(e)}", 500
                     )
 
-            # Handle classification prediction (existing code)
+            # Handle classification prediction
             elif spreadsheet_id:
                 try:
                     user_id = config_data.get("user_id", "unknown")
@@ -947,7 +867,7 @@ def get_prediction_status(prediction_id):
                             ]
 
                     logger.info(
-                        f"Processing results with config: spreadsheet_id={spreadsheet_id}, user_id={user_id}, descriptions={len(original_descriptions)}"
+                        f"Processing classification results for {len(original_descriptions)} items"
                     )
 
                     # Get trained embeddings
@@ -977,16 +897,7 @@ def get_prediction_status(prediction_id):
                         )
 
                     # Extract embeddings from the prediction output
-                    new_embeddings = np.array(
-                        [
-                            item.get("embedding", [0] * 768)
-                            for item in prediction.output
-                        ],
-                        dtype=np.float32,
-                    )
-                    logger.info(
-                        f"Extracted {len(new_embeddings)} embeddings from prediction output"
-                    )
+                    new_embeddings = np.array(prediction.output, dtype=np.float32)
 
                     # Calculate similarities
                     similarities = cosine_similarity(new_embeddings, trained_embeddings)
@@ -1009,9 +920,7 @@ def get_prediction_status(prediction_id):
                                 try:
                                     category = str(trained_data[idx][2])
                                 except:
-                                    logger.warning(
-                                        f"Failed to extract category from index 2, using default"
-                                    )
+                                    pass
 
                             similarity_score = float(similarities[i][idx])
 
@@ -1056,36 +965,14 @@ def get_prediction_status(prediction_id):
                     }
 
                     # Store the results in the database
-                    store_result = prisma_client.insert_webhook_result(
-                        prediction.id, result_data
-                    )
-                    if not store_result:
-                        logger.warning(
-                            f"Failed to store results for prediction {prediction_id}"
-                        )
-                        # Try a direct update as a fallback
-                        try:
-                            logger.info("Attempting direct update as fallback")
-                            # Make sure spreadsheet_id is explicitly included again for safety
-                            if (
-                                "config" in result_data
-                                and "spreadsheet_id" not in result_data["config"]
-                            ):
-                                result_data["config"]["spreadsheet_id"] = spreadsheet_id
+                    prisma_client.insert_webhook_result(prediction.id, result_data)
 
-                            # Try a simpler structure if needed
-                            simple_result = {
-                                "status": "success",
-                                "spreadsheet_id": spreadsheet_id,
-                                "results": result_data["data"],
-                            }
-                            prisma_client.insert_webhook_result(
-                                prediction.id, simple_result
-                            )
-                        except Exception as fallback_error:
-                            logger.error(
-                                f"Fallback storage also failed: {fallback_error}"
-                            )
+                    # Log total execution time
+                    total_time = time.time() - start_time
+                    process_time = time.time() - process_start_time
+                    logger.info(
+                        f"Classified {len(results)} items in {process_time:.2f}s (total: {total_time:.2f}s)"
+                    )
 
                     # Return the results
                     return jsonify(
@@ -1121,12 +1008,6 @@ def get_prediction_status(prediction_id):
                                 len(prediction.output)
                                 if isinstance(prediction.output, list)
                                 else "n/a"
-                            ),
-                            "sample": (
-                                prediction.output[0]
-                                if isinstance(prediction.output, list)
-                                and len(prediction.output) > 0
-                                else prediction.output
                             ),
                         },
                     }
