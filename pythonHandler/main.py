@@ -17,6 +17,7 @@ from utils.prisma_client import prisma_client
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from functools import wraps
+import random
 
 # Load environment variables
 load_dotenv()
@@ -301,34 +302,94 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def run_prediction(descriptions: list) -> dict:
-    """Run prediction using Replicate API."""
-    try:
-        start_time = time.time()
-        logger.info(
-            f"Starting prediction with model: {REPLICATE_MODEL_NAME} for {len(descriptions)} items"
-        )
+def run_prediction(
+    descriptions: list, max_retries: int = 3, initial_delay: float = 1.0
+) -> dict:
+    """Run prediction using Replicate API with retry mechanism.
 
-        model = replicate.models.get(REPLICATE_MODEL_NAME)
-        version = model.versions.get(REPLICATE_MODEL_VERSION)
+    Args:
+        descriptions: List of descriptions to process
+        max_retries: Maximum number of retry attempts (default: 3)
+        initial_delay: Initial delay between retries in seconds (default: 1.0)
+    """
+    last_exception = None
+    delay = initial_delay
 
-        # Format descriptions as a list and convert to JSON string
-        prediction = replicate.predictions.create(
-            version=version,
-            input={
-                "texts": json.dumps(descriptions),  # The model expects a JSON string
-                "batch_size": 32,  # Standard batch size
-                "normalize_embeddings": True,  # Normalize embeddings for better similarity comparison
-            },
-        )
+    for attempt in range(max_retries + 1):
+        try:
+            start_time = time.time()
+            if attempt > 0:
+                logger.info(
+                    f"Retry attempt {attempt}/{max_retries} for prediction after {delay:.1f}s delay"
+                )
+                time.sleep(delay)
 
-        logger.info(
-            f"Prediction created with ID: {prediction.id} (time: {time.time() - start_time:.2f}s)"
-        )
-        return prediction
-    except Exception as e:
-        logger.error(f"Error running prediction: {e}")
-        raise
+            logger.info(
+                f"Starting prediction with model: {REPLICATE_MODEL_NAME} for {len(descriptions)} items"
+            )
+
+            model = replicate.models.get(REPLICATE_MODEL_NAME)
+            version = model.versions.get(REPLICATE_MODEL_VERSION)
+
+            # Format descriptions as a list and convert to JSON string
+            prediction = replicate.predictions.create(
+                version=version,
+                input={
+                    "texts": json.dumps(
+                        descriptions
+                    ),  # The model expects a JSON string
+                    "batch_size": 32,  # Standard batch size
+                    "normalize_embeddings": True,  # Normalize embeddings for better similarity comparison
+                },
+            )
+
+            # Check if prediction was created successfully
+            if not prediction or not prediction.id:
+                raise Exception(
+                    "Failed to create prediction (no prediction ID returned)"
+                )
+
+            logger.info(
+                f"Prediction created with ID: {prediction.id} (time: {time.time() - start_time:.2f}s)"
+            )
+            return prediction
+
+        except Exception as e:
+            last_exception = e
+            logger.warning(
+                f"Prediction attempt {attempt + 1}/{max_retries + 1} failed: {str(e)}"
+            )
+
+            # Check if this is a retryable error
+            error_str = str(e).lower()
+            retryable = any(
+                msg in error_str
+                for msg in [
+                    "interrupted",
+                    "timeout",
+                    "connection",
+                    "temporary",
+                    "retry",
+                    "code: pa",
+                ]
+            )
+
+            if not retryable:
+                logger.error(f"Non-retryable error encountered: {str(e)}")
+                break
+
+            if attempt < max_retries:
+                # Exponential backoff with jitter
+                delay = min(initial_delay * (2**attempt) + random.uniform(0, 1), 30)
+            else:
+                logger.error(
+                    f"All {max_retries + 1} prediction attempts failed. Last error: {str(e)}"
+                )
+
+    # If we get here, all retries failed
+    raise Exception(
+        f"Failed to create prediction after {max_retries + 1} attempts. Last error: {str(last_exception)}"
+    )
 
 
 def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
@@ -725,6 +786,47 @@ def get_prediction_status(prediction_id):
 
         if not config_data:
             config_data = {}
+
+        # If prediction failed with a retryable error, attempt to retry
+        if status == "failed" and "code: pa" in str(prediction.error).lower():
+            logger.info(f"Retrying interrupted prediction {prediction_id}")
+
+            # Extract necessary data from config
+            if isinstance(config_data, dict):
+                if "original_descriptions" in config_data:
+                    descriptions = config_data["original_descriptions"]
+                elif (
+                    "embeddings_data" in config_data
+                    and "descriptions" in config_data["embeddings_data"]
+                ):
+                    descriptions = config_data["embeddings_data"]["descriptions"]
+                else:
+                    return create_error_response(
+                        "Cannot retry: missing description data", 500
+                    )
+
+                try:
+                    # Create new prediction with retry mechanism
+                    new_prediction = run_prediction(descriptions)
+
+                    # Update the webhook result with the new prediction ID
+                    config_data["retried_from"] = prediction_id
+                    prisma_client.insert_webhook_result(new_prediction.id, config_data)
+
+                    return jsonify(
+                        {
+                            "status": "retrying",
+                            "old_prediction_id": prediction_id,
+                            "new_prediction_id": new_prediction.id,
+                            "message": "Previous prediction failed, created new prediction",
+                        }
+                    )
+
+                except Exception as retry_error:
+                    logger.error(f"Error retrying prediction: {retry_error}")
+                    return create_error_response(
+                        f"Failed to retry prediction: {str(retry_error)}", 500
+                    )
 
         # Ensure config_data is a dictionary
         if not isinstance(config_data, dict):
