@@ -421,29 +421,27 @@ def run_prediction(descriptions: list) -> dict:
 
 
 def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
-    """Store embeddings in database using Prisma."""
+    """Store embeddings in database."""
     try:
         logger.info(f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}")
         start_time = time.time()
 
-        # Convert numpy array to bytes directly in memory
+        # Convert numpy array to bytes directly
         buffer = io.BytesIO()
-        np.save(buffer, data)
+        np.save(buffer, data, allow_pickle=False)
         data_bytes = buffer.getvalue()
         buffer.close()
 
         # Store in database using Prisma
         result = prisma_client.store_embedding(embedding_id, data_bytes)
 
-        # Try to link embedding to account if we have an API key in the request context
+        # Try to link embedding to account if we have an API key
         try:
-            # Check if there's an API key in the current request context
             if hasattr(request, "headers") and request.headers.get("X-API-Key"):
                 api_key = request.headers.get("X-API-Key")
                 prisma_client.track_embedding_creation(api_key, embedding_id)
         except Exception:
-            # Don't fail the storage if tracking fails
-            pass
+            pass  # Don't fail if tracking fails
 
         logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
         return result
@@ -461,7 +459,6 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
 
         # Fetch from database using Prisma
         data_bytes = prisma_client.fetch_embedding(embedding_id)
-
         if not data_bytes:
             logger.warning(f"No embeddings found with ID: {embedding_id}")
             return np.array([])
@@ -469,7 +466,7 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
         # Convert bytes back to numpy array
         try:
             buffer = io.BytesIO(data_bytes)
-            embeddings = np.load(buffer)
+            embeddings = np.load(buffer, allow_pickle=False)
             buffer.close()
             logger.info(
                 f"Embeddings loaded in {time.time() - start_time:.2f}s, shape: {embeddings.shape}"
