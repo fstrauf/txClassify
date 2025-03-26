@@ -495,7 +495,7 @@ class PrismaClient:
             # Ensure connection
             self.connect()
 
-            # Convert bytes to base64 string for storage
+            # Convert bytes to base64 string in one go
             data_base64 = base64.b64encode(data_bytes).decode("utf-8")
 
             # Check if embedding already exists
@@ -533,7 +533,7 @@ class PrismaClient:
             )
 
             if embedding and embedding.data:
-                # Convert base64 string back to bytes
+                # Convert base64 string back to bytes in one go
                 data_bytes = base64.b64decode(embedding.data)
                 logger.info(f"Successfully fetched embedding: {embedding_id}")
                 return data_bytes
