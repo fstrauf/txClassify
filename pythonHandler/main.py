@@ -302,94 +302,51 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def run_prediction(
-    descriptions: list, max_retries: int = 3, initial_delay: float = 1.0
-) -> dict:
-    """Run prediction using Replicate API with retry mechanism.
+def run_prediction(descriptions: list) -> dict:
+    """Run prediction using Replicate API.
 
     Args:
         descriptions: List of descriptions to process
-        max_retries: Maximum number of retry attempts (default: 3)
-        initial_delay: Initial delay between retries in seconds (default: 1.0)
     """
-    last_exception = None
-    delay = initial_delay
+    try:
+        start_time = time.time()
+        logger.info(
+            f"Starting prediction with model: {REPLICATE_MODEL_NAME} for {len(descriptions)} items"
+        )
 
-    for attempt in range(max_retries + 1):
-        try:
-            start_time = time.time()
-            if attempt > 0:
-                logger.info(
-                    f"Retry attempt {attempt}/{max_retries} for prediction after {delay:.1f}s delay"
-                )
-                time.sleep(delay)
+        model = replicate.models.get(REPLICATE_MODEL_NAME)
+        version = model.versions.get(REPLICATE_MODEL_VERSION)
 
-            logger.info(
-                f"Starting prediction with model: {REPLICATE_MODEL_NAME} for {len(descriptions)} items"
+        # Format descriptions as a list and convert to JSON string
+        prediction = replicate.predictions.create(
+            version=version,
+            input={
+                "texts": json.dumps(descriptions),  # The model expects a JSON string
+                "batch_size": 32,  # Standard batch size
+                "normalize_embeddings": True,  # Normalize embeddings for better similarity comparison
+            },
+        )
+
+        # Check if prediction was created successfully
+        if not prediction or not prediction.id:
+            raise Exception("Failed to create prediction (no prediction ID returned)")
+
+        logger.info(
+            f"Prediction created with ID: {prediction.id} (time: {time.time() - start_time:.2f}s)"
+        )
+        return prediction
+
+    except Exception as e:
+        logger.error(f"Prediction creation failed with error: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
+        if hasattr(e, "response"):
+            logger.error(
+                f"Response status: {e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'}"
             )
-
-            model = replicate.models.get(REPLICATE_MODEL_NAME)
-            version = model.versions.get(REPLICATE_MODEL_VERSION)
-
-            # Format descriptions as a list and convert to JSON string
-            prediction = replicate.predictions.create(
-                version=version,
-                input={
-                    "texts": json.dumps(
-                        descriptions
-                    ),  # The model expects a JSON string
-                    "batch_size": 32,  # Standard batch size
-                    "normalize_embeddings": True,  # Normalize embeddings for better similarity comparison
-                },
+            logger.error(
+                f"Response content: {e.response.text if hasattr(e.response, 'text') else 'unknown'}"
             )
-
-            # Check if prediction was created successfully
-            if not prediction or not prediction.id:
-                raise Exception(
-                    "Failed to create prediction (no prediction ID returned)"
-                )
-
-            logger.info(
-                f"Prediction created with ID: {prediction.id} (time: {time.time() - start_time:.2f}s)"
-            )
-            return prediction
-
-        except Exception as e:
-            last_exception = e
-            logger.warning(
-                f"Prediction attempt {attempt + 1}/{max_retries + 1} failed: {str(e)}"
-            )
-
-            # Check if this is a retryable error
-            error_str = str(e).lower()
-            retryable = any(
-                msg in error_str
-                for msg in [
-                    "interrupted",
-                    "timeout",
-                    "connection",
-                    "temporary",
-                    "retry",
-                    "code: pa",
-                ]
-            )
-
-            if not retryable:
-                logger.error(f"Non-retryable error encountered: {str(e)}")
-                break
-
-            if attempt < max_retries:
-                # Exponential backoff with jitter
-                delay = min(initial_delay * (2**attempt) + random.uniform(0, 1), 30)
-            else:
-                logger.error(
-                    f"All {max_retries + 1} prediction attempts failed. Last error: {str(e)}"
-                )
-
-    # If we get here, all retries failed
-    raise Exception(
-        f"Failed to create prediction after {max_retries + 1} attempts. Last error: {str(last_exception)}"
-    )
+        raise
 
 
 def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
@@ -780,6 +737,40 @@ def get_prediction_status(prediction_id):
         # Get basic prediction status
         status = prediction.status
         logger.info(f"Prediction {prediction_id} status: {status}")
+
+        # Enhanced error logging for failed predictions
+        if status == "failed":
+            error_msg = str(prediction.error) if prediction.error else "Unknown error"
+            error_type = (
+                type(prediction.error).__name__ if prediction.error else "Unknown"
+            )
+            logger.error(f"Prediction failed with error type {error_type}: {error_msg}")
+
+            # Log additional prediction details
+            logger.error("Prediction details:")
+            logger.error(
+                f"  Created at: {prediction.created_at if hasattr(prediction, 'created_at') else 'unknown'}"
+            )
+            logger.error(
+                f"  Started at: {prediction.started_at if hasattr(prediction, 'started_at') else 'unknown'}"
+            )
+            logger.error(
+                f"  Completed at: {prediction.completed_at if hasattr(prediction, 'completed_at') else 'unknown'}"
+            )
+            logger.error(
+                f"  Model: {prediction.model if hasattr(prediction, 'model') else 'unknown'}"
+            )
+            logger.error(
+                f"  Version: {prediction.version if hasattr(prediction, 'version') else 'unknown'}"
+            )
+
+            if hasattr(prediction, "logs") and prediction.logs:
+                logger.error(f"Prediction logs: {prediction.logs}")
+
+            if hasattr(prediction, "input"):
+                logger.error(f"Input configuration: {prediction.input}")
+
+            return create_error_response(f"Prediction failed: {error_msg}", 500)
 
         # Get config data for this prediction if it exists
         config_data = prisma_client.get_webhook_result(prediction_id)
