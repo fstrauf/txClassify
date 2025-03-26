@@ -111,6 +111,7 @@ const startFlaskServer = async (port) => {
       const newPort = await findFreePort(port + 1);
       if (newPort) {
         log(`Found free port: ${newPort}. Using this port instead.`);
+        console.log(`⚠️ PORT CHANGE: Using port ${newPort} instead of requested port ${port}`);
         port = newPort;
       } else {
         log(`Could not find a free port. Attempting to use port ${port} anyway.`);
@@ -142,20 +143,38 @@ const startFlaskServer = async (port) => {
 
   flaskProcess = spawn("python", ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
 
+  // Store the actual port used for reference
+  let actualPort = port;
+  let portChangeDetected = false;
+
   flaskProcess.stdout.on("data", (data) => {
-    log(`Flask stdout: ${data.toString().trim()}`);
+    const output = data.toString().trim();
+    log(`Flask stdout: ${output}`);
+
+    // Check if the server reports running on a different port
+    const runningMatch = output.match(/Running on http:\/\/127\.0\.0\.1:(\d+)/);
+    if (runningMatch && runningMatch[1] && parseInt(runningMatch[1]) !== actualPort) {
+      actualPort = parseInt(runningMatch[1]);
+      portChangeDetected = true;
+      log(`Detected server running on port ${actualPort} instead of requested port ${port}`);
+      console.log(`⚠️ PORT CHANGE: Server is running on port ${actualPort} instead of requested port ${port}`);
+    }
   });
 
   flaskProcess.stderr.on("data", (data) => {
-    log(`Flask stderr: ${data.toString().trim()}`);
+    const output = data.toString().trim();
+    log(`Flask stderr: ${output}`);
 
     // Check for "Address already in use" error
-    if (data.toString().includes("Address already in use")) {
+    if (output.includes("Address already in use")) {
       log(`Flask server failed to start on port ${port}. Port is already in use.`);
       // Try to find a new port and restart
       findFreePort(port + 1).then((newPort) => {
         if (newPort) {
           log(`Found free port: ${newPort}. Restarting Flask server on this port.`);
+          console.log(`⚠️ PORT CHANGE: Restarting on port ${newPort} instead of port ${port}`);
+          actualPort = newPort;
+          portChangeDetected = true;
           // Kill the current process
           if (flaskProcess) {
             flaskProcess.kill();
@@ -177,7 +196,11 @@ const startFlaskServer = async (port) => {
   log(`Waiting for Flask server to start on port ${port}...`);
   await new Promise((resolve) => setTimeout(resolve, 3000));
 
-  return port; // Return the port that was actually used
+  // Return the actual port used, which might differ from the requested port
+  if (portChangeDetected) {
+    console.log(`⚠️ IMPORTANT: Using actual port ${actualPort} for all API requests`);
+  }
+  return actualPort;
 };
 
 // Load training data from CSV
@@ -557,8 +580,23 @@ const categoriseTransactions = async (config) => {
       startRow: "1",
     };
 
+    // Add logging for debugging API key issues
+    const serviceUrl = config.serviceUrl;
+    const serverPort = new URL(serviceUrl).port;
+
+    console.log("==== API Key Debug Info ====");
+    console.log(`config.apiKey is ${config.apiKey ? "defined" : "undefined"}`);
+    console.log(`TEST_API_KEY is ${TEST_API_KEY ? "defined" : "undefined"}`);
+    console.log(
+      `Using API key: ${(config.apiKey || TEST_API_KEY)?.substring(0, 3)}...${(
+        config.apiKey || TEST_API_KEY
+      )?.substring((config.apiKey || TEST_API_KEY)?.length - 3)}`
+    );
+    console.log(`Server URL: ${serviceUrl} (port: ${serverPort})`);
+    console.log("==========================");
+
     // Send request to classify endpoint
-    logInfo(`Sending categorisation request to ${config.serviceUrl}/classify`);
+    logInfo(`Sending categorisation request to ${serviceUrl}/classify`);
 
     // Try up to 3 times with exponential backoff
     let response;
@@ -570,14 +608,33 @@ const categoriseTransactions = async (config) => {
 
     while (attempt <= maxAttempts) {
       try {
-        response = await axios.post(`${config.serviceUrl}/classify`, requestData, {
+        const apiKey = config.apiKey || TEST_API_KEY;
+        logInfo(`Attempt ${attempt}: Using API key that starts with: ${apiKey.substring(0, 3)}...`);
+
+        // Use fetch instead of axios for consistency with training code
+        const response_fetch = await fetch(`${serviceUrl}/classify`, {
+          method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-API-Key": config.apiKey,
+            "X-API-Key": apiKey,
+            Accept: "application/json",
           },
+          body: JSON.stringify(requestData),
         });
+
+        if (!response_fetch.ok) {
+          const statusCode = response_fetch.status;
+          const responseText = await response_fetch.text();
+          logError(`Server returned error code: ${statusCode}`);
+          logError(`Response text: ${responseText}`);
+          throw new Error(`Server returned error code: ${statusCode}, message: ${responseText}`);
+        }
+
+        response = { data: await response_fetch.json() };
         break; // Success, exit the loop
       } catch (error) {
+        logError(`Attempt ${attempt} failed with: ${error.message}`);
+
         if (attempt === maxAttempts) {
           throw error; // Rethrow on last attempt
         }
@@ -603,14 +660,23 @@ const categoriseTransactions = async (config) => {
     while (pollingAttempt < maxPollingAttempts) {
       process.stdout.write(".");
       try {
-        statusResponse = await axios.get(`${config.serviceUrl}/status/${predictionId}`, {
+        // Use fetch instead of axios for consistency with training code
+        const apiKey = config.apiKey || TEST_API_KEY;
+        const response_fetch = await fetch(`${serviceUrl}/status/${predictionId}`, {
           headers: {
             "Content-Type": "application/json",
-            "X-API-Key": config.apiKey,
+            "X-API-Key": apiKey,
+            Accept: "application/json",
           },
         });
 
-        console.log("statusResponse.data", statusResponse.data);
+        if (!response_fetch.ok) {
+          const statusCode = response_fetch.status;
+          logError(`Server returned error code: ${statusCode} for prediction ID: ${predictionId}`);
+          throw new Error(`Server returned error code: ${statusCode}`);
+        }
+
+        statusResponse = { data: await response_fetch.json() };
 
         const status = statusResponse.data.status;
         const message = statusResponse.data.message || "Processing in progress";
@@ -788,17 +854,17 @@ const main = async () => {
     }
 
     // Start Flask server
-    const flaskPort = await startFlaskServer(API_PORT);
-    logInfo(`Flask server started on port ${flaskPort}`);
+    const actualPort = await startFlaskServer(API_PORT);
+    logInfo(`Flask server started on port ${actualPort}`);
     console.log("Flask server started successfully");
 
-    // Set API URL
-    const apiUrl = `http://localhost:${flaskPort}`;
-    logDebug(`Using API URL: ${apiUrl}`);
+    // Set API URL based on the ACTUAL port, not the requested port
+    const apiUrl = `http://localhost:${actualPort}`;
+    logInfo(`Using API URL: ${apiUrl}`);
 
     // Load test data
-    const trainingData = await loadTrainingData("training_test.csv");
-    // const trainingData = await loadTrainingData("full_train.csv");
+    // const trainingData = await loadTrainingData("training_test.csv");
+    const trainingData = await loadTrainingData("full_train.csv");
     logInfo(`Loaded training data with ${trainingData.length} rows`);
 
     const categorizationData = await loadCategorizationData("categorise_test.csv");
@@ -817,6 +883,7 @@ const main = async () => {
       categorizationDataFile: categorizationData, // Just pass the filename
     };
 
+    logInfo(`Test configuration serviceUrl: ${config.serviceUrl}`);
     logDebug(`Test configuration: ${JSON.stringify(config, null, 2)}`);
 
     let trainingSuccessful = false;
@@ -851,6 +918,18 @@ const main = async () => {
     if (RUN_CATEGORIZATION) {
       if (trainingSuccessful || !RUN_TRAINING) {
         console.log("\n===== STEP 2: CATEGORISATION MODEL =====");
+
+        // Double-check and log server URL and API key details
+        console.log(`Using server URL for categorization: ${config.serviceUrl}`);
+        console.log(`Server port: ${new URL(config.serviceUrl).port}`);
+        console.log(`API key defined: ${config.apiKey ? "Yes" : "No"}`);
+        console.log(`TEST_API_KEY defined: ${TEST_API_KEY ? "Yes" : "No"}`);
+        console.log(
+          `API key that will be used: ${(config.apiKey || TEST_API_KEY)?.substring(0, 4)}...${(
+            config.apiKey || TEST_API_KEY
+          )?.substring((config.apiKey || TEST_API_KEY)?.length - 4)}`
+        );
+
         const categorisationResult = await categoriseTransactions(config);
 
         if (categorisationResult.status === "completed") {
