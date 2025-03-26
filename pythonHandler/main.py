@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from functools import wraps
 import random
+import io
 
 # Load environment variables
 load_dotenv()
@@ -425,17 +426,11 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
         logger.info(f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}")
         start_time = time.time()
 
-        # Convert numpy array to bytes
-        with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
-            np.savez_compressed(temp_file, data)
-            temp_file_path = temp_file.name
-
-        # Read the compressed data as bytes
-        with open(temp_file_path, "rb") as f:
-            data_bytes = f.read()
-
-        # Clean up temp file
-        os.unlink(temp_file_path)
+        # Convert numpy array to bytes directly in memory
+        buffer = io.BytesIO()
+        np.save(buffer, data)
+        data_bytes = buffer.getvalue()
+        buffer.close()
 
         # Store in database using Prisma
         result = prisma_client.store_embedding(embedding_id, data_bytes)
@@ -452,6 +447,7 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
 
         logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
         return result
+
     except Exception as e:
         logger.error(f"Error storing embeddings: {e}")
         return False
@@ -470,28 +466,19 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
             logger.warning(f"No embeddings found with ID: {embedding_id}")
             return np.array([])
 
-        # Convert bytes to numpy array
-        with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as temp_file:
-            temp_file.write(data_bytes)
-            temp_file_path = temp_file.name
-
-        # Load the numpy array from the temporary file
+        # Convert bytes back to numpy array
         try:
-            with np.load(temp_file_path, allow_pickle=True) as data:
-                # Get the first array in the npz file
-                array_name = list(data.files)[0]
-                embeddings = data[array_name]
+            buffer = io.BytesIO(data_bytes)
+            embeddings = np.load(buffer)
+            buffer.close()
+            logger.info(
+                f"Embeddings loaded in {time.time() - start_time:.2f}s, shape: {embeddings.shape}"
+            )
+            return embeddings
         except Exception as e:
             logger.error(f"Error loading numpy array from bytes: {e}")
-            embeddings = np.array([])
-        finally:
-            # Clean up temp file
-            os.unlink(temp_file_path)
+            return np.array([])
 
-        logger.info(
-            f"Embeddings loaded in {time.time() - start_time:.2f}s, shape: {embeddings.shape}"
-        )
-        return embeddings
     except Exception as e:
         logger.error(f"Error fetching embeddings: {e}")
         return np.array([])
