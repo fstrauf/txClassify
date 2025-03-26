@@ -315,7 +315,7 @@ def run_prediction(descriptions: list) -> dict:
         # Create the prediction without webhook
         prediction = replicate.predictions.create(
             version=version,
-            input={"texts": json.dumps(descriptions), "normalize_embeddings": True},
+            input={"text_batch": json.dumps(descriptions)},
         )
 
         logger.info(
@@ -633,11 +633,7 @@ def classify_transactions():
 
         # Create prediction without webhook
         prediction = replicate.predictions.create(
-            version=version,
-            input={
-                "texts": json.dumps(cleaned_descriptions),
-                "normalize_embeddings": True,
-            },
+            version=version, input={"text_batch": json.dumps(cleaned_descriptions)}
         )
 
         logger.info(f"Classification prediction created with ID: {prediction.id}")
