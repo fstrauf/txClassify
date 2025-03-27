@@ -421,30 +421,77 @@ def run_prediction(descriptions: list) -> dict:
 
 
 def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
-    """Store embeddings in database."""
+    """Store embeddings in database with quantization."""
     try:
         logger.info(f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}")
         start_time = time.time()
 
-        # Convert numpy array to bytes directly
+        # Prepare data before database operation
         buffer = io.BytesIO()
-        np.save(buffer, data, allow_pickle=False)
+
+        # Handle structured arrays (like index data) differently
+        if data.dtype.names is not None:
+            dtype_dict = {
+                "names": data.dtype.names,
+                "formats": [
+                    data.dtype.fields[name][0].str for name in data.dtype.names
+                ],
+            }
+            metadata = {"is_structured": True, "dtype": dtype_dict, "shape": data.shape}
+            np.savez(buffer, metadata=metadata, data=data.tobytes())
+        else:
+            # For regular arrays (embeddings), use quantization
+            if data.dtype == np.float32:
+                scale = np.max(np.abs(data)) / 127
+                quantized_data = (data / scale).astype(np.int8)
+                metadata = {
+                    "is_structured": False,
+                    "scale": scale,
+                    "shape": data.shape,
+                    "quantized": True,
+                }
+                np.savez_compressed(buffer, metadata=metadata, data=quantized_data)
+            else:
+                metadata = {
+                    "is_structured": False,
+                    "quantized": False,
+                    "shape": data.shape,
+                }
+                np.savez_compressed(buffer, metadata=metadata, data=data)
+
         data_bytes = buffer.getvalue()
         buffer.close()
 
-        # Store in database using Prisma
-        result = prisma_client.store_embedding(embedding_id, data_bytes)
+        # Store in database with retry logic
+        max_retries = 3
+        retry_delay = 1  # seconds
 
-        # Try to link embedding to account if we have an API key
-        try:
-            if hasattr(request, "headers") and request.headers.get("X-API-Key"):
-                api_key = request.headers.get("X-API-Key")
-                prisma_client.track_embedding_creation(api_key, embedding_id)
-        except Exception:
-            pass  # Don't fail if tracking fails
+        for attempt in range(max_retries):
+            try:
+                result = prisma_client.store_embedding(embedding_id, data_bytes)
 
-        logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
-        return result
+                # Try to link embedding to account if we have an API key
+                try:
+                    if hasattr(request, "headers") and request.headers.get("X-API-Key"):
+                        api_key = request.headers.get("X-API-Key")
+                        prisma_client.track_embedding_creation(api_key, embedding_id)
+                except Exception as e:
+                    logger.warning(f"Failed to track embedding creation: {e}")
+
+                logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
+                return result
+
+            except Exception as e:
+                if "connection pool" in str(e).lower() or "timeout" in str(e).lower():
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Database operation failed (attempt {attempt + 1}/{max_retries}): {e}"
+                        )
+                        time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                        continue
+                raise
+
+        return False
 
     except Exception as e:
         logger.error(f"Error storing embeddings: {e}")
@@ -457,8 +504,25 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
         start_time = time.time()
         logger.info(f"Fetching embeddings with ID: {embedding_id}")
 
-        # Fetch from database using Prisma
-        data_bytes = prisma_client.fetch_embedding(embedding_id)
+        # Fetch from database with retry logic
+        max_retries = 3
+        retry_delay = 1  # seconds
+        data_bytes = None
+
+        for attempt in range(max_retries):
+            try:
+                data_bytes = prisma_client.fetch_embedding(embedding_id)
+                break
+            except Exception as e:
+                if "connection pool" in str(e).lower() or "timeout" in str(e).lower():
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Database fetch failed (attempt {attempt + 1}/{max_retries}): {e}"
+                        )
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+                raise
+
         if not data_bytes:
             logger.warning(f"No embeddings found with ID: {embedding_id}")
             return np.array([])
@@ -466,7 +530,27 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
         # Convert bytes back to numpy array
         try:
             buffer = io.BytesIO(data_bytes)
-            embeddings = np.load(buffer, allow_pickle=False)
+            with np.load(buffer, allow_pickle=True) as loaded:
+                metadata = loaded["metadata"].item()
+                data = loaded["data"]
+
+                if metadata.get("is_structured", False):
+                    # Reconstruct structured array
+                    dtype_dict = metadata["dtype"]
+                    dtype = np.dtype(
+                        {"names": dtype_dict["names"], "formats": dtype_dict["formats"]}
+                    )
+                    embeddings = np.frombuffer(data, dtype=dtype)
+                    if len(metadata["shape"]) > 1:
+                        embeddings = embeddings.reshape(metadata["shape"])
+                else:
+                    # Handle regular arrays
+                    if metadata.get("quantized", False):
+                        scale = metadata["scale"]
+                        embeddings = data.astype(np.float32) * scale
+                    else:
+                        embeddings = data
+
             buffer.close()
             logger.info(
                 f"Embeddings loaded in {time.time() - start_time:.2f}s, shape: {embeddings.shape}"
