@@ -99,9 +99,14 @@ def worker_exit(server, worker):
 
     # Attempt to clean up database connections
     try:
-        from utils.prisma_client import prisma_client
+        # Close any remaining database connections
+        from psycopg2 import pool
+        from utils.db_utils import get_connection_pool
 
-        prisma_client.disconnect()
-        logger.info(f"Worker {worker.pid} disconnected from database")
+        # Try to close the connection pool if it exists
+        connection_pool = get_connection_pool()
+        if connection_pool:
+            connection_pool.closeall()
+            logger.info(f"Worker {worker.pid} closed all database connections")
     except Exception as e:
-        logger.error(f"Error disconnecting from database in worker {worker.pid}: {e}")
+        logger.error(f"Error closing database connections in worker {worker.pid}: {e}")

@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import replicate
-import tempfile
 from sklearn.metrics.pairwise import cosine_similarity
 import re
 import logging
@@ -17,7 +16,6 @@ from utils.prisma_client import prisma_client
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from functools import wraps
-import random
 import io
 
 # Load environment variables
@@ -122,9 +120,8 @@ retry_count = 0
 while not connected and retry_count < max_retries:
     try:
         logger.info(f"Connecting to database (attempt {retry_count + 1}/{max_retries})")
-        prisma_client.connect()
+        connected = prisma_client.connect()
         logger.info("Successfully connected to database on startup")
-        connected = True
     except Exception as e:
         retry_count += 1
         logger.error(f"Database connection attempt {retry_count} failed: {e}")
@@ -197,7 +194,7 @@ def health():
 
     # Check database connection
     try:
-        # Use prisma_client to check database connection
+        # Use db to check database connection
         connected = prisma_client.connect()
 
         if connected:
@@ -1492,6 +1489,10 @@ def cleanup_old_webhook_results():
         # Example implementation:
         # prisma_client.delete_old_webhook_results(cutoff_date)
         # logger.info(f"Cleaned up webhook results older than {cutoff_date}")
+        
+        # Now implemented:
+        deleted_count = prisma_client.delete_old_webhook_results(cutoff_date)
+        logger.info(f"Cleaned up {deleted_count} webhook results older than {cutoff_date}")
     except Exception as e:
         logger.error(f"Error cleaning up old webhook results: {e}")
 
