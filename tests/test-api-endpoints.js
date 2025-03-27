@@ -110,51 +110,77 @@ const startFlaskServer = async (port) => {
       reject(new Error("Flask server failed to start within 30 seconds"));
     }, 30000);
 
-    flaskProcess = spawn("python", ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
+    // Try different Python commands based on system configuration
+    const pythonCommands = [
+      path.join(process.cwd(), "pythonHandler", ".venv", "bin", "python"),
+      "python3",
+      "python",
+      "py",
+    ];
+    let currentCommandIndex = 0;
 
-    flaskProcess.stdout.on("data", (data) => {
-      const output = data.toString().trim();
-      console.log(`Flask: ${output}`);
-
-      // Only look for the port in the "Running on" message
-      const match = output.match(/Running on http:\/\/[^:]+:(\d+)/);
-      if (match) {
-        detectedPort = parseInt(match[1]);
-        console.log(`\n✅ Flask server started on port ${detectedPort}`);
+    const tryStartFlask = (commandIndex) => {
+      if (commandIndex >= pythonCommands.length) {
         clearTimeout(startTimeout);
-        resolve(detectedPort);
+        reject(
+          new Error("Could not find a working Python executable. Please ensure Python is installed and in your PATH.")
+        );
+        return;
       }
-    });
 
-    flaskProcess.stderr.on("data", (data) => {
-      const error = data.toString().trim();
-      console.error(`Flask error: ${error}`);
+      const pythonCommand = pythonCommands[commandIndex];
+      console.log(`Trying to start Flask with: ${pythonCommand}`);
 
-      // If port is in use, kill process and try next port
-      if (error.includes("Address already in use")) {
-        console.log(`\n⚠️ Port ${port} is in use, trying port ${port + 1}`);
+      flaskProcess = spawn(pythonCommand, ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
+
+      flaskProcess.stdout.on("data", (data) => {
+        const output = data.toString().trim();
+        console.log(`Flask: ${output}`);
+
+        // Only look for the port in the "Running on" message
+        const match = output.match(/Running on http:\/\/[^:]+:(\d+)/);
+        if (match) {
+          detectedPort = parseInt(match[1]);
+          console.log(`\n✅ Flask server started on port ${detectedPort}`);
+          clearTimeout(startTimeout);
+          resolve(detectedPort);
+        }
+      });
+
+      flaskProcess.stderr.on("data", (data) => {
+        const error = data.toString().trim();
+        console.error(`Flask error: ${error}`);
+
+        // If port is in use, kill process and try next port
+        if (error.includes("Address already in use")) {
+          console.log(`\n⚠️ Port ${port} is in use, trying port ${port + 1}`);
+          flaskProcess.kill();
+          clearTimeout(startTimeout);
+          startFlaskServer(port + 1)
+            .then(resolve)
+            .catch(reject);
+        }
+      });
+
+      flaskProcess.on("error", (error) => {
+        console.error(`Failed to start Flask with ${pythonCommand}: ${error.message}`);
+        // Try the next Python command
         flaskProcess.kill();
-        clearTimeout(startTimeout);
-        startFlaskServer(port + 1)
-          .then(resolve)
-          .catch(reject);
-      }
-    });
+        tryStartFlask(commandIndex + 1);
+      });
 
-    flaskProcess.on("error", (error) => {
-      console.error(`Failed to start Flask server: ${error.message}`);
-      clearTimeout(startTimeout);
-      reject(error);
-    });
+      flaskProcess.on("close", (code) => {
+        // Only handle unexpected exits
+        if (code !== 0 && !detectedPort) {
+          console.error(`Flask server exited with code ${code}`);
+          // Try the next Python command
+          tryStartFlask(commandIndex + 1);
+        }
+      });
+    };
 
-    flaskProcess.on("close", (code) => {
-      // Only handle unexpected exits
-      if (code !== 0 && !detectedPort) {
-        console.error(`Flask server exited with code ${code}`);
-        clearTimeout(startTimeout);
-        reject(new Error(`Flask server exited with code ${code}`));
-      }
-    });
+    // Start trying Python commands
+    tryStartFlask(currentCommandIndex);
   });
 };
 
