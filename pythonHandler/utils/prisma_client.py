@@ -1,10 +1,10 @@
 import os
+import json
 import logging
-from prisma import Prisma
-from prisma.errors import PrismaError
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import base64
 from datetime import datetime
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -15,42 +15,47 @@ class PrismaClient:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(PrismaClient, cls).__new__(cls)
-            cls._instance.client = None
+            cls._instance.conn = None
             cls._instance.initialize()
         return cls._instance
 
     def initialize(self):
-        """Initialize the Prisma client."""
+        """Initialize the database connection."""
         try:
-            # Set debug flag to bypass version check
-            os.environ["PRISMA_PY_DEBUG_GENERATOR"] = "1"
-
-            # Initialize client
-            self.client = Prisma()
-            logger.info("Prisma client initialized successfully")
+            logger.info("Initializing database client")
+            self.connect()
         except Exception as e:
-            logger.error(f"Failed to initialize Prisma client: {str(e)}")
+            logger.error(f"Failed to initialize database client: {str(e)}")
             raise
 
     def connect(self):
         """Connect to the database."""
         try:
-            if not self.client:
-                self.initialize()
-
-            # Simple connection attempt without checking connection status first
-            # This avoids the circular dependency issue
-            try:
-                self.client.connect()
-                logger.info("Connected to database via Prisma")
-                return True
-            except PrismaError as e:
-                if "Already connected" in str(e):
-                    # Already connected is not an error
-                    logger.info("Client already connected to database")
+            if self.conn:
+                # Try a simple query to check if connection is still alive
+                try:
+                    cursor = self.conn.cursor()
+                    cursor.execute("SELECT 1")
+                    cursor.close()
+                    logger.info("Database connection is still alive")
                     return True
-                # Re-raise other errors
-                raise
+                except Exception:
+                    # Connection is dead, close it to be sure
+                    try:
+                        self.conn.close()
+                    except:
+                        pass
+                    self.conn = None
+
+            # Connect to the database
+            database_url = os.environ.get("DATABASE_URL")
+            if not database_url:
+                raise ValueError("DATABASE_URL environment variable not found")
+
+            logger.info(f"Connecting to database with URL: {database_url[:20]}...")
+            self.conn = psycopg2.connect(database_url)
+            logger.info("Connected to database successfully")
+            return True
         except Exception as e:
             logger.error(f"Failed to connect to database: {str(e)}")
             raise
@@ -58,36 +63,47 @@ class PrismaClient:
     def disconnect(self):
         """Disconnect from the database."""
         try:
-            if self.client and hasattr(self.client, "_engine") and self.client._engine:
-                self.client.disconnect()
+            if self.conn:
+                self.conn.close()
+                self.conn = None
                 logger.info("Disconnected from database")
         except Exception as e:
             logger.error(f"Error disconnecting from database: {str(e)}")
+
+    def execute_query(self, query, params=None, fetch=True):
+        """Execute a SQL query with optional parameters."""
+        try:
+            # Create a new cursor for each query
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+
+            # Execute the query
+            cursor.execute(query, params)
+
+            if fetch:
+                # Fetch results
+                results = cursor.fetchall()
+                cursor.close()
+                return results
+            else:
+                # Commit changes
+                self.conn.commit()
+                cursor.close()
+                return True
+        except Exception as e:
+            logger.error(f"Error executing query: {str(e)}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Params: {params}")
+            self.conn.rollback()
+            raise
 
     # Account methods
     def get_account_by_user_id(self, user_id):
         """Get account by user ID."""
         try:
-            # Ensure connection
             self.connect()
-
-            account = self.client.account.find_unique(where={"userId": user_id})
-            if account:
-                # Convert to dictionary for consistent access
-                account_dict = {
-                    "userId": account.userId,
-                    "categorisationRange": account.categorisationRange,
-                    "categorisationTab": account.categorisationTab,
-                    "columnOrderCategorisation": account.columnOrderCategorisation,
-                    "api_key": account.api_key,
-                }
-
-                # Add email field if it exists
-                if hasattr(account, "email"):
-                    account_dict["email"] = account.email
-
-                return account_dict
-            return None
+            query = 'SELECT * FROM account WHERE "userId" = %s'
+            results = self.execute_query(query, (user_id,))
+            return results[0] if results else None
         except Exception as e:
             logger.error(f"Error getting account by user ID: {str(e)}")
             raise
@@ -95,26 +111,10 @@ class PrismaClient:
     def get_account_by_api_key(self, api_key):
         """Get account by API key."""
         try:
-            # Ensure connection
             self.connect()
-
-            account = self.client.account.find_first(where={"api_key": api_key})
-            if account:
-                # Convert to dictionary for consistent access
-                account_dict = {
-                    "userId": account.userId,
-                    "categorisationRange": account.categorisationRange,
-                    "categorisationTab": account.categorisationTab,
-                    "columnOrderCategorisation": account.columnOrderCategorisation,
-                    "api_key": account.api_key,
-                }
-
-                # Add email field if it exists
-                if hasattr(account, "email"):
-                    account_dict["email"] = account.email
-
-                return account_dict
-            return None
+            query = "SELECT * FROM account WHERE api_key = %s"
+            results = self.execute_query(query, (api_key,))
+            return results[0] if results else None
         except Exception as e:
             logger.error(f"Error getting account by API key: {str(e)}")
             raise
@@ -122,54 +122,27 @@ class PrismaClient:
     def insert_account(self, user_id, data):
         """Insert a new account."""
         try:
-            # Ensure connection
             self.connect()
+            query = """
+                INSERT INTO account ("userId", "categorisationRange", "categorisationTab", "columnOrderCategorisation", api_key)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING *
+            """
 
-            account_data = {"userId": user_id}
+            params = (
+                user_id,
+                data.get("categorisationRange"),
+                data.get("categorisationTab"),
+                (
+                    json.dumps(data.get("columnOrderCategorisation"))
+                    if data.get("columnOrderCategorisation")
+                    else None
+                ),
+                data.get("apiKey") or data.get("api_key"),
+            )
 
-            if "apiKey" in data:
-                account_data["api_key"] = data["apiKey"]
-            elif "api_key" in data:
-                account_data["api_key"] = data["api_key"]
-
-            if "email" in data:
-                account_data["email"] = data["email"]
-
-            if "config" in data:
-                account_data["config"] = data["config"]
-
-            if "modelData" in data:
-                account_data["modelData"] = data["modelData"]
-
-            if "categorisationRange" in data:
-                account_data["categorisationRange"] = data["categorisationRange"]
-
-            if "categorisationTab" in data:
-                account_data["categorisationTab"] = data["categorisationTab"]
-
-            if "columnOrderCategorisation" in data:
-                account_data["columnOrderCategorisation"] = data[
-                    "columnOrderCategorisation"
-                ]
-
-            account = self.client.account.create(data=account_data)
-
-            if account:
-                # Convert to dictionary for consistent access
-                account_dict = {
-                    "userId": account.userId,
-                    "categorisationRange": account.categorisationRange,
-                    "categorisationTab": account.categorisationTab,
-                    "columnOrderCategorisation": account.columnOrderCategorisation,
-                    "api_key": account.api_key,
-                }
-
-                # Add email field if it exists
-                if hasattr(account, "email"):
-                    account_dict["email"] = account.email
-
-                return account_dict
-            return None
+            results = self.execute_query(query, params)
+            return results[0] if results else None
         except Exception as e:
             logger.error(f"Error inserting account: {str(e)}")
             raise
@@ -177,45 +150,50 @@ class PrismaClient:
     def update_account(self, user_id, data):
         """Update an existing account."""
         try:
-            # Ensure connection
             self.connect()
-
-            update_data = {}
-
-            if "apiKey" in data:
-                update_data["api_key"] = data["apiKey"]
-            elif "api_key" in data:
-                update_data["api_key"] = data["api_key"]
-
-            if "email" in data:
-                update_data["email"] = data["email"]
+            # Build the SET clause dynamically based on provided data
+            set_clauses = []
+            params = []
 
             if "categorisationRange" in data:
-                update_data["categorisationRange"] = data["categorisationRange"]
+                set_clauses.append('"categorisationRange" = %s')
+                params.append(data["categorisationRange"])
 
             if "categorisationTab" in data:
-                update_data["categorisationTab"] = data["categorisationTab"]
+                set_clauses.append('"categorisationTab" = %s')
+                params.append(data["categorisationTab"])
 
             if "columnOrderCategorisation" in data:
-                update_data["columnOrderCategorisation"] = data[
-                    "columnOrderCategorisation"
-                ]
+                set_clauses.append('"columnOrderCategorisation" = %s')
+                params.append(json.dumps(data["columnOrderCategorisation"]))
 
-            account = self.client.account.update(
-                where={"userId": user_id}, data=update_data
-            )
+            if "apiKey" in data:
+                set_clauses.append("api_key = %s")
+                params.append(data["apiKey"])
+            elif "api_key" in data:
+                set_clauses.append("api_key = %s")
+                params.append(data["api_key"])
 
-            if account:
-                # Convert to dictionary for consistent access
-                return {
-                    "userId": account.userId,
-                    "categorisationRange": account.categorisationRange,
-                    "categorisationTab": account.categorisationTab,
-                    "columnOrderCategorisation": account.columnOrderCategorisation,
-                    "api_key": account.api_key,
-                    "email": account.email,
-                }
-            return None
+            if "email" in data:
+                set_clauses.append("email = %s")
+                params.append(data["email"])
+
+            if not set_clauses:
+                logger.warning("No data provided for update")
+                return None
+
+            # Add the WHERE clause parameter
+            params.append(user_id)
+
+            query = f"""
+                UPDATE account
+                SET {", ".join(set_clauses)}
+                WHERE "userId" = %s
+                RETURNING *
+            """
+
+            results = self.execute_query(query, params)
+            return results[0] if results else None
         except Exception as e:
             logger.error(f"Error updating account: {str(e)}")
             raise
@@ -232,31 +210,32 @@ class PrismaClient:
             bool: True if successful, False otherwise
         """
         try:
-            # Ensure connection
             self.connect()
 
             # Find the account with this API key
-            account = self.client.account.find_first(where={"api_key": api_key})
+            account = self.get_account_by_api_key(api_key)
             if not account:
                 logger.warning(
                     f"No account found for API key: {api_key[:4]}...{api_key[-4:]}"
                 )
                 return False
 
+            # Calculate new request count
+            current_count = account.get("requestsCount", 0)
+            new_count = current_count + 1 if current_count is not None else 1
+
             # Update the account with new request count and timestamp
-            self.client.account.update(
-                where={"userId": account.userId},
-                data={
-                    "requestsCount": (
-                        account.requestsCount + 1
-                        if hasattr(account, "requestsCount")
-                        else 1
-                    ),
-                    "lastUsed": datetime.now(),
-                },
+            query = """
+                UPDATE account
+                SET "requestsCount" = %s, "lastUsed" = %s
+                WHERE "userId" = %s
+            """
+
+            self.execute_query(
+                query, (new_count, datetime.now(), account["userId"]), fetch=False
             )
 
-            logger.info(f"Tracked API usage for account: {account.userId}")
+            logger.info(f"Tracked API usage for account: {account['userId']}")
             return True
 
         except Exception as e:
@@ -275,14 +254,13 @@ class PrismaClient:
             bool: True if successful, False otherwise
         """
         try:
-            # Ensure connection
             self.connect()
 
             # First, track the API usage
             self.track_api_usage(api_key)
 
             # Find the account with this API key
-            account = self.client.account.find_first(where={"api_key": api_key})
+            account = self.get_account_by_api_key(api_key)
             if not account:
                 logger.warning(
                     f"No account found for API key: {api_key[:4]}...{api_key[-4:]}"
@@ -290,18 +268,17 @@ class PrismaClient:
                 return False
 
             # Update the embedding with the account ID
-            embedding = self.client.embedding.find_unique(
-                where={"embedding_id": embedding_id}
-            )
-            if not embedding:
-                logger.warning(f"No embedding found with ID: {embedding_id}")
-                return False
+            query = """
+                UPDATE embeddings 
+                SET "accountId" = %s
+                WHERE embedding_id = %s
+            """
 
-            self.client.embedding.update(
-                where={"embedding_id": embedding_id}, data={"accountId": account.userId}
-            )
+            self.execute_query(query, (account["userId"], embedding_id), fetch=False)
 
-            logger.info(f"Linked embedding {embedding_id} to account {account.userId}")
+            logger.info(
+                f"Linked embedding {embedding_id} to account {account['userId']}"
+            )
             return True
 
         except Exception as e:
@@ -319,28 +296,26 @@ class PrismaClient:
             dict: Dictionary with usage statistics or None if an error occurred
         """
         try:
-            # Ensure connection
             self.connect()
 
-            # Get account with usage fields
-            account = self.client.account.find_unique(
-                where={"userId": user_id}, include={"embeddings": True}
-            )
-
+            # Get account
+            account = self.get_account_by_user_id(user_id)
             if not account:
                 logger.warning(f"No account found for user ID: {user_id}")
                 return None
 
             # Count embeddings
-            embeddings_count = len(account.embeddings) if account.embeddings else 0
+            embedding_query = (
+                'SELECT COUNT(*) as count FROM embeddings WHERE "accountId" = %s'
+            )
+            results = self.execute_query(embedding_query, (user_id,))
+            embeddings_count = results[0]["count"] if results else 0
 
             return {
-                "user_id": account.userId,
-                "email": account.email if hasattr(account, "email") else None,
-                "requests_count": (
-                    account.requestsCount if hasattr(account, "requestsCount") else 0
-                ),
-                "last_used": account.lastUsed,
+                "user_id": account["userId"],
+                "email": account.get("email"),
+                "requests_count": account.get("requestsCount", 0),
+                "last_used": account.get("lastUsed"),
                 "embeddings_count": embeddings_count,
             }
 
@@ -352,7 +327,6 @@ class PrismaClient:
     def insert_webhook_result(self, prediction_id, results):
         """Insert webhook result."""
         try:
-            # Ensure client is connected
             self.connect()
 
             logger.info(f"Inserting webhook result for prediction_id: {prediction_id}")
@@ -390,41 +364,32 @@ class PrismaClient:
                     else json.dumps({"error": "Invalid data type"})
                 )
 
-            try:
-                # Use Prisma client to create or update webhook result
-                webhook_result = self.client.webhookresult.upsert(
-                    where={"prediction_id": prediction_id},
-                    data={
-                        "create": {
-                            "prediction_id": prediction_id,
-                            "results": results_json,
-                        },
-                        "update": {"results": results_json},
-                    },
-                )
+            # First check if the record exists
+            check_query = "SELECT id FROM webhook_results WHERE prediction_id = %s"
+            existing = self.execute_query(check_query, (prediction_id,))
 
-                if webhook_result:
-                    logger.info(
-                        f"Successfully stored webhook result for prediction_id: {prediction_id}"
-                    )
-                    return {
-                        "id": webhook_result.id,
-                        "prediction_id": webhook_result.prediction_id,
-                        "results": results,
-                        "created_at": webhook_result.created_at,
-                    }
-                return None
+            if existing:
+                # Update existing record
+                query = """
+                    UPDATE webhook_results
+                    SET results = %s
+                    WHERE prediction_id = %s
+                    RETURNING *
+                """
+                results = self.execute_query(query, (results_json, prediction_id))
+            else:
+                # Insert new record
+                query = """
+                    INSERT INTO webhook_results (prediction_id, results)
+                    VALUES (%s, %s)
+                    RETURNING *
+                """
+                results = self.execute_query(query, (prediction_id, results_json))
 
-            except Exception as prisma_error:
-                logger.error(
-                    f"Error using Prisma to insert webhook result: {str(prisma_error)}"
-                )
-
-                # If Prisma fails, log the issue
-                logger.warning(
-                    f"Prisma operation failed, webhook result may not be stored properly"
-                )
-                return None
+            logger.info(
+                f"Successfully stored webhook result for prediction_id: {prediction_id}"
+            )
+            return results[0] if results else None
 
         except Exception as e:
             logger.error(f"Error inserting webhook result: {str(e)}")
@@ -434,53 +399,36 @@ class PrismaClient:
     def get_webhook_result(self, prediction_id):
         """Get webhook result by prediction ID."""
         try:
-            # Ensure connection
             self.connect()
 
-            webhook_result = self.client.webhookresult.find_unique(
-                where={"prediction_id": prediction_id}
-            )
+            query = "SELECT * FROM webhook_results WHERE prediction_id = %s"
+            results = self.execute_query(query, (prediction_id,))
 
-            if webhook_result:
+            if results:
+                result = dict(results[0])
                 # Log the raw webhook result for debugging
                 logger.info(
-                    f"Raw webhook result: id='{webhook_result.id}' prediction_id='{webhook_result.prediction_id}'"
+                    f"Raw webhook result: id='{result['id']}' prediction_id='{result['prediction_id']}'"
                 )
 
-                # Convert to dictionary for consistent access
-                result = {
-                    "id": webhook_result.id,
-                    "prediction_id": webhook_result.prediction_id,
-                    "created_at": webhook_result.created_at,
-                }
-
                 # Add results field if it exists and is valid
-                if hasattr(webhook_result, "results") and webhook_result.results:
+                if "results" in result and result["results"]:
                     try:
-                        # First check if it's already a dictionary or other object
-                        if isinstance(webhook_result.results, (dict, list)):
-                            return webhook_result.results
-
                         # If it's a string, try to parse it as JSON
-                        if isinstance(webhook_result.results, str):
+                        if isinstance(result["results"], str):
                             try:
-                                parsed_results = json.loads(webhook_result.results)
+                                parsed_results = json.loads(result["results"])
                                 logger.info(
                                     f"Successfully parsed JSON results from webhook_result"
                                 )
                                 return parsed_results
                             except json.JSONDecodeError as e:
                                 logger.error(f"Error parsing webhook result JSON: {e}")
-                                result["results"] = webhook_result.results
                         else:
-                            # Non-string, non-dict, just return it as is
-                            logger.warning(
-                                f"Webhook result is neither string nor dict: {type(webhook_result.results)}"
-                            )
-                            return webhook_result.results
+                            # Non-string, return as is
+                            return result["results"]
                     except Exception as e:
                         logger.error(f"Error processing webhook result: {str(e)}")
-                        result["results"] = webhook_result.results
 
                 return result
             return None
@@ -492,32 +440,39 @@ class PrismaClient:
     def store_embedding(self, embedding_id, data_bytes):
         """Store embedding data in the database."""
         try:
-            # Ensure connection
             self.connect()
 
-            # Convert bytes to base64 string in one go
+            # Convert bytes to base64 string
             data_base64 = base64.b64encode(data_bytes).decode("utf-8")
 
             # Check if embedding already exists
-            existing = self.client.embedding.find_unique(
-                where={"embedding_id": embedding_id}
-            )
+            check_query = "SELECT embedding_id FROM embeddings WHERE embedding_id = %s"
+            existing = self.execute_query(check_query, (embedding_id,))
 
             if existing:
                 # Update existing embedding
-                embedding = self.client.embedding.update(
-                    where={"embedding_id": embedding_id}, data={"data": data_base64}
+                query = """
+                    UPDATE embeddings
+                    SET data = %s, updated_at = %s
+                    WHERE embedding_id = %s
+                """
+                self.execute_query(
+                    query, (data_base64, datetime.now(), embedding_id), fetch=False
                 )
             else:
                 # Create new embedding
-                embedding = self.client.embedding.create(
-                    data={"embedding_id": embedding_id, "data": data_base64}
+                query = """
+                    INSERT INTO embeddings (embedding_id, data, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s)
+                """
+                self.execute_query(
+                    query,
+                    (embedding_id, data_base64, datetime.now(), datetime.now()),
+                    fetch=False,
                 )
 
-            if embedding:
-                logger.info(f"Successfully stored embedding: {embedding_id}")
-                return True
-            return False
+            logger.info(f"Successfully stored embedding: {embedding_id}")
+            return True
         except Exception as e:
             logger.error(f"Error storing embedding: {str(e)}")
             return False
@@ -525,16 +480,14 @@ class PrismaClient:
     def fetch_embedding(self, embedding_id):
         """Fetch embedding data from the database."""
         try:
-            # Ensure connection
             self.connect()
 
-            embedding = self.client.embedding.find_unique(
-                where={"embedding_id": embedding_id}
-            )
+            query = "SELECT data FROM embeddings WHERE embedding_id = %s"
+            results = self.execute_query(query, (embedding_id,))
 
-            if embedding and embedding.data:
-                # Convert base64 string back to bytes in one go
-                data_bytes = base64.b64decode(embedding.data)
+            if results and "data" in results[0]:
+                # Convert base64 string back to bytes
+                data_bytes = base64.b64decode(results[0]["data"])
                 logger.info(f"Successfully fetched embedding: {embedding_id}")
                 return data_bytes
             else:
