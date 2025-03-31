@@ -1,9 +1,0 @@
-# *
-User-agent: *
-Allow: /
-
-# Host
-Host: https://www.expensesorted.com/
-
-# Sitemaps
-Sitemap: https://www.expensesorted.com/sitemap.xml
