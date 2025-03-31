@@ -5,6 +5,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import base64
 from datetime import datetime
+import io
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +103,7 @@ class PrismaClient:
         """Get account by user ID."""
         try:
             self.connect()
-            query = 'SELECT * FROM account WHERE "userId" = %s'
+            query = 'SELECT * FROM accounts WHERE "userId" = %s'
             results = self.execute_query(query, (user_id,))
             return results[0] if results else None
         except Exception as e:
@@ -112,7 +114,7 @@ class PrismaClient:
         """Get account by API key."""
         try:
             self.connect()
-            query = "SELECT * FROM account WHERE api_key = %s"
+            query = "SELECT * FROM accounts WHERE api_key = %s"
             results = self.execute_query(query, (api_key,))
             return results[0] if results else None
         except Exception as e:
@@ -124,7 +126,7 @@ class PrismaClient:
         try:
             self.connect()
             query = """
-                INSERT INTO account ("userId", "categorisationRange", "categorisationTab", "columnOrderCategorisation", api_key)
+                INSERT INTO accounts ("userId", "categorisationRange", "categorisationTab", "columnOrderCategorisation", api_key)
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING *
             """
@@ -186,7 +188,7 @@ class PrismaClient:
             params.append(user_id)
 
             query = f"""
-                UPDATE account
+                UPDATE accounts
                 SET {", ".join(set_clauses)}
                 WHERE "userId" = %s
                 RETURNING *
@@ -216,7 +218,7 @@ class PrismaClient:
             account = self.get_account_by_api_key(api_key)
             if not account:
                 logger.warning(
-                    f"No account found for API key: {api_key[:4]}...{api_key[-4:]}"
+                    f"No account found for API key: {str(api_key)[:4]}...{str(api_key)[-4:]}"
                 )
                 return False
 
@@ -226,16 +228,23 @@ class PrismaClient:
 
             # Update the account with new request count and timestamp
             query = """
-                UPDATE account
+                UPDATE accounts
                 SET "requestsCount" = %s, "lastUsed" = %s
                 WHERE "userId" = %s
             """
 
+            # Pass parameters with correct types
             self.execute_query(
-                query, (new_count, datetime.now(), account["userId"]), fetch=False
+                query,
+                (
+                    int(new_count),  # Integer in the database schema
+                    datetime.now(),
+                    str(account["userId"]),
+                ),
+                fetch=False,
             )
 
-            logger.info(f"Tracked API usage for account: {account['userId']}")
+            logger.info(f"Tracked API usage for account: {str(account['userId'])}")
             return True
 
         except Exception as e:
@@ -263,7 +272,7 @@ class PrismaClient:
             account = self.get_account_by_api_key(api_key)
             if not account:
                 logger.warning(
-                    f"No account found for API key: {api_key[:4]}...{api_key[-4:]}"
+                    f"No account found for API key: {str(api_key)[:4]}...{str(api_key)[-4:]}"
                 )
                 return False
 
@@ -274,10 +283,10 @@ class PrismaClient:
                 WHERE embedding_id = %s
             """
 
-            self.execute_query(query, (account["userId"], embedding_id), fetch=False)
+            self.execute_query(query, (account["id"], str(embedding_id)), fetch=False)
 
             logger.info(
-                f"Linked embedding {embedding_id} to account {account['userId']}"
+                f"Linked embedding {str(embedding_id)} to account {str(account['id'])}"
             )
             return True
 
@@ -308,7 +317,7 @@ class PrismaClient:
             embedding_query = (
                 'SELECT COUNT(*) as count FROM embeddings WHERE "accountId" = %s'
             )
-            results = self.execute_query(embedding_query, (user_id,))
+            results = self.execute_query(embedding_query, (account["id"],))
             embeddings_count = results[0]["count"] if results else 0
 
             return {
@@ -365,13 +374,13 @@ class PrismaClient:
                 )
 
             # First check if the record exists
-            check_query = "SELECT id FROM webhook_results WHERE prediction_id = %s"
+            check_query = 'SELECT id FROM "webhookResults" WHERE prediction_id = %s'
             existing = self.execute_query(check_query, (prediction_id,))
 
             if existing:
                 # Update existing record
                 query = """
-                    UPDATE webhook_results
+                    UPDATE "webhookResults"
                     SET results = %s
                     WHERE prediction_id = %s
                     RETURNING *
@@ -380,7 +389,7 @@ class PrismaClient:
             else:
                 # Insert new record
                 query = """
-                    INSERT INTO webhook_results (prediction_id, results)
+                    INSERT INTO "webhookResults" (prediction_id, results)
                     VALUES (%s, %s)
                     RETURNING *
                 """
@@ -401,7 +410,7 @@ class PrismaClient:
         try:
             self.connect()
 
-            query = "SELECT * FROM webhook_results WHERE prediction_id = %s"
+            query = 'SELECT * FROM "webhookResults" WHERE prediction_id = %s'
             results = self.execute_query(query, (prediction_id,))
 
             if results:
