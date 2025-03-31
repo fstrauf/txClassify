@@ -1,35 +1,19 @@
 services:
   - type: web
-    name: tx-classify
+    name: tx-classify-backend
     env: python
     buildCommand: |
       # Install Python dependencies
       pip install -r requirements.txt
-
-      # Install specific Prisma version and generate client
-      npm install -g prisma@5.17.0
-      mkdir -p prisma
-      cp ../prisma/schema.prisma prisma/
-      npx prisma@5.17.0 generate
-    preDeployCommand: |
-      cd ../prisma
-      npx prisma@5.17.0 migrate deploy
-      cd ../pythonHandler
     startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      - key: NODE_VERSION
-        value: 18.x
       - key: PYTHONPATH
         value: /opt/render/project/src
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
-        sync: false
-      - key: NEXT_PUBLIC_SUPABASE_URL
-        sync: false
-      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false
       - key: REPLICATE_API_TOKEN
         sync: false

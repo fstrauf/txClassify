@@ -17,9 +17,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from functools import wraps
 import io
-
-# Load environment variables
-load_dotenv()
+from flasgger import Swagger, swag_from
 
 # Define global constants for Replicate model
 REPLICATE_MODEL_NAME = "beautyyuyanli/multilingual-e5-large"
@@ -101,6 +99,37 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
+# Configure Swagger
+swagger_config = {
+    "headers": [],
+    "specs": [
+        {
+            "endpoint": "apispec",
+            "route": "/apispec.json",
+            "rule_filter": lambda rule: True,
+            "model_filter": lambda tag: True,
+        }
+    ],
+    "static_url_path": "/flasgger_static",
+    "swagger_ui": True,
+    "specs_route": "/docs",
+}
+
+swagger_template = {
+    "info": {
+        "title": "Transaction Classification API",
+        "description": "API for training and classifying financial transactions",
+        "version": "1.0.0",
+        "contact": {"email": "support@txclassify.com"},
+    },
+    "securityDefinitions": {
+        "ApiKeyAuth": {"type": "apiKey", "name": "X-API-Key", "in": "header"}
+    },
+    "security": [{"ApiKeyAuth": []}],
+}
+
+swagger = Swagger(app, config=swagger_config, template=swagger_template)
+
 # Define backend API URL for webhooks
 BACKEND_API = os.environ.get("BACKEND_API", "http://localhost:5001")
 logger.info(f"Backend API URL: {BACKEND_API}")
@@ -164,8 +193,29 @@ def ensure_db_connection():
 
 
 @app.route("/")
+@swag_from(
+    {
+        "responses": {
+            200: {
+                "description": "API is online and ready to use",
+                "examples": {
+                    "application/json": {
+                        "status": "online",
+                        "version": "1.0.0",
+                        "endpoints": [
+                            "/classify",
+                            "/train",
+                            "/health",
+                            "/status/:prediction_id",
+                        ],
+                    }
+                },
+            }
+        }
+    }
+)
 def home():
-    """Home endpoint"""
+    """Home endpoint - API information"""
     logger.info("Home endpoint accessed")
     return jsonify(
         {
@@ -182,8 +232,24 @@ def home():
 
 
 @app.route("/health")
+@swag_from(
+    {
+        "responses": {
+            200: {
+                "description": "Health check status",
+                "examples": {
+                    "application/json": {
+                        "status": "healthy",
+                        "timestamp": "2023-01-01T00:00:00.000Z",
+                        "components": {"app": "healthy", "database": "healthy"},
+                    }
+                },
+            }
+        }
+    }
+)
 def health():
-    """Health check endpoint"""
+    """Health check endpoint to verify the API is functioning correctly"""
     logger.info("Health check endpoint accessed")
 
     health_status = {
@@ -239,7 +305,7 @@ def validate_api_key(api_key: str, track_usage: bool = True) -> str:
             return ""
 
         # Log the found user data (excluding sensitive info)
-        logger.info(f"API key validated for userId: {account['userId']}")
+        logger.info(f"API key validated for userId: {str(account['userId'])}")
 
         if not account["userId"]:
             logger.error("User data found but missing userId")
@@ -471,9 +537,11 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
                 try:
                     if hasattr(request, "headers") and request.headers.get("X-API-Key"):
                         api_key = request.headers.get("X-API-Key")
-                        prisma_client.track_embedding_creation(api_key, embedding_id)
+                        prisma_client.track_embedding_creation(
+                            api_key, str(embedding_id)
+                        )
                 except Exception as e:
-                    logger.warning(f"Failed to track embedding creation: {e}")
+                    logger.warning(f"Failed to track embedding creation: {str(e)}")
 
                 logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
                 return result
@@ -587,6 +655,61 @@ def require_api_key(f):
 
 @app.route("/train", methods=["POST"])
 @require_api_key
+@swag_from(
+    {
+        "tags": ["Training"],
+        "summary": "Train transaction classifier",
+        "description": "Trains the model with new transaction data",
+        "parameters": [
+            {
+                "name": "X-API-Key",
+                "in": "header",
+                "type": "string",
+                "required": True,
+                "description": "API Key for authentication",
+            },
+            {
+                "name": "body",
+                "in": "body",
+                "required": True,
+                "schema": {
+                    "type": "object",
+                    "required": ["transactions", "expenseSheetId"],
+                    "properties": {
+                        "transactions": {
+                            "type": "array",
+                            "description": "List of transactions to train with",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "description": {"type": "string"},
+                                    "Category": {"type": "string"},
+                                },
+                            },
+                        },
+                        "expenseSheetId": {"type": "string"},
+                        "userId": {"type": "string"},
+                    },
+                },
+            },
+        ],
+        "responses": {
+            200: {
+                "description": "Training started successfully",
+                "examples": {
+                    "application/json": {
+                        "status": "processing",
+                        "prediction_id": "abcd1234",
+                        "message": "Training started. Check status endpoint for updates.",
+                    }
+                },
+            },
+            400: {"description": "Invalid request data"},
+            401: {"description": "Invalid or missing API key"},
+            500: {"description": "Server error"},
+        },
+    }
+)
 def train_model():
     """Train the model with new data."""
     try:
@@ -721,6 +844,57 @@ def train_model():
 
 @app.route("/classify", methods=["POST"])
 @require_api_key
+@swag_from(
+    {
+        "tags": ["Classification"],
+        "summary": "Classify transactions",
+        "description": "Classifies a list of transaction descriptions",
+        "parameters": [
+            {
+                "name": "X-API-Key",
+                "in": "header",
+                "type": "string",
+                "required": True,
+                "description": "API Key for authentication",
+            },
+            {
+                "name": "body",
+                "in": "body",
+                "required": True,
+                "schema": {
+                    "type": "object",
+                    "required": ["transactions", "spreadsheetId"],
+                    "properties": {
+                        "transactions": {
+                            "type": "array",
+                            "description": "List of transaction descriptions to classify",
+                            "items": {"type": "string"},
+                        },
+                        "spreadsheetId": {"type": "string"},
+                        "sheetName": {"type": "string", "default": "new_transactions"},
+                        "categoryColumn": {"type": "string", "default": "E"},
+                        "startRow": {"type": "string", "default": "1"},
+                    },
+                },
+            },
+        ],
+        "responses": {
+            200: {
+                "description": "Classification started successfully",
+                "examples": {
+                    "application/json": {
+                        "status": "processing",
+                        "prediction_id": "abcd1234",
+                        "message": "Classification started. Check status endpoint for updates.",
+                    }
+                },
+            },
+            400: {"description": "Invalid request data"},
+            401: {"description": "Invalid or missing API key"},
+            500: {"description": "Server error"},
+        },
+    }
+)
 def classify_transactions():
     """Classify transactions endpoint."""
     try:
@@ -853,6 +1027,42 @@ def classify_transactions():
 
 
 @app.route("/status/<prediction_id>", methods=["GET"])
+@swag_from(
+    {
+        "tags": ["Status"],
+        "summary": "Get prediction status",
+        "description": "Get the current status of a classification or training job",
+        "parameters": [
+            {
+                "name": "prediction_id",
+                "in": "path",
+                "type": "string",
+                "required": True,
+                "description": "ID of the prediction to check",
+            }
+        ],
+        "responses": {
+            200: {
+                "description": "Prediction status",
+                "examples": {
+                    "application/json": {
+                        "status": "completed",
+                        "message": "Processing completed successfully",
+                        "results": [
+                            {
+                                "predicted_category": "Food & Dining",
+                                "similarity_score": 0.95,
+                                "narrative": "UBER EATS",
+                            }
+                        ],
+                    }
+                },
+            },
+            404: {"description": "Prediction not found"},
+            500: {"description": "Server error"},
+        },
+    }
+)
 def get_prediction_status(prediction_id):
     """Get the status of a prediction directly from Replicate API."""
     try:
@@ -1263,6 +1473,48 @@ def get_prediction_status(prediction_id):
 
 @app.route("/user-config", methods=["GET"])
 @require_api_key
+@swag_from(
+    {
+        "tags": ["User"],
+        "summary": "Get user configuration",
+        "description": "Retrieve configuration for a specific user",
+        "parameters": [
+            {
+                "name": "X-API-Key",
+                "in": "header",
+                "type": "string",
+                "required": True,
+                "description": "API Key for authentication",
+            },
+            {
+                "name": "userId",
+                "in": "query",
+                "type": "string",
+                "required": False,
+                "description": "User ID to get configuration for",
+            },
+        ],
+        "responses": {
+            200: {
+                "description": "User configuration",
+                "examples": {
+                    "application/json": {
+                        "userId": "user123",
+                        "categorisationRange": "A:Z",
+                        "columnOrderCategorisation": {
+                            "categoryColumn": "E",
+                            "descriptionColumn": "C",
+                        },
+                    }
+                },
+            },
+            400: {"description": "Missing userId parameter"},
+            401: {"description": "Invalid or missing API key"},
+            404: {"description": "User not found"},
+            500: {"description": "Server error"},
+        },
+    }
+)
 def get_user_config():
     """Get user configuration."""
     try:
@@ -1309,6 +1561,38 @@ def get_user_config():
 
 @app.route("/api-usage", methods=["GET"])
 @require_api_key
+@swag_from(
+    {
+        "tags": ["User"],
+        "summary": "Get API usage statistics",
+        "description": "Get API usage statistics for the authenticated user",
+        "parameters": [
+            {
+                "name": "X-API-Key",
+                "in": "header",
+                "type": "string",
+                "required": True,
+                "description": "API Key for authentication",
+            }
+        ],
+        "responses": {
+            200: {
+                "description": "API usage statistics",
+                "examples": {
+                    "application/json": {
+                        "total_requests": 150,
+                        "daily_requests": 25,
+                        "weekly_requests": 75,
+                        "monthly_requests": 150,
+                        "last_request": "2023-01-01T00:00:00.000Z",
+                    }
+                },
+            },
+            401: {"description": "Invalid or missing API key"},
+            500: {"description": "Server error"},
+        },
+    }
+)
 def get_api_usage():
     """Get API usage statistics for an account."""
     try:
@@ -1330,6 +1614,52 @@ def get_api_usage():
 
 @app.route("/clean_text", methods=["POST"])
 @require_api_key
+@swag_from(
+    {
+        "tags": ["Utilities"],
+        "summary": "Clean transaction descriptions",
+        "description": "Clean and normalize transaction descriptions",
+        "parameters": [
+            {
+                "name": "X-API-Key",
+                "in": "header",
+                "type": "string",
+                "required": True,
+                "description": "API Key for authentication",
+            },
+            {
+                "name": "body",
+                "in": "body",
+                "required": True,
+                "schema": {
+                    "type": "object",
+                    "required": ["descriptions"],
+                    "properties": {
+                        "descriptions": {
+                            "type": "array",
+                            "description": "List of transaction descriptions to clean",
+                            "items": {"type": "string"},
+                        }
+                    },
+                },
+            },
+        ],
+        "responses": {
+            200: {
+                "description": "Cleaned descriptions",
+                "examples": {
+                    "application/json": {
+                        "cleaned_descriptions": ["UBER EATS", "AMAZON", "NETFLIX"]
+                    }
+                },
+            },
+            400: {"description": "Invalid request data"},
+            401: {"description": "Invalid or missing API key"},
+            429: {"description": "Daily API limit exceeded"},
+            500: {"description": "Server error"},
+        },
+    }
+)
 def clean_text_endpoint():
     """Clean a batch of transaction descriptions."""
     try:
@@ -1489,10 +1819,12 @@ def cleanup_old_webhook_results():
         # Example implementation:
         # prisma_client.delete_old_webhook_results(cutoff_date)
         # logger.info(f"Cleaned up webhook results older than {cutoff_date}")
-        
+
         # Now implemented:
         deleted_count = prisma_client.delete_old_webhook_results(cutoff_date)
-        logger.info(f"Cleaned up {deleted_count} webhook results older than {cutoff_date}")
+        logger.info(
+            f"Cleaned up {deleted_count} webhook results older than {cutoff_date}"
+        )
     except Exception as e:
         logger.error(f"Error cleaning up old webhook results: {e}")
 
