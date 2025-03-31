@@ -11,7 +11,8 @@
     "test:quiet": "node tests/test-api-endpoints.js",
     "test-db": "node test-db-connection.js",
     "debug-test": "NODE_OPTIONS='--inspect' node tests/test-api-endpoints.js --verbose",
-    "install:python": "cd pythonHandler && pip install -r requirements.txt"
+    "install:python": "cd pythonHandler && pip install -r requirements.txt",
+    "start:api": "cd pythonHandler && source venv/bin/activate && export FLASK_APP=main && export FLASK_ENV=development && python -m flask run --host=0.0.0.0 --port=5003"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
@@ -28,7 +29,8 @@
       "test:train": "Runs only the training test (skips training)",
       "test:cat": "Runs only the categorization test (skips training)",
       "test-db": "Tests the database connection",
-      "debug-test": "Runs the tests with Node.js inspector enabled for debugging"
+      "debug-test": "Runs the tests with Node.js inspector enabled for debugging",
+      "start:api": "Starts the Flask API server on port 5003"
     }
   }
 }
