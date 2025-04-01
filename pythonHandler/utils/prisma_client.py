@@ -98,7 +98,7 @@ class PrismaClient:
             self.conn.rollback()
             raise
 
-    # Account methods
+    # User and Account methods
     def get_account_by_user_id(self, user_id):
         """Get account by user ID."""
         try:
@@ -110,15 +110,26 @@ class PrismaClient:
             logger.error(f"Error getting account by user ID: {str(e)}")
             raise
 
-    def get_account_by_api_key(self, api_key):
-        """Get account by API key."""
+    def get_user_by_api_key(self, api_key):
+        """Get user by API key."""
         try:
             self.connect()
-            query = "SELECT * FROM accounts WHERE api_key = %s"
+            query = "SELECT * FROM users WHERE api_key = %s"
             results = self.execute_query(query, (api_key,))
             return results[0] if results else None
         except Exception as e:
-            logger.error(f"Error getting account by API key: {str(e)}")
+            logger.error(f"Error getting user by API key: {str(e)}")
+            raise
+
+    def get_account_by_provider_ids(self, provider, provider_account_id):
+        """Get account by provider and provider account ID."""
+        try:
+            self.connect()
+            query = 'SELECT * FROM accounts WHERE provider = %s AND "providerAccountId" = %s'
+            results = self.execute_query(query, (provider, provider_account_id))
+            return results[0] if results else None
+        except Exception as e:
+            logger.error(f"Error getting account by provider IDs: {str(e)}")
             raise
 
     def insert_account(self, user_id, data):
@@ -126,13 +137,28 @@ class PrismaClient:
         try:
             self.connect()
             query = """
-                INSERT INTO accounts ("userId", "categorisationRange", "categorisationTab", "columnOrderCategorisation", api_key)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO accounts (
+                    "userId", "type", "provider", "providerAccountId", "refresh_token", 
+                    "access_token", "expires_at", "token_type", "scope", "id_token", 
+                    "session_state", "categorisationRange", "categorisationTab", 
+                    "columnOrderCategorisation", "created_at"
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
             """
 
             params = (
                 user_id,
+                data.get("type"),
+                data.get("provider"),
+                data.get("providerAccountId"),
+                data.get("refresh_token"),
+                data.get("access_token"),
+                data.get("expires_at"),
+                data.get("token_type"),
+                data.get("scope"),
+                data.get("id_token"),
+                data.get("session_state"),
                 data.get("categorisationRange"),
                 data.get("categorisationTab"),
                 (
@@ -140,7 +166,7 @@ class PrismaClient:
                     if data.get("columnOrderCategorisation")
                     else None
                 ),
-                data.get("apiKey") or data.get("api_key"),
+                datetime.now(),
             )
 
             results = self.execute_query(query, params)
@@ -149,7 +175,7 @@ class PrismaClient:
             logger.error(f"Error inserting account: {str(e)}")
             raise
 
-    def update_account(self, user_id, data):
+    def update_account(self, account_id, data):
         """Update an existing account."""
         try:
             self.connect()
@@ -169,16 +195,65 @@ class PrismaClient:
                 set_clauses.append('"columnOrderCategorisation" = %s')
                 params.append(json.dumps(data["columnOrderCategorisation"]))
 
-            if "apiKey" in data:
-                set_clauses.append("api_key = %s")
-                params.append(data["apiKey"])
-            elif "api_key" in data:
+            if "requestsCount" in data:
+                set_clauses.append('"requestsCount" = %s')
+                params.append(data["requestsCount"])
+
+            if "lastUsed" in data:
+                set_clauses.append('"lastUsed" = %s')
+                params.append(data["lastUsed"])
+
+            if "appBetaOptIn" in data:
+                set_clauses.append('"appBetaOptIn" = %s')
+                params.append(data["appBetaOptIn"])
+
+            if not set_clauses:
+                logger.warning("No data provided for update")
+                return None
+
+            # Add the WHERE clause parameter
+            params.append(account_id)
+
+            query = f"""
+                UPDATE accounts
+                SET {", ".join(set_clauses)}
+                WHERE id = %s
+                RETURNING *
+            """
+
+            results = self.execute_query(query, params)
+            return results[0] if results else None
+        except Exception as e:
+            logger.error(f"Error updating account: {str(e)}")
+            raise
+
+    def update_user(self, user_id, data):
+        """Update an existing user."""
+        try:
+            self.connect()
+            # Build the SET clause dynamically based on provided data
+            set_clauses = []
+            params = []
+
+            if "api_key" in data:
                 set_clauses.append("api_key = %s")
                 params.append(data["api_key"])
 
             if "email" in data:
                 set_clauses.append("email = %s")
                 params.append(data["email"])
+
+            if "subscriptionPlan" in data:
+                set_clauses.append('"subscriptionPlan" = %s')
+                params.append(data["subscriptionPlan"])
+
+            if "subscriptionStatus" in data:
+                set_clauses.append('"subscriptionStatus" = %s')
+                params.append(data["subscriptionStatus"])
+
+            if "billingCycle" in data:
+                set_clauses.append('"billingCycle" = %s')
+                params.append(data["billingCycle"])
 
             if not set_clauses:
                 logger.warning("No data provided for update")
@@ -188,16 +263,16 @@ class PrismaClient:
             params.append(user_id)
 
             query = f"""
-                UPDATE accounts
+                UPDATE users
                 SET {", ".join(set_clauses)}
-                WHERE "userId" = %s
+                WHERE id = %s
                 RETURNING *
             """
 
             results = self.execute_query(query, params)
             return results[0] if results else None
         except Exception as e:
-            logger.error(f"Error updating account: {str(e)}")
+            logger.error(f"Error updating user: {str(e)}")
             raise
 
     # API Usage Tracking methods
@@ -214,12 +289,18 @@ class PrismaClient:
         try:
             self.connect()
 
-            # Find the account with this API key
-            account = self.get_account_by_api_key(api_key)
-            if not account:
+            # Find the user with this API key
+            user = self.get_user_by_api_key(api_key)
+            if not user:
                 logger.warning(
-                    f"No account found for API key: {str(api_key)[:4]}...{str(api_key)[-4:]}"
+                    f"No user found for API key: {str(api_key)[:4]}...{str(api_key)[-4:]}"
                 )
+                return False
+
+            # Find the account for this user
+            account = self.get_account_by_user_id(user["id"])
+            if not account:
+                logger.warning(f"No account found for user ID: {str(user['id'])}")
                 return False
 
             # Calculate new request count
@@ -230,7 +311,7 @@ class PrismaClient:
             query = """
                 UPDATE accounts
                 SET "requestsCount" = %s, "lastUsed" = %s
-                WHERE "userId" = %s
+                WHERE id = %s
             """
 
             # Pass parameters with correct types
@@ -239,12 +320,12 @@ class PrismaClient:
                 (
                     int(new_count),  # Integer in the database schema
                     datetime.now(),
-                    str(account["userId"]),
+                    str(account["id"]),
                 ),
                 fetch=False,
             )
 
-            logger.info(f"Tracked API usage for account: {str(account['userId'])}")
+            logger.info(f"Tracked API usage for user: {str(user['id'])}")
             return True
 
         except Exception as e:
@@ -268,12 +349,18 @@ class PrismaClient:
             # First, track the API usage
             self.track_api_usage(api_key)
 
-            # Find the account with this API key
-            account = self.get_account_by_api_key(api_key)
-            if not account:
+            # Find the user with this API key
+            user = self.get_user_by_api_key(api_key)
+            if not user:
                 logger.warning(
-                    f"No account found for API key: {str(api_key)[:4]}...{str(api_key)[-4:]}"
+                    f"No user found for API key: {str(api_key)[:4]}...{str(api_key)[-4:]}"
                 )
+                return False
+
+            # Find the account for this user
+            account = self.get_account_by_user_id(user["id"])
+            if not account:
+                logger.warning(f"No account found for user ID: {str(user['id'])}")
                 return False
 
             # Update the embedding with the account ID
@@ -307,6 +394,15 @@ class PrismaClient:
         try:
             self.connect()
 
+            # Get user details
+            user_query = "SELECT * FROM users WHERE id = %s"
+            user_results = self.execute_query(user_query, (user_id,))
+            if not user_results:
+                logger.warning(f"No user found for user ID: {user_id}")
+                return None
+
+            user = user_results[0]
+
             # Get account
             account = self.get_account_by_user_id(user_id)
             if not account:
@@ -321,11 +417,13 @@ class PrismaClient:
             embeddings_count = results[0]["count"] if results else 0
 
             return {
-                "user_id": account["userId"],
-                "email": account.get("email"),
+                "user_id": user_id,
+                "email": user.get("email"),
                 "requests_count": account.get("requestsCount", 0),
                 "last_used": account.get("lastUsed"),
                 "embeddings_count": embeddings_count,
+                "subscription_plan": user.get("subscriptionPlan"),
+                "subscription_status": user.get("subscriptionStatus"),
             }
 
         except Exception as e:
