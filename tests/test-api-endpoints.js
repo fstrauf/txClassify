@@ -288,17 +288,10 @@ const trainModel = async (config) => {
 
     logInfo(`Processing ${trainingData.length} transactions...`);
 
-    // Prepare the payload with consistent field names
+    // Prepare the payload with only the necessary fields
     const payload = {
       transactions: trainingData,
       userId: config.userId || TEST_USER_ID,
-      expenseSheetId: "test-sheet-id", // Mock sheet ID for testing
-      columnOrderCategorisation: {
-        descriptionColumn: config.narrativeCol || "B",
-        categoryColumn: config.categoryCol || "C",
-      },
-      categorisationRange: "A:Z",
-      categorisationTab: "TestSheet",
     };
 
     // Log the payload for debugging
@@ -565,13 +558,9 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
 // Test categorization flow
 const categoriseTransactions = async (config) => {
   try {
-    // Prepare request data with formatted transactions
+    // Prepare request data with only transactions (simplified API)
     const requestData = {
       transactions: config.categorizationDataFile,
-      spreadsheetId: "test-sheet-id",
-      sheetName: "test-sheet",
-      categoryColumn: "E",
-      startRow: "1",
     };
 
     // Add logging for debugging API key issues
@@ -978,7 +967,8 @@ const main = async () => {
 
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
-    const trainingData = await loadTrainingData("full_train.csv");
+    // const trainingData = await loadTrainingData("full_train.csv");
+    const trainingData = await loadTrainingData("training_test.csv");
     const categorizationData = await loadCategorizationData("categorise_full.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
@@ -989,9 +979,6 @@ const main = async () => {
       userId: TEST_USER_ID,
       apiKey: TEST_API_KEY,
       serviceUrl: apiUrl,
-      narrativeCol: "B",
-      categoryCol: "C",
-      startRow: 2,
       trainingDataFile: trainingData,
       categorizationDataFile: categorizationData,
     };

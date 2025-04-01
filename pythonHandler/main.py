@@ -52,7 +52,7 @@ class TrainRequest(BaseModel):
     """Request model for the /train endpoint."""
 
     transactions: List[Transaction]
-    expenseSheetId: str = Field(..., min_length=1)
+    expenseSheetId: Optional[str] = None
     userId: Optional[str] = None
 
     @field_validator("transactions")
@@ -67,7 +67,7 @@ class ClassifyRequest(BaseModel):
     """Request model for the /classify endpoint."""
 
     transactions: List[str]
-    spreadsheetId: str = Field(..., min_length=1)
+    spreadsheetId: Optional[str] = None
     sheetName: Optional[str] = "new_transactions"
     categoryColumn: Optional[str] = "E"
     startRow: Optional[str] = "1"
@@ -76,7 +76,7 @@ class ClassifyRequest(BaseModel):
     @classmethod
     def transactions_not_empty(cls, v):
         if not v:
-            raise ValueError("No transactions provided")
+            raise ValueError("At least one transaction is required")
         return v
 
 
@@ -727,7 +727,8 @@ def train_model():
 
         # Extract validated data
         transactions = validated_data.transactions
-        sheet_id = validated_data.expenseSheetId
+        # Use user_id as the main identifier
+        sheet_id = validated_data.expenseSheetId or f"user_{request.user_id}"
 
         # Get user_id from request context (set by decorator)
         user_id = request.user_id
@@ -794,12 +795,12 @@ def train_model():
         )
 
         # Store index data
-        store_embeddings(index_data, f"{sheet_id}_index")
+        store_embeddings(index_data, f"{user_id}_index")
         logger.info(f"Stored index data with {len(index_data)} entries")
 
         # Create a placeholder for the embeddings
         placeholder = np.array([[0.0] * EMBEDDING_DIMENSION])
-        store_embeddings(placeholder, f"{sheet_id}")
+        store_embeddings(placeholder, f"{user_id}")
 
         # Get descriptions for embedding
         descriptions = df["description"].tolist()
@@ -810,7 +811,6 @@ def train_model():
         # Store initial configuration for status endpoint
         config_data = {
             "user_id": user_id,
-            "spreadsheet_id": str(sheet_id),
             "status": "processing",
             "embeddings_data": {
                 "index_data": index_data.tolist(),
@@ -862,17 +862,13 @@ def train_model():
                 "required": True,
                 "schema": {
                     "type": "object",
-                    "required": ["transactions", "spreadsheetId"],
+                    "required": ["transactions"],
                     "properties": {
                         "transactions": {
                             "type": "array",
                             "description": "List of transaction descriptions to classify",
                             "items": {"type": "string"},
-                        },
-                        "spreadsheetId": {"type": "string"},
-                        "sheetName": {"type": "string", "default": "new_transactions"},
-                        "categoryColumn": {"type": "string", "default": "E"},
-                        "startRow": {"type": "string", "default": "1"},
+                        }
                     },
                 },
             },
@@ -915,24 +911,22 @@ def classify_transactions():
 
         # Extract validated data
         transaction_descriptions = validated_data.transactions
-        spreadsheet_id = validated_data.spreadsheetId
-        sheet_name = validated_data.sheetName
-        category_column = validated_data.categoryColumn
-        start_row = validated_data.startRow
 
         # Get user_id from request context (set by decorator)
         user_id = request.user_id
 
-        # Verify training data exists
+        # Verify training data exists - we can use the user_id to fetch the trained model
+        # instead of relying on spreadsheet_id
         try:
-            trained_data = fetch_embeddings(f"{spreadsheet_id}_index")
+            # Use user_id to fetch embeddings
+            trained_data = fetch_embeddings(f"{user_id}_index")
             if len(trained_data) == 0:
                 error_msg = "No training data found. Please train the model first."
-                logger.error(f"{error_msg} for spreadsheet_id: {spreadsheet_id}")
+                logger.error(f"{error_msg} for user: {user_id}")
                 return create_error_response(error_msg, 400)
         except Exception as e:
             error_msg = f"Error accessing training data: {str(e)}"
-            logger.error(f"{error_msg} for spreadsheet_id: {spreadsheet_id}")
+            logger.error(f"{error_msg} for user: {user_id}")
             return create_error_response(error_msg, 400)
 
         # Clean and prepare descriptions
@@ -973,39 +967,17 @@ def classify_transactions():
 
         logger.info(f"Classification prediction created with ID: {prediction.id}")
 
-        # Store config in database for later retrieval
+        # Store config in database for later retrieval - simplified version
         config_data = {
             "user_id": user_id,
-            "spreadsheet_id": str(spreadsheet_id),
-            "sheet_name": sheet_name,
-            "category_column": category_column,
-            "start_row": start_row,
             "original_descriptions": original_descriptions,
         }
 
         # Store the configuration
         try:
-            # First try to see if there's already a record for this prediction ID
-            existing_config = prisma_client.get_webhook_result(prediction.id)
-            if existing_config:
-                # If it exists, make sure we merge rather than overwrite it
-                if isinstance(existing_config, dict):
-                    existing_config.update(config_data)
-                    prisma_client.insert_webhook_result(prediction.id, existing_config)
-                else:
-                    # If it's not a dict, just overwrite
-                    prisma_client.insert_webhook_result(prediction.id, config_data)
-            else:
-                # If it doesn't exist, create a new record
-                prisma_client.insert_webhook_result(prediction.id, config_data)
+            prisma_client.insert_webhook_result(prediction.id, config_data)
         except Exception as e:
             logger.error(f"Error storing configuration: {e}")
-            # Create a minimal configuration record
-            try:
-                minimal_config = {"spreadsheet_id": str(spreadsheet_id)}
-                prisma_client.insert_webhook_result(prediction.id, minimal_config)
-            except Exception as inner_e:
-                logger.error(f"Failed to create minimal configuration: {inner_e}")
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
@@ -1255,21 +1227,23 @@ def get_prediction_status(prediction_id):
             # Process based on whether this is a training or classification prediction
             if "embeddings_data" in config_data:  # Training prediction
                 try:
-                    sheet_id = config_data.get("spreadsheet_id")
-                    if not sheet_id:
-                        return create_error_response(
-                            "Missing spreadsheet_id in config", 500
+                    # Get user_id from config_data
+                    user_id = config_data.get("user_id")
+                    if not user_id:
+                        # Fallback to the request's user_id
+                        user_id = request.user_id or "unknown"
+                        logger.warning(
+                            f"No user_id in config, using fallback: {user_id}"
                         )
 
-                    # Store the embeddings
-                    store_result = store_embeddings(embeddings, f"{sheet_id}")
+                    # Store the embeddings with user_id
+                    store_result = store_embeddings(embeddings, f"{user_id}")
 
                     # Store success result
                     result = {
-                        "user_id": config_data.get("user_id"),
+                        "user_id": user_id,
                         "status": "success",
                         "embeddings_shape": str(embeddings.shape),
-                        "spreadsheet_id": sheet_id,
                     }
                     prisma_client.insert_webhook_result(prediction.id, result)
 
@@ -1283,7 +1257,7 @@ def get_prediction_status(prediction_id):
                         {
                             "status": "completed",
                             "message": "Training completed successfully",
-                            "spreadsheet_id": sheet_id,
+                            "user_id": user_id,
                         }
                     )
 
@@ -1292,9 +1266,8 @@ def get_prediction_status(prediction_id):
                     return create_error_response(
                         f"Error processing training results: {str(e)}", 500
                     )
-
             # Handle classification prediction
-            elif spreadsheet_id:
+            else:
                 try:
                     user_id = config_data.get("user_id", "unknown")
 
@@ -1316,17 +1289,17 @@ def get_prediction_status(prediction_id):
                         f"Processing classification results for {len(original_descriptions)} items"
                     )
 
-                    # Get trained embeddings
-                    trained_embeddings = fetch_embeddings(f"{spreadsheet_id}")
-                    trained_data = fetch_embeddings(f"{spreadsheet_id}_index")
+                    # Get trained embeddings using user_id instead of spreadsheet_id
+                    trained_embeddings = fetch_embeddings(f"{user_id}")
+                    trained_data = fetch_embeddings(f"{user_id}_index")
 
                     # Check if we have valid embeddings
                     if trained_embeddings.size == 0 or trained_data.size == 0:
                         logger.error(
-                            f"No valid embeddings or training data found for spreadsheet_id: {spreadsheet_id}"
+                            f"No valid embeddings or training data found for user: {user_id}"
                         )
                         return create_error_response(
-                            f"No valid training data found for spreadsheet ID: {spreadsheet_id}",
+                            f"No valid training data found for this user. Please train the model first.",
                             400,
                         )
 
@@ -1402,12 +1375,7 @@ def get_prediction_status(prediction_id):
                     result_data = {
                         "status": "success",
                         "data": results,
-                        "config": {
-                            "spreadsheet_id": spreadsheet_id,
-                            "sheet_name": config_data.get("sheet_name"),
-                            "category_column": config_data.get("category_column"),
-                            "start_row": config_data.get("start_row"),
-                        },
+                        "user_id": user_id,
                     }
 
                     # Store the results in the database
@@ -1426,12 +1394,6 @@ def get_prediction_status(prediction_id):
                             "status": "completed",
                             "message": "Processing completed successfully",
                             "results": results,
-                            "config": {
-                                "categoryColumn": config_data.get("category_column"),
-                                "startRow": config_data.get("start_row"),
-                                "sheetName": config_data.get("sheet_name"),
-                                "spreadsheetId": spreadsheet_id,
-                            },
                         }
                     )
                 except Exception as e:
@@ -1439,25 +1401,6 @@ def get_prediction_status(prediction_id):
                     return create_error_response(
                         f"Error processing results: {str(e)}", 500
                     )
-            else:
-                # If we don't have config data with spreadsheet_id but have output, return raw output
-                logger.warning(
-                    f"No spreadsheet_id found for prediction {prediction_id}"
-                )
-                return jsonify(
-                    {
-                        "status": "completed",
-                        "message": "Processing completed but configuration not found",
-                        "raw_output": {
-                            "output_type": type(prediction.output).__name__,
-                            "output_length": (
-                                len(prediction.output)
-                                if isinstance(prediction.output, list)
-                                else "n/a"
-                            ),
-                        },
-                    }
-                )
 
         # For any other status
         else:
