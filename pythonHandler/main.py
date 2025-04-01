@@ -279,12 +279,11 @@ def health():
 
 
 def validate_api_key(api_key: str, track_usage: bool = True) -> str:
-    """
-    Validate API key and return user ID if valid.
+    """Validate API key and return user ID if valid.
 
     Args:
-        api_key: The API key to validate
-        track_usage: Whether to track API usage (default: True)
+        api_key: API key to validate
+        track_usage: Whether to track API usage for this validation
 
     Returns:
         str: User ID if valid, empty string if invalid
@@ -297,18 +296,18 @@ def validate_api_key(api_key: str, track_usage: bool = True) -> str:
         # Clean the API key
         api_key = api_key.strip()
 
-        # Use Prisma client to find account by API key
-        account = prisma_client.get_account_by_api_key(api_key)
+        # Use Prisma client to find user by API key
+        user = prisma_client.get_user_by_api_key(api_key)
 
-        if not account:
+        if not user:
             logger.error("Invalid API key provided")
             return ""
 
         # Log the found user data (excluding sensitive info)
-        logger.info(f"API key validated for userId: {str(account['userId'])}")
+        logger.info(f"API key validated for userId: {str(user['id'])}")
 
-        if not account["userId"]:
-            logger.error("User data found but missing userId")
+        if not user["id"]:
+            logger.error("User data found but missing id")
             return ""
 
         # Track API usage on successful validation if requested
@@ -319,7 +318,7 @@ def validate_api_key(api_key: str, track_usage: bool = True) -> str:
                 # Don't fail the validation if tracking fails
                 logger.warning(f"Error tracking API usage: {tracking_error}")
 
-        return account["userId"]
+        return user["id"]
 
     except Exception as e:
         logger.error(f"Error validating API key: {str(e)}")

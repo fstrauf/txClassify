@@ -3,6 +3,7 @@ import json
 import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -64,26 +65,40 @@ class Database:
 
     def get_account_by_user_id(self, user_id):
         """Get account by user ID."""
-        query = 'SELECT * FROM "Account" WHERE "userId" = %s'
+        query = 'SELECT * FROM "accounts" WHERE "userId" = %s'
         results = self.execute_query(query, (user_id,))
         return results[0] if results else None
 
-    def get_account_by_api_key(self, api_key):
-        """Get account by API key."""
-        query = 'SELECT * FROM "Account" WHERE api_key = %s'
+    def get_user_by_api_key(self, api_key):
+        """Get user by API key."""
+        query = 'SELECT * FROM "users" WHERE api_key = %s'
         results = self.execute_query(query, (api_key,))
         return results[0] if results else None
+
+    def get_account_by_api_key(self, api_key):
+        """Get account by API key (deprecated, use get_user_by_api_key)."""
+        # For backward compatibility
+        logger.warning(
+            "get_account_by_api_key is deprecated, use get_user_by_api_key instead"
+        )
+        user = self.get_user_by_api_key(api_key)
+        if not user:
+            return None
+        return self.get_account_by_user_id(user["id"])
 
     def insert_account(self, user_id, data):
         """Insert a new account."""
         query = """
-            INSERT INTO "Account" ("userId", "categorisationRange", "categorisationTab", "columnOrderCategorisation", api_key)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO "accounts" ("userId", "type", "provider", "providerAccountId", "categorisationRange", "categorisationTab", "columnOrderCategorisation", "created_at")
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
         """
 
         params = (
             user_id,
+            data.get("type", "oauth"),
+            data.get("provider", "email"),
+            data.get("providerAccountId", data.get("email")),
             data.get("categorisationRange"),
             data.get("categorisationTab"),
             (
@@ -91,13 +106,13 @@ class Database:
                 if data.get("columnOrderCategorisation")
                 else None
             ),
-            data.get("apiKey") or data.get("api_key"),
+            datetime.now(),
         )
 
         results = self.execute_query(query, params)
         return results[0] if results else None
 
-    def update_account(self, user_id, data):
+    def update_account(self, account_id, data):
         """Update an existing account."""
         # Build the SET clause dynamically based on provided data
         set_clauses = []
@@ -115,24 +130,25 @@ class Database:
             set_clauses.append('"columnOrderCategorisation" = %s')
             params.append(json.dumps(data["columnOrderCategorisation"]))
 
-        if "apiKey" in data:
-            set_clauses.append("api_key = %s")
-            params.append(data["apiKey"])
-        elif "api_key" in data:
-            set_clauses.append("api_key = %s")
-            params.append(data["api_key"])
+        if "requestsCount" in data:
+            set_clauses.append('"requestsCount" = %s')
+            params.append(data["requestsCount"])
+
+        if "lastUsed" in data:
+            set_clauses.append('"lastUsed" = %s')
+            params.append(data["lastUsed"])
 
         if not set_clauses:
             logger.warning("No data provided for update")
             return None
 
         # Add the WHERE clause parameter
-        params.append(user_id)
+        params.append(account_id)
 
         query = f"""
-            UPDATE "Account"
+            UPDATE "accounts"
             SET {", ".join(set_clauses)}
-            WHERE "userId" = %s
+            WHERE id = %s
             RETURNING *
         """
 
