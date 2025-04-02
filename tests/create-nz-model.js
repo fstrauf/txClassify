@@ -3,25 +3,14 @@ const path = require("path");
 // Load environment variables from .env file with explicit path
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
-// Verify critical environment variables are loaded
-console.log("Checking environment variables...");
-const criticalEnvVars = ["DATABASE_URL", "REPLICATE_API_TOKEN", "TEST_API_KEY", "TEST_USER_ID"];
-const missingVars = criticalEnvVars.filter((varName) => !process.env[varName]);
-if (missingVars.length > 0) {
-  console.error(`❌ Missing required environment variables: ${missingVars.join(", ")}`);
-  console.error("Please check that your .env file is in the project root and contains these variables.");
-  process.exit(1);
-}
-console.log("✅ Environment variables loaded successfully");
-
 const fs = require("fs");
 const csv = require("csv-parser");
-const axios = require("axios"); // Use axios instead of fetch
+const axios = require("axios");
 
 // Configuration
 const API_URL = process.env.API_URL || "http://localhost:3005";
-const NZ_USER_ID = process.env.NZ_USER_ID || "nz_model";
 const API_KEY = process.env.TEST_API_KEY;
+const NZ_USER_ID = process.env.NZ_USER_ID || "nz_model";
 
 // Set up logging
 const log = (message, isError = false) => {
@@ -35,9 +24,9 @@ const logError = (message) => log(message, true);
 const logInfo = (message) => log(message);
 
 // Log the actual values being used
-logInfo(`Using NZ_USER_ID: ${NZ_USER_ID}`);
-logInfo(`Using API_KEY: ${API_KEY ? "***" + API_KEY.slice(-4) : "Not set"}`);
 logInfo(`Using API_URL: ${API_URL}`);
+logInfo(`Using API_KEY: ${API_KEY ? "***" + API_KEY.slice(-4) : "Not set"}`);
+logInfo(`Using NZ_USER_ID: ${NZ_USER_ID}`);
 
 // Check if server is reachable
 const checkServerHealth = async () => {
@@ -100,11 +89,11 @@ const loadTrainingData = (file_name) => {
   });
 };
 
-// Train model with NZ data
+// Train NZ model
 const trainNZModel = async (transactions) => {
   try {
     logInfo("Starting training...");
-    console.log("Training model with NZ data...");
+    console.log("Training NZ model...");
 
     if (transactions.length === 0) {
       logError("Error: No training data found");
@@ -113,11 +102,11 @@ const trainNZModel = async (transactions) => {
 
     logInfo(`Processing ${transactions.length} transactions...`);
 
-    // Prepare the payload
+    // Prepare the payload with default model flag for NZ
     const payload = {
       transactions,
       userId: NZ_USER_ID,
-      isDefaultModel: true, // Mark this as a default model for NZ
+      isDefaultModel: true,
       country: "NZ",
     };
 
@@ -184,13 +173,7 @@ const trainNZModel = async (transactions) => {
     }
 
     // Parse response
-    let result;
-    try {
-      result = response.data;
-    } catch (parseError) {
-      logError(`Error parsing response: ${parseError.toString()}`);
-      throw new Error(`Failed to parse server response: ${parseError.toString()}`);
-    }
+    const result = response.data;
 
     // Validate result structure
     if (!result || typeof result !== "object") {
@@ -389,27 +372,27 @@ const main = async () => {
   try {
     console.log("\n=== Starting NZ Model Training Script ===\n");
 
-    // 0. Check server health
+    // 1. Check server health
     const isServerHealthy = await checkServerHealth();
     if (!isServerHealthy) {
-      throw new Error("API server is not reachable. Please ensure the server is running at " + API_URL);
+      throw new Error(`API server is not reachable at ${API_URL}. Please ensure the server is running.`);
     }
 
-    // 1. Load NZ Training Data
-    console.log("1. Loading NZ Training Data...");
+    // 2. Load NZ Training Data
+    console.log("Loading NZ training data...");
     const trainingData = await loadTrainingData("nz_train.csv");
-    console.log(`   Loaded ${trainingData.length} training records\n`);
+    console.log(`Loaded ${trainingData.length} training records\n`);
 
-    // 2. Train the Model with NZ Data
-    console.log("2. Training Model with NZ Data...");
+    // 3. Train the Model with NZ Data
+    console.log("Training model with NZ data...");
     const trainingResult = await trainNZModel(trainingData);
 
     if (trainingResult.status !== "completed") {
       throw new Error(`Training failed: ${trainingResult.error || "Unknown error"}`);
     }
-    console.log("   Training completed successfully\n");
-    console.log(`   Model ID: ${trainingResult.result?.model_id || "Unknown"}`);
-    console.log(`   Default model for NZ has been created and can be used for categorizations`);
+    console.log("Training completed successfully!\n");
+    console.log(`Model ID: ${trainingResult.result?.model_id || "Unknown"}`);
+    console.log(`Default model for NZ has been created and can be used for categorizations in New Zealand`);
 
     console.log("\n=== NZ Model Training Completed Successfully ===\n");
     process.exit(0);
@@ -419,13 +402,44 @@ const main = async () => {
   }
 };
 
-// Execute main function when script is run directly
-if (require.main === module) {
-  main().catch((error) => {
-    console.error("Unhandled error in main:", error);
-    process.exit(1);
-  });
+// Set up command-line argument parsing
+const args = process.argv.slice(2);
+const help = args.includes("--help") || args.includes("-h");
+
+if (help) {
+  console.log(`
+Usage: node create-nz-model.js [options]
+
+This script trains a default model for New Zealand using the transaction data in tests/test_data/nz_train.csv.
+The model will be registered with the system and can be used for users in New Zealand who don't have enough training data.
+
+Options:
+  --help, -h     Show this help message
+  --verbose, -v  Show verbose logging
+
+Environment variables:
+  API_URL        The URL of the API server (default: http://localhost:3005)
+  API_KEY        The API key to use for authentication
+  NZ_USER_ID     The user ID to associate with the model (default: nz_model)
+
+Example:
+  node create-nz-model.js --verbose
+  API_URL=https://your-api-server.com node create-nz-model.js
+`);
+  process.exit(0);
 }
+
+// Enable verbose logging if requested
+if (args.includes("--verbose") || args.includes("-v")) {
+  // We already log everything, so nothing to do here
+  console.log("Verbose logging enabled");
+}
+
+// Execute main function
+main().catch((error) => {
+  console.error("Unhandled error in main:", error);
+  process.exit(1);
+});
 
 // Handle process termination
 process.on("SIGINT", () => {
