@@ -26,6 +26,12 @@
         "description": ["Code", "Reference"],
         "currency": null
       },
+      "description_fallback": {
+        "primary_field": "Details",
+        "conditional_field": "Code",
+        "condition": "empty",
+        "composite_format": "{Type} - {Details}"
+      },
       "defaultCurrency": "NZD"
     }
   ]

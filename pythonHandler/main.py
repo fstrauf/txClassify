@@ -100,13 +100,19 @@ app = Flask(__name__)
 CORS(app)
 
 # Configure Swagger
+# List of endpoints to exclude from Swagger documentation
+EXCLUDED_SWAGGER_ENDPOINTS = ["/clean_text", "/api-usage", "/user-config"]
+
 swagger_config = {
     "headers": [],
     "specs": [
         {
             "endpoint": "apispec",
             "route": "/apispec.json",
-            "rule_filter": lambda rule: True,
+            "rule_filter": lambda rule: not any(
+                rule.rule.startswith(endpoint)
+                for endpoint in EXCLUDED_SWAGGER_ENDPOINTS
+            ),
             "model_filter": lambda tag: True,
         }
     ],
