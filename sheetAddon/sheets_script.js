@@ -1,5 +1,5 @@
-// const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
-const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
+const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
+// const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
 
 // Add menu to the spreadsheet
 function onOpen(e) {
@@ -724,10 +724,6 @@ function categoriseTransactions(config) {
     // Prepare the payload with the updated format
     var payload = JSON.stringify({
       transactions: descriptions, // Now directly an array of strings
-      spreadsheetId: spreadsheetId,
-      sheetName: sheet.getName(),
-      startRow: startRow.toString(),
-      categoryColumn: config.categoryCol,
     });
 
     // Log payload size for debugging
@@ -889,8 +885,9 @@ function writeResultsToSheet(result, config, sheet) {
     Logger.log("Sample result: " + JSON.stringify(resultsData[0]));
 
     // Get configuration from either the result or the provided config
-    var categoryCol = result.config ? result.config.categoryColumn : config.categoryCol;
-    var startRow = result.config ? parseInt(result.config.startRow) : parseInt(config.startRow);
+    var categoryCol = result.config && result.config.categoryColumn ? result.config.categoryColumn : config.categoryCol;
+    var startRow =
+      result.config && result.config.startRow ? parseInt(result.config.startRow) : parseInt(config.startRow);
 
     // Validate configuration
     if (!categoryCol || !startRow) {
@@ -1237,7 +1234,6 @@ function startTraining() {
     // Prepare payload with the new format
     var payload = JSON.stringify({
       transactions: transformedTransactions,
-      expenseSheetId: SpreadsheetApp.getActiveSheet().getParent().getId(),
       userId: serviceConfig.userId,
     });
 
