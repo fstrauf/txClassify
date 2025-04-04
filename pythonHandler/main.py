@@ -11,7 +11,7 @@ import re
 import logging
 import sys
 import time
-from typing import List, Optional
+from typing import List, Optional, Union, Dict, Any
 from utils.prisma_client import prisma_client
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -25,6 +25,30 @@ REPLICATE_MODEL_VERSION = (
     "a06276a89f1a902d5fc225a9ca32b6e8e6292b7f3b136518878da97c458e2bad"
 )
 EMBEDDING_DIMENSION = 1024  # Embedding dimension for the model
+
+# Define transaction category constants
+INCOME_CATEGORIES = {"Income", "Transfer in", "Refund"}
+EXPENSE_CATEGORIES = {
+    "Transfer out",
+    "Food & Dining",
+    "Shopping",
+    "Entertainment",
+    "Travel",
+    "Transport",
+    "Bills & Utilities",
+    "Health & Wellness",
+    "Personal Care",
+    "Education",
+    "Gifts & Donations",
+    "Home",
+    "Business",
+    "Investments",
+    "Financial",
+    "Taxes",
+    "Insurance",
+    "Other",
+}
+REFUND_CATEGORY = "Refund"
 
 
 # === Request Validation Models ===
@@ -63,10 +87,17 @@ class TrainRequest(BaseModel):
         return v
 
 
+class TransactionInput(BaseModel):
+    description: str
+    money_in: Optional[bool] = (
+        None  # True for income/credit/positive transactions, False for expense/debit/negative transactions
+    )
+
+
 class ClassifyRequest(BaseModel):
     """Request model for the /classify endpoint."""
 
-    transactions: List[str]
+    transactions: List[Union[str, TransactionInput]]
     spreadsheetId: Optional[str] = None
     sheetName: Optional[str] = "new_transactions"
     categoryColumn: Optional[str] = "E"
@@ -77,6 +108,9 @@ class ClassifyRequest(BaseModel):
     def transactions_not_empty(cls, v):
         if not v:
             raise ValueError("At least one transaction is required")
+        for tx in v:
+            if isinstance(tx, dict) and "description" not in tx:
+                raise ValueError("Transaction objects must have a 'description' field")
         return v
 
 
@@ -735,8 +769,6 @@ def train_model():
         transactions = validated_data.transactions
         # Use user_id as the main identifier
         sheet_id = validated_data.expenseSheetId or f"user_{request.user_id}"
-
-        # Get user_id from request context (set by decorator)
         user_id = request.user_id
         logger.info(
             f"Training request received - User: {user_id}, Items: {len(transactions)}"
@@ -818,32 +850,34 @@ def train_model():
         config_data = {
             "user_id": user_id,
             "status": "processing",
-            "embeddings_data": {
-                "index_data": index_data.tolist(),
-                "descriptions": descriptions,
-            },
+            "type": "training",
+            "created_at": datetime.now().isoformat(),
         }
 
         # Store the configuration
         try:
             prisma_client.insert_webhook_result(prediction.id, config_data)
+            logger.info(f"Stored training context for prediction {prediction.id}")
         except Exception as e:
-            logger.error(f"Error storing initial configuration: {e}")
+            logger.error(f"Error storing initial training configuration: {e}")
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
         logger.info(f"Training request processed in {elapsed_time:.2f}s")
 
-        return jsonify(
-            {
-                "status": "processing",
-                "prediction_id": prediction.id,
-                "message": "Training started. Check status endpoint for updates.",
-            }
+        return (
+            jsonify(
+                {
+                    "status": "processing",
+                    "prediction_id": prediction.id,
+                    "message": "Training started. Check status endpoint for updates.",
+                }
+            ),
+            200,
         )
 
     except Exception as e:
-        logger.error(f"Error in train_model: {e}")
+        logger.error(f"Error in train_model: {e}", exc_info=True)
         return create_error_response(str(e), 500)
 
 
@@ -896,114 +930,119 @@ def train_model():
         },
     }
 )
-def classify_transactions():
-    """Classify transactions endpoint."""
+def classify_transactions_async():
+    """Starts the asynchronous classification process."""
     try:
         start_time = time.time()
+        user_id = request.user_id
 
-        # Get request data
+        # 1. Validate Request Data
         data = request.get_json()
         if not data:
             return create_error_response("No data provided", 400)
-
-        logger.info(
-            f"Classify request received with {len(data.get('transactions', []))} transactions"
-        )
-
-        # Validate with Pydantic model
+        # Use the updated ClassifyRequest model
         validated_data, error_response = validate_request_data(ClassifyRequest, data)
         if error_response:
             return error_response
 
-        # Extract validated data
-        transaction_descriptions = validated_data.transactions
+        # 2. Prepare Input Data for Embedding and Context Storage
+        transactions_input_for_context = []
+        descriptions_to_embed = []
+        for tx_input_item in validated_data.transactions:
+            # Handle both string and object inputs
+            if isinstance(tx_input_item, str):
+                desc = tx_input_item
+                money_in = None  # Mark as unknown
+            else:  # It's a TransactionInput object (validated by Pydantic)
+                desc = tx_input_item.description
+                money_in = tx_input_item.money_in  # Could be True, False, or None
 
-        # Get user_id from request context (set by decorator)
-        user_id = request.user_id
+            transactions_input_for_context.append(
+                {"description": desc, "money_in": money_in}
+            )
+            # Use original description for embedding
+            descriptions_to_embed.append(desc)
 
-        # Verify training data exists - we can use the user_id to fetch the trained model
-        # instead of relying on spreadsheet_id
-        try:
-            # Use user_id to fetch embeddings
-            trained_data = fetch_embeddings(f"{user_id}_index")
-            if len(trained_data) == 0:
-                error_msg = "No training data found. Please train the model first."
-                logger.error(f"{error_msg} for user: {user_id}")
-                return create_error_response(error_msg, 400)
-        except Exception as e:
-            error_msg = f"Error accessing training data: {str(e)}"
-            logger.error(f"{error_msg} for user: {user_id}")
-            return create_error_response(error_msg, 400)
-
-        # Clean and prepare descriptions
-        cleaned_descriptions = []
-        original_descriptions = []
-        for desc in transaction_descriptions:
-            if desc:
-                cleaned = clean_text(desc)
-                cleaned_descriptions.append(cleaned)
-                original_descriptions.append(desc)
-            else:
-                logger.warning(f"Empty description found in transactions")
-
-        if not cleaned_descriptions:
-            logger.error("No valid descriptions found in transactions")
+        if not descriptions_to_embed:
             return create_error_response(
-                "No valid descriptions found in transactions", 400
+                "No valid transaction descriptions provided", 400
             )
 
-        # Get embeddings for descriptions using Replicate
         logger.info(
-            f"Processing {len(cleaned_descriptions)} descriptions for classification"
+            f"Starting classification job for {len(transactions_input_for_context)} txns, user {user_id}"
         )
 
-        # Create prediction using the model
-        model = replicate.models.get(REPLICATE_MODEL_NAME)
-        version = model.versions.get(REPLICATE_MODEL_VERSION)
-
-        # Create prediction without webhook
-        prediction = replicate.predictions.create(
-            version=version,
-            input={
-                "texts": json.dumps(cleaned_descriptions),
-                "batch_size": 32,
-                "normalize_embeddings": True,
-            },
-        )
-
-        logger.info(f"Classification prediction created with ID: {prediction.id}")
-
-        # Store config in database for later retrieval - simplified version
-        config_data = {
-            "user_id": user_id,
-            "original_descriptions": original_descriptions,
-        }
-
-        # Store the configuration
+        # 3. Start Replicate Prediction (DO NOT WAIT)
         try:
-            prisma_client.insert_webhook_result(prediction.id, config_data)
+            prediction = run_prediction(
+                descriptions_to_embed
+            )  # Gets embeddings for the descriptions
         except Exception as e:
-            logger.error(f"Error storing configuration: {e}")
+            logger.error(f"Failed to start Replicate prediction: {e}", exc_info=True)
+            return create_error_response(
+                f"Failed to start embedding prediction: {str(e)}", 502
+            )
 
-        # Calculate elapsed time
-        elapsed_time = time.time() - start_time
-        logger.info(f"Classification request processed in {elapsed_time:.2f}s")
-
-        # Return the prediction ID for status checking
-        return jsonify(
-            {
+        # 4. Store Context for later processing in /status
+        context = {
+            "user_id": user_id,
+            "status": "processing",  # Initial status stored in DB
+            "type": "classification",  # Ensure 'type' field is included here
+            "transactions_input": transactions_input_for_context,  # Store original list with flags
+            "created_at": datetime.now().isoformat(),  # Add timestamp
+        }
+        try:
+            # Store only minimal info for the prediction itself
+            minimal_context = {
+                "user_id": user_id,
                 "status": "processing",
-                "prediction_id": prediction.id,
-                "message": "Classification started. Check status endpoint for updates.",
+                "type": "classification",
+                "created_at": context["created_at"],
             }
+
+            # Use insert_webhook_result (assuming it handles updates/overwrites)
+            prisma_client.insert_webhook_result(prediction.id, minimal_context)
+
+            # Store the full context with transactions_input separately
+            # This allows us to recalculate results later without storing sensitive data
+            # in the main result record
+            prisma_client.insert_webhook_result(f"{prediction.id}_context", context)
+
+            logger.info(f"Stored context for prediction {prediction.id}")
+        except Exception as e:
+            logger.error(
+                f"Failed to store context for prediction {prediction.id}: {e}",
+                exc_info=True,
+            )
+            return create_error_response(f"Failed to store job context: {str(e)}", 500)
+
+        # 5. Return Prediction ID Immediately
+        elapsed_time = time.time() - start_time
+        logger.info(
+            f"/classify request handled in {elapsed_time:.2f}s, prediction {prediction.id} started."
         )
+
+        # Return 202 Accepted status code might be more appropriate for async start
+        return (
+            jsonify(
+                {
+                    "status": "processing",
+                    "prediction_id": prediction.id,
+                    "message": "Classification job started. Poll the /status endpoint.",
+                }
+            ),
+            202,
+        )  # Use 202 Accepted
 
     except Exception as e:
-        logger.error(f"Error in classify_transactions: {e}")
-        return create_error_response(str(e), 500)
+        logger.error(f"Critical error in /classify start: {e}", exc_info=True)
+        return create_error_response(
+            f"An unexpected server error occurred: {str(e)}", 500
+        )
 
 
 @app.route("/status/<prediction_id>", methods=["GET"])
+@require_api_key  # Secure the status endpoint
 @swag_from(
     {
         "tags": ["Status"],
@@ -1040,383 +1079,496 @@ def classify_transactions():
         },
     }
 )
-def get_prediction_status(prediction_id):
-    """Get the status of a prediction directly from Replicate API."""
+def get_classification_or_training_status(prediction_id):
+    """Gets status for Training OR Classification jobs."""
     try:
         start_time = time.time()
-        logger.info(f"Getting status for prediction: {prediction_id}")
+        # user_id passed from decorator if needed, but we get it from context mainly
+        requesting_user_id = request.user_id
 
-        # Get prediction directly from Replicate
-        try:
-            prediction = replicate.predictions.get(prediction_id)
-            if not prediction:
-                logger.warning(f"Prediction {prediction_id} not found in Replicate")
-                return create_error_response("Prediction not found", 404)
-        except Exception as e:
-            logger.error(f"Error fetching prediction from Replicate: {e}")
-            return create_error_response(f"Error fetching prediction: {str(e)}", 500)
+        # Check our DB first - maybe it's already completed or failed?
+        stored_result = prisma_client.get_webhook_result(prediction_id)
 
-        # Get basic prediction status
-        status = prediction.status
-        logger.info(f"Prediction {prediction_id} status: {status}")
+        # If we have a final status stored, return it immediately
+        if isinstance(stored_result, dict) and stored_result.get("status") in [
+            "completed",
+            "failed",
+        ]:
+            # Security check: Ensure the user requesting status owns this job
+            if stored_result.get("user_id") != requesting_user_id:
+                logger.warning(
+                    f"User {requesting_user_id} tried to access status for prediction {prediction_id} owned by {stored_result.get('user_id')}"
+                )
+                return create_error_response(
+                    "Permission denied or prediction not found", 404
+                )  # Obscure error slightly
 
-        # Enhanced error logging for failed predictions
-        if status == "failed":
-            error_msg = str(prediction.error) if prediction.error else "Unknown error"
-            error_type = (
-                type(prediction.error).__name__ if prediction.error else "Unknown"
-            )
-            logger.error(f"Prediction failed with error type {error_type}: {error_msg}")
+            logger.info(f"Found stored final status for {prediction_id}")
 
-            # Log additional prediction details
-            logger.error("Prediction details:")
-            logger.error(
-                f"  Created at: {prediction.created_at if hasattr(prediction, 'created_at') else 'unknown'}"
-            )
-            logger.error(
-                f"  Started at: {prediction.started_at if hasattr(prediction, 'started_at') else 'unknown'}"
-            )
-            logger.error(
-                f"  Completed at: {prediction.completed_at if hasattr(prediction, 'completed_at') else 'unknown'}"
-            )
-            logger.error(
-                f"  Model: {prediction.model if hasattr(prediction, 'model') else 'unknown'}"
-            )
-            logger.error(
-                f"  Version: {prediction.version if hasattr(prediction, 'version') else 'unknown'}"
-            )
-
-            if hasattr(prediction, "logs") and prediction.logs:
-                logger.error(f"Prediction logs: {prediction.logs}")
-
-            if hasattr(prediction, "input"):
-                logger.error(f"Input configuration: {prediction.input}")
-
-            return create_error_response(f"Prediction failed: {error_msg}", 500)
-
-        # Get config data for this prediction if it exists
-        config_data = prisma_client.get_webhook_result(prediction_id)
-
-        if not config_data:
-            config_data = {}
-
-        # If prediction failed with a retryable error, attempt to retry
-        if status == "failed" and "code: pa" in str(prediction.error).lower():
-            logger.info(f"Retrying interrupted prediction {prediction_id}")
-
-            # Extract necessary data from config
-            if isinstance(config_data, dict):
-                if "original_descriptions" in config_data:
-                    descriptions = config_data["original_descriptions"]
-                elif (
-                    "embeddings_data" in config_data
-                    and "descriptions" in config_data["embeddings_data"]
-                ):
-                    descriptions = config_data["embeddings_data"]["descriptions"]
-                else:
-                    return create_error_response(
-                        "Cannot retry: missing description data", 500
-                    )
-
-                try:
-                    # Create new prediction with retry mechanism
-                    new_prediction = run_prediction(descriptions)
-
-                    # Update the webhook result with the new prediction ID
-                    config_data["retried_from"] = prediction_id
-                    prisma_client.insert_webhook_result(new_prediction.id, config_data)
-
+            # For privacy: If classification job is completed, we don't return stored results
+            # Instead, we'll recalculate them on-demand using stored embeddings
+            if (
+                stored_result.get("type") == "classification"
+                and stored_result.get("status") == "completed"
+            ):
+                # If this is just a status check without needing results, return simple success
+                if request.args.get("status_only") == "true":
                     return jsonify(
                         {
-                            "status": "retrying",
-                            "old_prediction_id": prediction_id,
-                            "new_prediction_id": new_prediction.id,
-                            "message": "Previous prediction failed, created new prediction",
+                            "status": "completed",
+                            "message": "Classification completed successfully",
+                            "type": "classification",
+                            "transaction_count": stored_result.get(
+                                "transaction_count", 0
+                            ),
                         }
                     )
 
-                except Exception as retry_error:
-                    logger.error(f"Error retrying prediction: {retry_error}")
+                # Otherwise, we need to fetch embeddings and reprocess to get the results
+                embeddings_id = stored_result.get("embeddings_id")
+
+                if not embeddings_id:
+                    logger.error(
+                        f"No embeddings_id found for completed classification {prediction_id}"
+                    )
                     return create_error_response(
-                        f"Failed to retry prediction: {str(retry_error)}", 500
+                        "Classification data no longer available", 410
                     )
 
-        # Ensure config_data is a dictionary
-        if not isinstance(config_data, dict):
+                # Try to fetch the stored embeddings
+                try:
+                    embeddings = fetch_embeddings(embeddings_id)
+                    if embeddings.size == 0:
+                        logger.error(f"Empty embeddings retrieved for {embeddings_id}")
+                        raise ValueError("Empty embeddings")
+                except Exception as e:
+                    logger.error(f"Failed to fetch embeddings for {embeddings_id}: {e}")
+                    return create_error_response(
+                        "Classification data no longer available", 410
+                    )
+
+                # Get the original transaction context
+                try:
+                    # Use the context_id if available, otherwise try the default naming pattern
+                    context_id = (
+                        stored_result.get("context_id") or f"{prediction_id}_context"
+                    )
+                    orig_context = prisma_client.get_webhook_result(context_id)
+
+                    if not isinstance(orig_context, dict) or not orig_context.get(
+                        "transactions_input"
+                    ):
+                        logger.error(
+                            f"Missing transaction context for {prediction_id} (tried context_id: {context_id})"
+                        )
+
+                        # If we can't get the original descriptions, we need to ask the client to provide them
+                        return (
+                            jsonify(
+                                {
+                                    "status": "needs_input",
+                                    "message": "Original transaction data needed for recalculation",
+                                    "type": "classification",
+                                }
+                            ),
+                            428,
+                        )  # Precondition Required
+
+                    transactions_input = orig_context.get("transactions_input")
+                    logger.info(
+                        f"Retrieved {len(transactions_input)} transactions from context for recalculation"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error retrieving transaction context for {prediction_id}: {e}"
+                    )
+                    return create_error_response(
+                        "Classification requires original transaction data", 428
+                    )
+
+                # Now we have embeddings and transaction context - recalculate results
+                try:
+                    logger.info(
+                        f"Recalculating results for {prediction_id} using stored embeddings"
+                    )
+                    # Run the categorization pipeline again
+                    initial_results = _apply_initial_categorization(
+                        transactions_input, embeddings, requesting_user_id
+                    )
+                    results_after_refunds = _detect_refunds(
+                        initial_results, embeddings, requesting_user_id
+                    )
+                    final_results_raw = _detect_transfers(results_after_refunds)
+
+                    # Clean results for final response
+                    final_results_clean = []
+                    for res in final_results_raw:
+                        cleaned_res = res.copy()
+                        # Don't remove money_in flag, we need it for display
+                        # cleaned_res.pop("money_in", None)  # Remove internal flag
+                        final_results_clean.append(cleaned_res)
+
+                    # Return freshly calculated results
+                    return jsonify(
+                        {
+                            "status": "completed",
+                            "message": "Classification completed successfully",
+                            "results": final_results_clean,
+                            "type": "classification",
+                            "recalculated": True,
+                        }
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error recalculating results for {prediction_id}: {e}"
+                    )
+                    return create_error_response(
+                        f"Failed to recalculate results: {str(e)}", 500
+                    )
+            else:
+                # For non-classification jobs or failed jobs, return the stored result directly
+                return jsonify(stored_result)
+
+        # If not completed in DB, check Replicate
+        else:
             try:
-                # Try to convert to dictionary if it's string JSON
-                if isinstance(config_data, str):
-                    config_data = json.loads(config_data)
-                else:
-                    config_data = {}
-            except Exception:
-                config_data = {}
+                prediction = replicate.predictions.get(prediction_id)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to get prediction {prediction_id} from Replicate: {e}"
+                )
+                # If we have a DB record, it means the job *was* started. Return error.
+                if stored_result:
+                    return create_error_response(
+                        f"Error fetching prediction status from provider.", 502
+                    )
+                else:  # No record in DB either
+                    return create_error_response("Prediction not found.", 404)
 
-        # Get spreadsheet_id from config_data
-        spreadsheet_id = None
-
-        # Try direct access first
-        if "spreadsheet_id" in config_data:
-            spreadsheet_id = config_data.get("spreadsheet_id")
-        # Try nested in results
-        elif isinstance(config_data, dict) and "results" in config_data:
-            if (
-                isinstance(config_data["results"], dict)
-                and "spreadsheet_id" in config_data["results"]
-            ):
-                spreadsheet_id = config_data["results"].get("spreadsheet_id")
-                # Update config_data to use the nested structure
-                config_data = config_data["results"]
-        # Try nested in config
-        elif isinstance(config_data, dict) and "config" in config_data:
-            if (
-                isinstance(config_data["config"], dict)
-                and "spreadsheet_id" in config_data["config"]
-            ):
-                spreadsheet_id = config_data["config"].get("spreadsheet_id")
-        # Look for spreadsheetId (camelCase variant)
-        elif "spreadsheetId" in config_data:
-            spreadsheet_id = config_data.get("spreadsheetId")
-
-        # Final fallback - try to search all nested dictionaries for spreadsheet_id
-        if not spreadsheet_id:
-
-            def search_dict_for_key(d, target_key):
-                if isinstance(d, dict):
-                    for k, v in d.items():
-                        if k == target_key:
-                            return v
-                        if isinstance(v, (dict, list)):
-                            result = search_dict_for_key(v, target_key)
-                            if result:
-                                return result
-                elif isinstance(d, list):
-                    for item in d:
-                        if isinstance(item, (dict, list)):
-                            result = search_dict_for_key(item, target_key)
-                            if result:
-                                return result
-                return None
-
-            spreadsheet_id = search_dict_for_key(
-                config_data, "spreadsheet_id"
-            ) or search_dict_for_key(config_data, "spreadsheetId")
-
-        # If prediction is still processing, return simple status
-        if status == "processing":
-            return jsonify(
-                {"status": "processing", "message": "Processing in progress"}
+            status = prediction.status
+            logger.info(
+                f"Status check for {prediction_id}: Replicate status = {status}"
             )
 
-        # If prediction failed, return error
+        # Handle Non-Successful Replicate Statuses
+        if status == "starting" or status == "processing":
+            # Update our DB status? Optional, but could be useful.
+            # prisma_client.update_webhook_result(prediction_id, {"status": "processing"})
+            return jsonify(
+                {"status": "processing", "message": "Job is still processing."}
+            )
         elif status == "failed":
-            error_message = prediction.error or "Unknown error occurred"
-            logger.error(f"Prediction {prediction_id} failed: {error_message}")
-            return create_error_response(f"Prediction failed: {error_message}", 500)
+            error_message = prediction.error or "Unknown prediction error"
+            logger.error(
+                f"Prediction {prediction_id} failed on Replicate: {error_message}"
+            )
+            # Store failure status in our DB using insert_webhook_result
+            final_db_record = {
+                "status": "failed",
+                "error": str(error_message),
+                "user_id": requesting_user_id,
+            }
+            # Use insert_webhook_result instead of update
+            prisma_client.insert_webhook_result(prediction_id, final_db_record)
+            return jsonify(final_db_record), 500  # Return 500 for failed job
+        elif status != "succeeded":
+            logger.warning(
+                f"Prediction {prediction_id} has unexpected Replicate status: {status}"
+            )
+            final_db_record = {
+                "status": "failed",
+                "error": f"Unexpected prediction status: {status}",
+                "user_id": requesting_user_id,
+            }
+            # Use insert_webhook_result instead of update
+            prisma_client.insert_webhook_result(prediction_id, final_db_record)
+            return jsonify(final_db_record), 500
 
-        # If prediction succeeded, process the results
-        elif status == "succeeded":
-            logger.info(f"Prediction {prediction_id} succeeded, processing results")
-            process_start_time = time.time()
+        # --- Process Successful Replicate Prediction ---
+        # If we reach here, status == "succeeded" on Replicate, but not yet processed in our DB
+        logger.info(f"Prediction {prediction_id} succeeded on Replicate. Processing...")
+        process_start_time = time.time()
 
-            # If succeeded but no output, return error
-            if not prediction.output:
-                logger.error(f"Prediction {prediction_id} succeeded but has no output")
-                return create_error_response(
-                    "Prediction succeeded but has no output", 500
+        # Get Embeddings from Output
+        if not prediction.output or not isinstance(prediction.output, list):
+            logger.error(f"Prediction {prediction_id} succeeded but output is invalid.")
+            final_db_record = {
+                "status": "failed",
+                "error": "Invalid prediction output",
+                "user_id": requesting_user_id,  # Include user_id in all responses
+            }
+            prisma_client.insert_webhook_result(prediction_id, final_db_record)
+            return jsonify(final_db_record), 500
+
+        try:
+            # Get embeddings from prediction output - make sure we reload the output
+            # if we're recalculating results for a completed job
+            if stored_result and stored_result.get("status") == "completed":
+                # Ensure we have the latest prediction output
+                try:
+                    prediction = replicate.predictions.get(prediction_id)
+                    if not prediction.output or not isinstance(prediction.output, list):
+                        return create_error_response(
+                            "Unable to retrieve prediction embeddings", 500
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Error refreshing prediction for {prediction_id}: {e}"
+                    )
+                    return create_error_response(
+                        "Unable to retrieve prediction embeddings", 500
+                    )
+
+            # Now convert to numpy array
+            embeddings = np.array(prediction.output, dtype=np.float32)
+        except Exception as e:
+            logger.error(
+                f"Failed to convert prediction output to numpy array for {prediction_id}: {e}"
+            )
+            final_db_record = {
+                "status": "failed",
+                "error": "Failed to process prediction output",
+                "user_id": requesting_user_id,
+            }
+            prisma_client.insert_webhook_result(prediction_id, final_db_record)
+            return jsonify(final_db_record), 500
+
+        # Fetch Context from DB (we might have fetched it already)
+        context = (
+            stored_result
+            if stored_result
+            else prisma_client.get_webhook_result(prediction_id)
+        )
+        if not isinstance(context, dict):
+            logger.error(
+                f"Could not retrieve valid context for {prediction_id} after Replicate success"
+            )
+            # Don't update DB status to failed here, as the prediction *did* succeed. Log and return server error.
+            return create_error_response(
+                "Job context missing or invalid after prediction success", 500
+            )
+
+        job_type = context.get("type")
+        user_id = context.get("user_id")
+
+        # Security check again before processing
+        if user_id != requesting_user_id:
+            logger.error(
+                f"Mismatch between context user {user_id} and requesting user {requesting_user_id} for {prediction_id}"
+            )
+            return create_error_response("Permission denied", 403)  # Forbidden
+
+        # --- Handle TRAINING Completion ---
+        if job_type == "training":
+            logger.info(
+                f"Processing TRAINING completion for prediction {prediction_id}, user {user_id}"
+            )
+            try:
+                store_result = store_embeddings(embeddings, f"{user_id}")
+                final_db_record = {
+                    "status": "completed",
+                    "message": "Training completed successfully",
+                    "user_id": user_id,
+                    "type": "training",
+                }
+                # Use insert_webhook_result instead of update
+                prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                logger.info(
+                    f"Training job {prediction_id} processing completed in {time.time() - process_start_time:.2f}s"
+                )
+                return jsonify(final_db_record)
+            except Exception as e:
+                logger.error(
+                    f"Error storing training results for {prediction_id}: {e}",
+                    exc_info=True,
+                )
+                final_db_record = {
+                    "status": "failed",
+                    "error": f"Failed to store training results: {str(e)}",
+                    "type": "training",
+                }
+                # Use insert_webhook_result instead of update
+                prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                return jsonify(final_db_record), 500
+
+        # --- Handle CLASSIFICATION Completion ---
+        elif job_type == "classification":
+            logger.info(
+                f"Processing CLASSIFICATION completion for prediction {prediction_id}, user {user_id}"
+            )
+
+            # For classification, we need to fetch the full context that includes transactions_input
+            # This is stored in a separate record with "_context" suffix
+            try:
+                context_with_transactions = prisma_client.get_webhook_result(
+                    f"{prediction_id}_context"
+                )
+                if not isinstance(
+                    context_with_transactions, dict
+                ) or not context_with_transactions.get("transactions_input"):
+                    logger.error(
+                        f"Missing transactions_input in context for {prediction_id}"
+                    )
+                    # Try to update the record status to failed
+                    final_db_record = {
+                        "status": "failed",
+                        "error": "Missing transaction input data",
+                        "type": "classification",
+                        "user_id": user_id,
+                    }
+                    prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                    return jsonify(final_db_record), 500
+
+                # Get transactions from the context
+                transactions_input = context_with_transactions.get("transactions_input")
+                logger.info(
+                    f"Retrieved {len(transactions_input)} transactions from context for {prediction_id}"
                 )
 
-            # Get embeddings from prediction output
-            embeddings = np.array(prediction.output, dtype=np.float32)
-            logger.info(f"Received {len(embeddings)} embeddings from prediction")
+            except Exception as e:
+                logger.error(
+                    f"Error fetching transaction context for {prediction_id}: {e}"
+                )
+                final_db_record = {
+                    "status": "failed",
+                    "error": "Failed to retrieve transaction data",
+                    "type": "classification",
+                    "user_id": user_id,
+                }
+                prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                return jsonify(final_db_record), 500
 
-            # Process based on whether this is a training or classification prediction
-            if "embeddings_data" in config_data:  # Training prediction
-                try:
-                    # Get user_id from config_data
-                    user_id = config_data.get("user_id")
-                    if not user_id:
-                        # Fallback to the request's user_id
-                        user_id = request.user_id or "unknown"
-                        logger.warning(
-                            f"No user_id in config, using fallback: {user_id}"
-                        )
+            if not transactions_input or not isinstance(transactions_input, list):
+                logger.error(f"Invalid transaction input context for {prediction_id}")
+                final_db_record = {
+                    "status": "failed",
+                    "error": "Invalid transaction context",
+                    "type": "classification",
+                    "user_id": user_id,
+                }
+                prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                return jsonify(final_db_record), 500
 
-                    # Store the embeddings with user_id
-                    store_result = store_embeddings(embeddings, f"{user_id}")
+            if len(embeddings) != len(transactions_input):
+                logger.error(
+                    f"Embedding/transaction count mismatch for {prediction_id}: {len(embeddings)} vs {len(transactions_input)}"
+                )
+                final_db_record = {
+                    "status": "failed",
+                    "error": "Embedding count mismatch",
+                    "type": "classification",
+                    "user_id": user_id,
+                }
+                prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                return jsonify(final_db_record), 500
 
-                    # Store success result
-                    result = {
-                        "user_id": user_id,
-                        "status": "success",
-                        "embeddings_shape": str(embeddings.shape),
-                    }
-                    prisma_client.insert_webhook_result(prediction.id, result)
+            try:
+                # Store embeddings for future recalculation
+                # Use a unique ID that combines prediction_id and user_id
+                embeddings_id = f"{prediction_id}_embeddings"
+                store_result = store_embeddings(embeddings, embeddings_id)
 
-                    # Log total execution time
-                    total_time = time.time() - start_time
-                    logger.info(
-                        f"Status request for training processed in {total_time:.2f}s"
-                    )
-
-                    return jsonify(
-                        {
-                            "status": "completed",
-                            "message": "Training completed successfully",
-                            "user_id": user_id,
-                        }
-                    )
-
-                except Exception as e:
-                    logger.error(f"Error processing training results: {e}")
+                if not store_result:
+                    logger.error(f"Failed to store embeddings for {prediction_id}")
                     return create_error_response(
-                        f"Error processing training results: {str(e)}", 500
-                    )
-            # Handle classification prediction
-            else:
-                try:
-                    user_id = config_data.get("user_id", "unknown")
-
-                    # Get original descriptions from config data
-                    original_descriptions = []
-                    if "original_descriptions" in config_data:
-                        original_descriptions = config_data.get(
-                            "original_descriptions", []
-                        )
-                    elif isinstance(config_data, dict) and "data" in config_data:
-                        if isinstance(config_data["data"], list):
-                            original_descriptions = [
-                                item.get("narrative", "")
-                                for item in config_data["data"]
-                                if "narrative" in item
-                            ]
-
-                    logger.info(
-                        f"Processing classification results for {len(original_descriptions)} items"
+                        "Failed to store embeddings for classification", 500
                     )
 
-                    # Get trained embeddings using user_id instead of spreadsheet_id
-                    trained_embeddings = fetch_embeddings(f"{user_id}")
-                    trained_data = fetch_embeddings(f"{user_id}_index")
-
-                    # Check if we have valid embeddings
-                    if trained_embeddings.size == 0 or trained_data.size == 0:
-                        logger.error(
-                            f"No valid embeddings or training data found for user: {user_id}"
-                        )
-                        return create_error_response(
-                            f"No valid training data found for this user. Please train the model first.",
-                            400,
-                        )
-
-                    # Process embeddings from Replicate - ensure output is valid
-                    if (
-                        not isinstance(prediction.output, list)
-                        or len(prediction.output) == 0
-                    ):
-                        logger.warning(
-                            f"Prediction output is not in expected format: {type(prediction.output)}"
-                        )
-                        return create_error_response(
-                            "Prediction output is not in expected format", 500
-                        )
-
-                    # Extract embeddings from the prediction output
-                    new_embeddings = np.array(prediction.output, dtype=np.float32)
-
-                    # Calculate similarities
-                    similarities = cosine_similarity(new_embeddings, trained_embeddings)
-                    best_matches = similarities.argmax(axis=1)
-
-                    # Get predicted categories and confidence scores
-                    results = []
-                    for i, idx in enumerate(best_matches):
-                        try:
-                            # Extract the category directly from the structured array
-                            category = "Unknown"
-
-                            # Try different field names and positions to get the category
-                            if "category" in trained_data.dtype.names:
-                                category = str(trained_data[idx]["category"])
-                            elif "Category" in trained_data.dtype.names:
-                                category = str(trained_data[idx]["Category"])
-                            else:
-                                # Fallback to index 2 which should be the category field
-                                try:
-                                    category = str(trained_data[idx][2])
-                                except:
-                                    pass
-
-                            similarity_score = float(similarities[i][idx])
-
-                            # Get original description or empty string if index is out of range
-                            narrative = (
-                                original_descriptions[i]
-                                if i < len(original_descriptions)
-                                else ""
-                            )
-
-                            results.append(
-                                {
-                                    "predicted_category": category,
-                                    "similarity_score": similarity_score,
-                                    "narrative": narrative,
-                                }
-                            )
-                        except Exception as e:
-                            logger.error(f"Error processing prediction {i}: {str(e)}")
-                            results.append(
-                                {
-                                    "predicted_category": "Unknown",
-                                    "similarity_score": 0.0,
-                                    "narrative": (
-                                        original_descriptions[i]
-                                        if i < len(original_descriptions)
-                                        else ""
-                                    ),
-                                }
-                            )
-
-                    # Store the results in a simple format
-                    result_data = {
-                        "status": "success",
-                        "data": results,
-                        "user_id": user_id,
+                # Run the local categorization pipeline
+                initial_results = _apply_initial_categorization(
+                    transactions_input, embeddings, user_id
+                )
+                # Check for critical errors from initial categorization
+                if any(
+                    "Error:" in res["predicted_category"] for res in initial_results
+                ):
+                    logger.error(
+                        f"Initial categorization failed for {prediction_id}, likely missing training data."
+                    )
+                    final_db_record = {
+                        "status": "failed",
+                        "error": "Categorization failed (model/index missing?)",
+                        "type": "classification",
                     }
+                    prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                    return jsonify(final_db_record), 400
 
-                    # Store the results in the database
-                    prisma_client.insert_webhook_result(prediction.id, result_data)
+                results_after_refunds = _detect_refunds(
+                    initial_results, embeddings, user_id
+                )
+                final_results_raw = _detect_transfers(results_after_refunds)
 
-                    # Log total execution time
-                    total_time = time.time() - start_time
-                    process_time = time.time() - process_start_time
-                    logger.info(
-                        f"Classified {len(results)} items in {process_time:.2f}s (total: {total_time:.2f}s)"
-                    )
+                # Clean results for final response
+                final_results_clean = []
+                for res in final_results_raw:
+                    cleaned_res = res.copy()
+                    # Don't remove money_in flag, we need it for display
+                    # cleaned_res.pop("money_in", None)  # Remove internal flag
+                    final_results_clean.append(cleaned_res)
 
-                    # Return the results
-                    return jsonify(
-                        {
-                            "status": "completed",
-                            "message": "Processing completed successfully",
-                            "results": results,
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"Error processing classification results: {e}")
-                    return create_error_response(
-                        f"Error processing results: {str(e)}", 500
-                    )
+                # Privacy improvement: Store only metadata in DB, not the classified transaction data
+                # But we store the embeddings_id for future recalculation
+                db_record = {
+                    "status": "completed",
+                    "message": "Classification completed successfully",
+                    "type": "classification",
+                    "user_id": user_id,
+                    "transaction_count": len(final_results_clean),
+                    "embeddings_id": embeddings_id,
+                    "context_id": f"{prediction_id}_context",  # Reference to the context record
+                    "created_at": datetime.now().isoformat(),
+                }
+                prisma_client.insert_webhook_result(prediction_id, db_record)
 
-        # For any other status
+                # Create response with full results
+                response = {
+                    "status": "completed",
+                    "message": "Classification completed successfully",
+                    "results": final_results_clean,
+                    "type": "classification",
+                }
+
+                logger.info(
+                    f"Classification job {prediction_id} processing completed in {time.time() - process_start_time:.2f}s"
+                )
+                return jsonify(response)  # Return the full results to client
+
+            except Exception as e:
+                logger.error(
+                    f"Error during classification processing for {prediction_id}: {e}",
+                    exc_info=True,
+                )
+                final_db_record = {
+                    "status": "failed",
+                    "error": f"Error processing classification results: {str(e)}",
+                    "type": "classification",
+                }
+                # Use insert_webhook_result instead of update
+                prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                return jsonify(final_db_record), 500
+
+        # --- Handle Unknown Job Type ---
         else:
-            return jsonify(
-                {"status": status, "message": f"Prediction has status: {status}"}
+            logger.error(
+                f"Unknown job type '{job_type}' in context for {prediction_id}"
             )
+            final_db_record = {
+                "status": "failed",
+                "error": f"Unknown job type '{job_type}'",
+            }
+            # Use insert_webhook_result instead of update
+            prisma_client.insert_webhook_result(prediction_id, final_db_record)
+            return jsonify(final_db_record), 500
 
     except Exception as e:
-        logger.error(f"Error getting prediction status: {e}")
-        return create_error_response(str(e), 500)
+        logger.error(
+            f"Critical error in /status endpoint for {prediction_id}: {e}",
+            exc_info=True,
+        )
+        # Avoid updating DB status here as the error might be transient
+        return create_error_response(
+            f"An unexpected server error occurred: {str(e)}", 500
+        )
 
 
 @app.route("/user-config", methods=["GET"])
@@ -1757,24 +1909,335 @@ def create_error_response(message, status_code=400, details=None):
 def cleanup_old_webhook_results():
     """Clean up old webhook results from the database to prevent excessive growth."""
     try:
-        # Find webhook results older than 7 days
-        cutoff_date = datetime.now() - timedelta(days=7)
+        # Find webhook results older than 7 days for general results
+        webhook_cutoff_date = datetime.now() - timedelta(days=7)
 
-        # Use Prisma client to delete old webhook results
-        # This is a placeholder - implement the actual deletion logic using your Prisma client
-        logger.info(f"Cleaning up webhook results older than {cutoff_date}")
+        # Use longer retention period (30 days) for embeddings and context data
+        embeddings_cutoff_date = datetime.now() - timedelta(days=30)
 
-        # Example implementation:
-        # prisma_client.delete_old_webhook_results(cutoff_date)
-        # logger.info(f"Cleaned up webhook results older than {cutoff_date}")
+        logger.info(f"Cleaning up webhook results older than {webhook_cutoff_date}")
+        logger.info(f"Cleaning up embeddings older than {embeddings_cutoff_date}")
 
-        # Now implemented:
-        deleted_count = prisma_client.delete_old_webhook_results(cutoff_date)
+        # Clean up general webhook results
+        deleted_count = prisma_client.delete_old_webhook_results(webhook_cutoff_date)
         logger.info(
-            f"Cleaned up {deleted_count} webhook results older than {cutoff_date}"
+            f"Cleaned up {deleted_count} webhook results older than {webhook_cutoff_date}"
         )
+
+        # Clean up embeddings and context data (stored with different IDs)
+        # This requires a new function in the prisma client that can delete entries
+        # with IDs containing '_embeddings' or '_context' patterns
+        try:
+            deleted_embeddings = prisma_client.delete_old_embeddings_and_contexts(
+                embeddings_cutoff_date
+            )
+            logger.info(
+                f"Cleaned up {deleted_embeddings} embeddings and contexts older than {embeddings_cutoff_date}"
+            )
+        except Exception as e:
+            logger.error(f"Error cleaning up embeddings and contexts: {e}")
+
     except Exception as e:
         logger.error(f"Error cleaning up old webhook results: {e}")
+
+
+def _apply_initial_categorization(
+    transactions_input: List[Dict[str, Any]], input_embeddings: np.ndarray, user_id: str
+) -> List[Dict[str, Any]]:
+    """Performs initial categorization based on similarity and money_in flag."""
+    results = []
+    try:
+        trained_embeddings = fetch_embeddings(f"{user_id}")
+        trained_data = fetch_embeddings(f"{user_id}_index")
+
+        if trained_embeddings.size == 0 or trained_data.size == 0:
+            logger.error(
+                f"No training data/index found for user {user_id} during categorization"
+            )
+            return [
+                {
+                    "narrative": tx["description"],
+                    "predicted_category": "Error: Model/Index not found",
+                    "similarity_score": 0.0,
+                    "money_in": tx.get("money_in"),
+                    "amount": tx.get("amount"),  # Store amount if available
+                    "adjustment_info": {"reason": "Training data or index missing"},
+                }
+                for tx in transactions_input
+            ]
+
+        if not trained_data.dtype.names or "category" not in trained_data.dtype.names:
+            logger.error(
+                f"Trained index data for user {user_id} missing 'category' field."
+            )
+            return [
+                {
+                    "narrative": tx["description"],
+                    "predicted_category": "Error: Invalid Index",
+                    "similarity_score": 0.0,
+                    "money_in": tx.get("money_in"),
+                    "amount": tx.get("amount"),  # Store amount if available
+                }
+                for tx in transactions_input
+            ]
+
+        similarities = cosine_similarity(input_embeddings, trained_embeddings)
+
+        for i, tx in enumerate(transactions_input):
+            money_in = tx.get("money_in")  # Could be True, False, or None
+            is_expense = (
+                False if money_in is True else (True if money_in is False else None)
+            )
+
+            current_similarities = similarities[i]
+            sorted_indices = np.argsort(-current_similarities)
+
+            best_match_idx = -1
+            best_category = "Unknown"
+            best_score = 0.0
+            original_best_category = "Unknown"
+            adjustment_reason = None
+
+            found_compatible = False
+            for rank, trained_idx in enumerate(sorted_indices):
+                try:
+                    if trained_idx >= len(trained_data):
+                        logger.warning(
+                            f"Index {trained_idx} out of bounds for trained_data (len {len(trained_data)})"
+                        )
+                        continue
+
+                    category = str(trained_data[trained_idx]["category"])
+
+                    if rank == 0:
+                        original_best_category = category
+                        original_best_score = float(current_similarities[trained_idx])
+
+                    compatible = True
+                    if is_expense is True and category in INCOME_CATEGORIES:
+                        compatible = False
+                        adjustment_reason = f"Filtered income category '{category}' for expense transaction (money_out)"
+                    elif (
+                        is_expense is False
+                        and category in EXPENSE_CATEGORIES
+                        and category != REFUND_CATEGORY
+                    ):
+                        compatible = False
+                        adjustment_reason = f"Filtered expense category '{category}' for income transaction (money_in)"
+
+                    if compatible:
+                        best_match_idx = trained_idx
+                        best_category = category
+                        best_score = float(current_similarities[trained_idx])
+                        found_compatible = True
+                        break
+
+                except IndexError:
+                    logger.error(
+                        f"IndexError accessing trained_data at index {trained_idx}"
+                    )
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing match index {trained_idx}: {e}")
+                    continue
+
+            if not found_compatible and len(sorted_indices) > 0:
+                best_match_idx = sorted_indices[0]
+                best_category = original_best_category
+                best_score = original_best_score
+                adjustment_reason = (
+                    "No compatible category found, using best overall match."
+                )
+                logger.warning(
+                    f"No compatible category for '{tx['description']}' (money_in={money_in}), using best overall: '{best_category}'"
+                )
+
+            results.append(
+                {
+                    "narrative": tx["description"],
+                    "predicted_category": best_category,
+                    "similarity_score": best_score,
+                    "money_in": money_in,
+                    "amount": tx.get("amount"),  # Store amount if available
+                    "adjustment_info": {
+                        "adjusted": (
+                            best_category != original_best_category
+                            and original_best_category != "Unknown"
+                        ),
+                        "reason": adjustment_reason,
+                        "original_category": (
+                            original_best_category
+                            if (
+                                best_category != original_best_category
+                                and original_best_category != "Unknown"
+                            )
+                            else None
+                        ),
+                    },
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"Error during initial categorization: {e}", exc_info=True)
+        raise
+
+    return results
+
+
+def _detect_refunds(
+    initial_results: List[Dict[str, Any]], input_embeddings: np.ndarray, user_id: str
+) -> List[Dict[str, Any]]:
+    """Identifies potential refunds among credit transactions by comparing expense category scores."""
+    try:
+        trained_embeddings = fetch_embeddings(f"{user_id}")
+        trained_data = fetch_embeddings(f"{user_id}_index")
+
+        if trained_embeddings.size == 0 or trained_data.size == 0:
+            logger.warning(
+                f"Cannot detect refunds, no training data/index for user {user_id}"
+            )
+            return initial_results
+
+        similarities = cosine_similarity(input_embeddings, trained_embeddings)
+
+        for i, result in enumerate(initial_results):
+            if (
+                result["money_in"] is True
+                and result["predicted_category"] not in INCOME_CATEGORIES
+            ):
+                current_similarities = similarities[i]
+                sorted_indices = np.argsort(-current_similarities)
+
+                best_expense_score = -1.0
+                best_expense_category = None
+                for trained_idx in sorted_indices:
+                    try:
+                        if trained_idx >= len(trained_data):
+                            continue
+                        category = str(trained_data[trained_idx]["category"])
+                        if (
+                            category in EXPENSE_CATEGORIES
+                            and category != REFUND_CATEGORY
+                        ):
+                            best_expense_score = float(
+                                current_similarities[trained_idx]
+                            )
+                            best_expense_category = category
+                            break
+                    except Exception as e:
+                        logger.warning(
+                            f"Error checking index {trained_idx} during refund detection: {e}"
+                        )
+                        continue
+
+                refund_confidence_threshold = 0.05
+
+                is_potential_refund = False
+                if best_expense_category and (
+                    result["predicted_category"] == "Unknown"
+                    or best_expense_score
+                    > (result["similarity_score"] + refund_confidence_threshold)
+                ):
+                    is_potential_refund = True
+                    result["predicted_category"] = best_expense_category
+                    result["similarity_score"] = best_expense_score
+                    reason = f"Re-categorized as '{best_expense_category}' (refund candidate, score {best_expense_score:.2f})"
+
+                    if "adjustment_info" not in result:
+                        result["adjustment_info"] = {}
+                    result["adjustment_info"]["is_refund_candidate"] = True
+                    result["adjustment_info"]["refund_detection_reason"] = reason
+                    result["adjustment_info"]["adjusted"] = True
+
+                    logger.info(
+                        f"Potential refund detected: '{result['narrative']}' -> '{best_expense_category}'"
+                    )
+
+    except Exception as e:
+        logger.error(f"Error during refund detection: {e}", exc_info=True)
+
+    return initial_results
+
+
+def _detect_transfers(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Detects potential transfers by matching income/expense descriptions."""
+    try:
+        description_map = {}
+        for i, res in enumerate(results):
+            norm_desc = re.sub(r"\s+", " ", res["narrative"].lower().strip())
+            norm_desc = re.sub(r"\b\d{4,}\b", "", norm_desc)
+            norm_desc = re.sub(r"\s+", " ", norm_desc).strip()
+
+            if not norm_desc:
+                continue
+
+            if norm_desc not in description_map:
+                description_map[norm_desc] = {"income": [], "expense": []}
+
+            if res["money_in"] is False:
+                description_map[norm_desc]["expense"].append((i, res.get("amount")))
+            elif res["money_in"] is True:
+                if (
+                    not res.get("adjustment_info", {}).get("is_refund_candidate")
+                    and res["predicted_category"] != "Transfer in"
+                ):
+                    description_map[norm_desc]["income"].append((i, res.get("amount")))
+
+        matched_indices = set()
+        for norm_desc, groups in description_map.items():
+            # Generate possible pairs considering amounts
+            possible_pairs = []
+
+            for income_entry in groups["income"]:
+                income_idx, income_amount = income_entry
+                if income_idx in matched_indices:
+                    continue
+
+                for expense_entry in groups["expense"]:
+                    expense_idx, expense_amount = expense_entry
+                    if expense_idx in matched_indices:
+                        continue
+
+                    # Skip if either amount is None
+                    if income_amount is None or expense_amount is None:
+                        continue
+
+                    # Check if amounts match (opposite signs but same absolute value)
+                    # Allow for small floating point differences
+                    if abs(abs(income_amount) - abs(expense_amount)) < 0.01:
+                        possible_pairs.append((income_idx, expense_idx))
+
+            # Process the valid pairs
+            for income_idx, expense_idx in possible_pairs:
+                if income_idx in matched_indices or expense_idx in matched_indices:
+                    continue
+
+                results[income_idx]["predicted_category"] = "Transfer in"
+                if "adjustment_info" not in results[income_idx]:
+                    results[income_idx]["adjustment_info"] = {}
+                results[income_idx]["adjustment_info"][
+                    "transfer_detection_reason"
+                ] = f"Paired with expense index {expense_idx} ('{results[expense_idx]['narrative']}', amount: {results[expense_idx].get('amount')})"
+                results[income_idx]["adjustment_info"]["adjusted"] = True
+
+                results[expense_idx]["predicted_category"] = "Transfer out"
+                if "adjustment_info" not in results[expense_idx]:
+                    results[expense_idx]["adjustment_info"] = {}
+                results[expense_idx]["adjustment_info"][
+                    "transfer_detection_reason"
+                ] = f"Paired with income index {income_idx} ('{results[income_idx]['narrative']}', amount: {results[income_idx].get('amount')})"
+                results[expense_idx]["adjustment_info"]["adjusted"] = True
+
+                matched_indices.add(income_idx)
+                matched_indices.add(expense_idx)
+                logger.info(
+                    f"Detected transfer pair: '{results[income_idx]['narrative']}' (amount: {results[income_idx].get('amount')}) <-> '{results[expense_idx]['narrative']}' (amount: {results[expense_idx].get('amount')})"
+                )
+
+    except Exception as e:
+        logger.error(f"Error during transfer detection: {e}", exc_info=True)
+
+    return results
 
 
 if __name__ == "__main__":
