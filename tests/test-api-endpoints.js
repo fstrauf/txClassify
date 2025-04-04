@@ -206,11 +206,62 @@ const loadTrainingData = (file_name) => {
     fs.createReadStream(path.join(__dirname, "test_data", file_name))
       .pipe(csv())
       .on("data", (data) => {
-        // Map fields to match expected format, check for both description and Narrative fields
+        // Check if we're using the fs_train_nz_amount.csv format
+        // which has description, amount, and category
+        const keys = Object.keys(data);
+        let description, category, amount;
+        let money_in = null;
+
+        if (keys.length >= 3 && !isNaN(parseFloat(data[keys[1]]))) {
+          // Format: description,amount,category
+          description = data[keys[0]];
+          amount = data[keys[1]];
+          category = data[keys[2]];
+        } else if (keys.length >= 2 && data.description && data.Category) {
+          // Standard format with named columns
+          description = data.description || data.Narrative || data.narrative;
+          category = data.Category || data.category;
+          amount = data.Amount || data.amount;
+        } else {
+          // Fallback: try to find description and category in any order
+          description = data.description || data.Narrative || data.narrative || data[keys[0]];
+          category = data.Category || data.category || data[keys[keys.length - 1]];
+
+          // Try to find amount in the second column
+          if (keys.length > 1) {
+            amount = data[keys[1]];
+          }
+        }
+
+        // Clean and parse amount
+        let parsedAmount = null;
+        if (amount !== undefined) {
+          // Remove currency symbols and commas
+          const cleanAmount = String(amount).replace(/[^\d.-]/g, "");
+          parsedAmount = parseFloat(cleanAmount);
+
+          if (!isNaN(parsedAmount)) {
+            money_in = parsedAmount >= 0;
+            logDebug(`Parsed amount ${parsedAmount} as money_in=${money_in}`);
+          }
+        }
+
+        // Map fields to match expected format
         const transaction = {
-          description: data.description || data.Narrative || data.narrative,
-          Category: data.category || data.Category,
+          description: description,
+          Category: category,
         };
+
+        // Add money_in flag if amount was successfully parsed
+        if (money_in !== null) {
+          transaction.money_in = money_in;
+        }
+
+        // Add actual amount for transfer detection
+        if (parsedAmount !== null) {
+          transaction.amount = parsedAmount;
+        }
+
         if (transaction.description && transaction.Category) {
           results.push(transaction);
         } else {
@@ -227,6 +278,12 @@ const loadTrainingData = (file_name) => {
           );
         } else {
           logDebug(`Sample transaction: ${JSON.stringify(results[0])}`);
+          // Log how many transactions have the money_in flag
+          const withMoneyIn = results.filter((t) => t.money_in !== undefined).length;
+          logInfo(`${withMoneyIn} of ${results.length} transactions have money_in flag set`);
+          // Log how many transactions have the amount field
+          const withAmount = results.filter((t) => t.amount !== undefined).length;
+          logInfo(`${withAmount} of ${results.length} transactions have amount field set`);
         }
 
         resolve(results);
@@ -241,25 +298,84 @@ const loadTrainingData = (file_name) => {
 // Load categorization data
 const loadCategorizationData = (file_name) => {
   return new Promise((resolve, reject) => {
-    const descriptions = [];
+    const transactions = [];
     const targetCsvPath = path.join(__dirname, "test_data", file_name);
 
     logDebug(`Loading categorization data from ${file_name}...`);
 
-    // Read the CSV file - our file has no headers and description is in column 3
+    // Check if we're using fs_cat_nz_amount.csv format (which has amount,description)
+    const isFsCatFormat = file_name.includes("fs_cat_nz_amount");
+    logInfo(`Using ${isFsCatFormat ? "fs_cat_nz_amount" : "standard"} format for parsing`);
+
+    // Read the CSV file - fs_cat format has amount in column 0, description in column 1
+    // standard format has description in column 2
     fs.createReadStream(targetCsvPath)
       .pipe(csv({ headers: false }))
       .on("data", (data) => {
-        // Extract the description from the 3rd column (index 2)
-        if (data[2]) {
-          descriptions.push(data[2]);
+        let description, amount;
+
+        if (isFsCatFormat) {
+          // fs_cat_nz_amount.csv format: amount,description
+          amount = data[0];
+          description = data[1];
+        } else {
+          // Standard format: description in column 2, possibly amount in column 3
+          description = data[2];
+          amount = data[3]; // may be undefined
+        }
+
+        if (description) {
+          let added = false;
+
+          // Check if we have a valid amount to determine money_in
+          if (amount !== undefined) {
+            // Clean and parse the amount
+            const cleanAmount = String(amount).replace(/[^\d.-]/g, "");
+            const parsedAmount = parseFloat(cleanAmount);
+
+            if (!isNaN(parsedAmount)) {
+              // Create TransactionInput object with money_in flag
+              transactions.push({
+                description: description,
+                money_in: parsedAmount >= 0,
+                amount: parsedAmount, // Add actual amount for transfer detection
+              });
+              logDebug(
+                `Added transaction with description "${description}", money_in=${
+                  parsedAmount >= 0
+                }, amount=${parsedAmount}`
+              );
+              added = true;
+            }
+          }
+
+          // If no valid amount and not already added, just add the description as a string
+          if (!added) {
+            transactions.push(description);
+          }
         } else {
           logDebug(`Skipping row with missing description: ${JSON.stringify(data)}`);
         }
       })
       .on("end", () => {
-        logInfo(`Loaded ${descriptions.length} descriptions from ${file_name}`);
-        resolve(descriptions);
+        // Count how many transactions have money_in flag
+        const transactionObjects = transactions.filter((t) => typeof t === "object");
+        logInfo(`Loaded ${transactions.length} descriptions from ${file_name}`);
+        logInfo(`${transactionObjects.length} of ${transactions.length} have money_in flag set`);
+
+        // Count how many transactions have amount
+        const withAmount = transactions.filter((t) => typeof t === "object" && t.amount !== undefined).length;
+        logInfo(`${withAmount} of ${transactions.length} have amount field set`);
+
+        // Print some sample transactions for debugging
+        if (transactions.length > 0) {
+          logInfo("Sample transactions:");
+          for (let i = 0; i < Math.min(3, transactions.length); i++) {
+            logInfo(`  ${i + 1}: ${JSON.stringify(transactions[i])}`);
+          }
+        }
+
+        resolve(transactions);
       })
       .on("error", (error) => {
         logError(`Error loading ${file_name}: ${error.message}`);
@@ -711,7 +827,18 @@ const categoriseTransactions = async (config) => {
 
           results.forEach((result, index) => {
             const confidence = result.similarity_score ? `${(result.similarity_score * 100).toFixed(2)}%` : "N/A";
-            console.log(`${index + 1}. "${result.narrative}" → ${result.predicted_category} (${confidence})`);
+            // Add money_in/money_out display
+            const direction =
+              result.money_in === true ? "MONEY_IN" : result.money_in === false ? "MONEY_OUT" : "UNKNOWN";
+            // Display amount if available
+            const amountStr =
+              result.amount !== null && result.amount !== undefined ? `$${Math.abs(result.amount).toFixed(2)}` : "";
+
+            console.log(
+              `${index + 1}. "${result.narrative}" → ${
+                result.predicted_category
+              } (${confidence}) | ${direction} ${amountStr}`
+            );
           });
 
           console.log("=====================================\n");
@@ -968,8 +1095,9 @@ const main = async () => {
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
     // const trainingData = await loadTrainingData("full_train.csv");
-    const trainingData = await loadTrainingData("training_test.csv");
-    const categorizationData = await loadCategorizationData("categorise_full.csv");
+    // const trainingData = await loadTrainingData("training_test.csv");
+    const trainingData = await loadTrainingData("fs_train_nz_amount.csv");
+    const categorizationData = await loadCategorizationData("fs_cat_nz_amount.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
