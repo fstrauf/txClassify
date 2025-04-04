@@ -61,6 +61,7 @@ function showClassifyDialog() {
       }
       .button-text { display: inline-block; }
       .processing-text { display: none; }
+      .optional-field { margin-top: 10px; }
     </style>
     <div class="form-group">
       <label>Description Column:</label>
@@ -89,6 +90,18 @@ function showClassifyDialog() {
       <input type="number" id="startRow" value="1" min="1" style="width: 100%; padding: 5px;">
       <div class="help-text">First row of data to categorise</div>
     </div>
+    <div class="form-group optional-field">
+      <label>Amount Column (optional):</label>
+      <select id="amountCol">
+        <option value="">-- None --</option>
+        <option value="A">A</option>
+        <option value="B" selected>B</option>
+        <option value="C">C</option>
+        <option value="D">D</option>
+        <option value="E">E</option>
+      </select>
+      <div class="help-text">Column containing transaction amounts (positive = money in, negative = money out)</div>
+    </div>
     <div id="error" class="error"></div>
     <button onclick="submitForm()" id="submitBtn">
       <span class="button-text">Categorise Transactions</span>
@@ -100,6 +113,7 @@ function showClassifyDialog() {
         var descriptionCol = document.getElementById('descriptionCol').value;
         var categoryCol = document.getElementById('categoryCol').value;
         var startRow = document.getElementById('startRow').value;
+        var amountCol = document.getElementById('amountCol').value;
         var errorDiv = document.getElementById('error');
         var submitBtn = document.getElementById('submitBtn');
         var spinner = document.querySelector('.spinner');
@@ -108,7 +122,7 @@ function showClassifyDialog() {
         
         // Validate inputs
         if (!descriptionCol || !categoryCol || !startRow) {
-          errorDiv.textContent = 'Please fill in all fields';
+          errorDiv.textContent = 'Please fill in all required fields';
           errorDiv.style.display = 'block';
           return;
         }
@@ -133,7 +147,8 @@ function showClassifyDialog() {
         var config = {
           descriptionCol: descriptionCol,
           categoryCol: categoryCol,
-          startRow: startRow.toString()
+          startRow: startRow.toString(),
+          amountCol: amountCol // Optional amount column
         };
         
         google.script.run
@@ -162,7 +177,7 @@ function showClassifyDialog() {
   `
   )
     .setWidth(400)
-    .setHeight(350);
+    .setHeight(400);
 
   SpreadsheetApp.getUi().showModalDialog(html, "Categorise Transactions");
 }
@@ -711,19 +726,69 @@ function categoriseTransactions(config) {
       originalDescriptions = originalDescriptions.filter((desc) => desc && desc.length > 0);
     }
 
-    // Extract just the strings for the updated API format
-    var descriptions = originalDescriptions;
+    // Get amount data if amount column is provided
+    var amountData = [];
+    var hasAmounts = config.amountCol && config.amountCol.trim() !== "";
 
-    if (descriptions.length === 0) {
+    if (hasAmounts) {
+      Logger.log("Reading amounts from column " + config.amountCol);
+      amountData = sheet
+        .getRange(config.amountCol + startRow + ":" + config.amountCol + lastRow)
+        .getValues()
+        .slice(0, descriptionsData.length); // Match the length of descriptions
+    }
+
+    // Prepare transactions with money_in flag if amounts are available
+    var transactions = [];
+    for (var i = 0; i < originalDescriptions.length; i++) {
+      var description = originalDescriptions[i];
+
+      if (hasAmounts && i < amountData.length) {
+        var amount = amountData[i][0];
+        var parsedAmount = null;
+
+        // Try to parse the amount, handling various formats
+        if (typeof amount === "number") {
+          parsedAmount = amount;
+        } else if (typeof amount === "string") {
+          // Remove currency symbols and commas
+          var cleanAmount = amount.replace(/[^\d.-]/g, "");
+          parsedAmount = parseFloat(cleanAmount);
+        }
+
+        if (!isNaN(parsedAmount)) {
+          // Create transaction object with money_in flag
+          transactions.push({
+            description: description,
+            money_in: parsedAmount >= 0,
+            amount: parsedAmount,
+          });
+          Logger.log(`Transaction: "${description}" with amount ${parsedAmount}, money_in: ${parsedAmount >= 0}`);
+        } else {
+          // If amount is invalid, just use the description
+          transactions.push({
+            description: description,
+          });
+          Logger.log(`Transaction: "${description}" without valid amount`);
+        }
+      } else {
+        // If no amounts column or missing amount, just use the description
+        transactions.push({
+          description: description,
+        });
+      }
+    }
+
+    if (transactions.length === 0) {
       throw new Error("No transactions found to categorise");
     }
 
-    Logger.log("Found " + descriptions.length + " transactions to categorise");
-    updateStatus("Processing " + descriptions.length + " transactions...");
+    Logger.log("Found " + transactions.length + " transactions to categorise");
+    updateStatus("Processing " + transactions.length + " transactions...");
 
-    // Prepare the payload with the updated format
+    // Prepare the payload with transactions that may include money_in flag
     var payload = JSON.stringify({
-      transactions: descriptions, // Now directly an array of strings
+      transactions: transactions,
     });
 
     // Log payload size for debugging
@@ -935,6 +1000,69 @@ function writeResultsToSheet(result, config, sheet) {
       // Format as percentage if they look like decimals between 0-1
       if (confidenceScores.some((score) => typeof score[0] === "number" && score[0] >= 0 && score[0] <= 1)) {
         confidenceRange.setNumberFormat("0.00%");
+      }
+    }
+
+    // Check if money_in data is available
+    var hasMoneyInFlag = resultsData.some(function (r) {
+      return r.hasOwnProperty("money_in");
+    });
+
+    if (hasMoneyInFlag) {
+      // Column after confidence (or after category if no confidence)
+      var moneyInCol = hasConfidence
+        ? String.fromCharCode(categoryCol.charCodeAt(0) + 2)
+        : String.fromCharCode(categoryCol.charCodeAt(0) + 1);
+
+      var moneyInValues = resultsData.map(function (r) {
+        if (r.money_in === true) {
+          return ["IN"]; // Money in (credit)
+        } else if (r.money_in === false) {
+          return ["OUT"]; // Money out (debit)
+        } else {
+          return [""]; // Unknown
+        }
+      });
+
+      var moneyInRange = sheet.getRange(moneyInCol + startRow + ":" + moneyInCol + endRow);
+      moneyInRange.setValues(moneyInValues);
+
+      // Write a header for the column if we're in the first row
+      if (startRow === 1) {
+        sheet.getRange(moneyInCol + "1").setValue("Type");
+      }
+    }
+
+    // Check if amount data is available
+    var hasAmount = resultsData.some(function (r) {
+      return r.hasOwnProperty("amount") && r.amount !== null && r.amount !== undefined;
+    });
+
+    if (hasAmount) {
+      // Column after money_in (or after confidence/category if no money_in)
+      var amountCol = hasMoneyInFlag
+        ? String.fromCharCode(moneyInCol.charCodeAt(0) + 1)
+        : hasConfidence
+        ? String.fromCharCode(categoryCol.charCodeAt(0) + 2)
+        : String.fromCharCode(categoryCol.charCodeAt(0) + 1);
+
+      var amountValues = resultsData.map(function (r) {
+        if (r.amount !== null && r.amount !== undefined) {
+          return [r.amount];
+        } else {
+          return [""];
+        }
+      });
+
+      var amountRange = sheet.getRange(amountCol + startRow + ":" + amountCol + endRow);
+      amountRange.setValues(amountValues);
+
+      // Format as currency
+      amountRange.setNumberFormat("$#,##0.00;($#,##0.00)");
+
+      // Write a header for the column if we're in the first row
+      if (startRow === 1) {
+        sheet.getRange(amountCol + "1").setValue("Amount");
       }
     }
 
