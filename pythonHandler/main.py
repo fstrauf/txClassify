@@ -847,19 +847,27 @@ def train_model():
         prediction = run_prediction(descriptions)
 
         # Store initial configuration for status endpoint
-        config_data = {
+        context = {
             "user_id": user_id,
             "status": "processing",
             "type": "training",
+            "transaction_count": len(transactions),
             "created_at": datetime.now().isoformat(),
         }
 
         # Store the configuration
         try:
-            prisma_client.insert_webhook_result(prediction.id, config_data)
-            logger.info(f"Stored training context for prediction {prediction.id}")
+            prisma_client.insert_webhook_result(prediction.id, context)
+            logger.info(
+                f"Stored initial training context for prediction {prediction.id}"
+            )
         except Exception as e:
-            logger.error(f"Error storing initial training configuration: {e}")
+            logger.error(
+                f"Failed to store initial context for training prediction {prediction.id}: {e}",
+                exc_info=True,
+            )
+            # If storing context fails, we might still proceed but log it.
+            # Depending on requirements, you might want to return an error here.
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
