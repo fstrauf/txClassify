@@ -1,5 +1,5 @@
-const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
-// const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
+// const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
+const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
 
 // Add menu to the spreadsheet
 function onOpen(e) {
@@ -192,6 +192,7 @@ function showTrainingDialog() {
   // Find default column indices
   var narrativeColDefault = columnToLetter(headers.indexOf("Narrative") + 1);
   var categoryColDefault = columnToLetter(headers.indexOf("Category") + 1);
+  var amountColDefault = columnToLetter(headers.indexOf("Amount") + 1);
 
   // Create column options - always include all columns up to last used column
   var columnOptions = [];
@@ -216,6 +217,18 @@ function showTrainingDialog() {
     );
   }
   var categoryColumnOptionsStr = categoryColumnOptions.join("\n");
+
+  // Create amount column options
+  var amountColumnOptions = ['<option value="">-- None --</option>'];
+  for (var i = 0; i < lastColumn; i++) {
+    var letter = columnToLetter(i + 1);
+    var header = headers[i] || ""; // Use empty string if header is null/undefined
+    amountColumnOptions.push(
+      `<option value="${letter}"${letter === amountColDefault ? " selected" : ""}>` +
+        `${letter}${header ? " (" + header + ")" : ""}</option>`
+    );
+  }
+  var amountColumnOptionsStr = amountColumnOptions.join("\n");
 
   var html = HtmlService.createHtmlOutput(
     `
@@ -259,6 +272,7 @@ function showTrainingDialog() {
       }
       .button-text { display: inline-block; }
       .processing-text { display: none; }
+      .optional-field { margin-top: 10px; }
     </style>
     <div class="form-group">
       <label>Description Column:</label>
@@ -273,6 +287,13 @@ function showTrainingDialog() {
         ${categoryColumnOptionsStr}
       </select>
       <div class="help-text">Select the column containing categories for training</div>
+    </div>
+    <div class="form-group optional-field">
+      <label>Amount Column (optional):</label>
+      <select id="amountCol">
+        ${amountColumnOptionsStr}
+      </select>
+      <div class="help-text">Column with amounts (positive = money in, negative = money out)</div>
     </div>
     <div class="form-group">
       <label>Start Row:</label>
@@ -290,6 +311,7 @@ function showTrainingDialog() {
         var narrativeCol = document.getElementById('narrativeCol').value;
         var categoryCol = document.getElementById('categoryCol').value;
         var startRow = document.getElementById('startRow').value;
+        var amountCol = document.getElementById('amountCol').value;
         var errorDiv = document.getElementById('error');
         var submitBtn = document.getElementById('submitBtn');
         var spinner = document.querySelector('.spinner');
@@ -298,7 +320,7 @@ function showTrainingDialog() {
         
         // Validate inputs
         if (!narrativeCol || !categoryCol || !startRow) {
-          errorDiv.textContent = 'Please fill in all fields';
+          errorDiv.textContent = 'Please fill in all required fields';
           errorDiv.style.display = 'block';
           return;
         }
@@ -309,7 +331,8 @@ function showTrainingDialog() {
         var config = {
           narrativeCol: narrativeCol,
           categoryCol: categoryCol,
-          startRow: startRow
+          startRow: startRow,
+          amountCol: amountCol // Pass optional amount column
         };
         
         // Show processing state
@@ -337,7 +360,7 @@ function showTrainingDialog() {
   `
   )
     .setWidth(400)
-    .setHeight(350);
+    .setHeight(400); // Increased height for the new field
 
   SpreadsheetApp.getUi().showModalDialog(html, "Train Model");
 }
@@ -1106,16 +1129,28 @@ function trainModel(config) {
 
     var serviceConfig = getServiceConfig();
     var sheet = SpreadsheetApp.getActiveSheet();
-    var originalSheetName = sheet.getName();
+    var originalSheetName = sheet.getName(); // Keep for logging/context if needed
     var lastRow = sheet.getLastRow();
+    var startRow = parseInt(config.startRow);
 
     // Get data from the selected columns
-    var narrativeRange = sheet.getRange(config.narrativeCol + config.startRow + ":" + config.narrativeCol + lastRow);
-    var categoryRange = sheet.getRange(config.categoryCol + config.startRow + ":" + config.categoryCol + lastRow);
+    var narrativeRange = sheet.getRange(config.narrativeCol + startRow + ":" + config.narrativeCol + lastRow);
+    var categoryRange = sheet.getRange(config.categoryCol + startRow + ":" + config.categoryCol + lastRow);
     var narratives = narrativeRange.getValues();
     var categories = categoryRange.getValues();
 
-    // Prepare training data
+    // Get amount data if amount column is provided
+    var amountData = [];
+    var hasAmounts = config.amountCol && config.amountCol.trim() !== "";
+    if (hasAmounts) {
+      Logger.log("Reading training amounts from column " + config.amountCol);
+      amountData = sheet
+        .getRange(config.amountCol + startRow + ":" + config.amountCol + lastRow)
+        .getValues()
+        .slice(0, narratives.length); // Match the length of narratives
+    }
+
+    // Prepare training data with amounts and money_in flag
     var transactions = [];
     for (var i = 0; i < narratives.length; i++) {
       try {
@@ -1140,11 +1175,32 @@ function trainModel(config) {
           narrative = narrative.substring(0, 200);
         }
 
-        // Add valid transaction to the array
-        transactions.push({
-          Narrative: narrative,
+        var transaction = {
+          description: narrative,
           Category: category,
-        });
+        };
+
+        // Add amount and money_in flag if available
+        if (hasAmounts && i < amountData.length) {
+          var amount = amountData[i][0];
+          var parsedAmount = null;
+
+          if (typeof amount === "number") {
+            parsedAmount = amount;
+          } else if (typeof amount === "string") {
+            var cleanAmount = amount.replace(/[^\d.-]/g, "");
+            parsedAmount = parseFloat(cleanAmount);
+          }
+
+          if (!isNaN(parsedAmount)) {
+            transaction.amount = parsedAmount;
+            transaction.money_in = parsedAmount >= 0;
+            Logger.log(`Training tx: "${narrative}" | Amt: ${parsedAmount} | MoneyIn: ${transaction.money_in}`);
+          }
+        }
+
+        // Add valid transaction to the array
+        transactions.push(transaction);
       } catch (rowError) {
         // Log error but continue processing
         Logger.log(`Error processing row ${i + 1}: ${rowError}`);
@@ -1153,42 +1209,36 @@ function trainModel(config) {
     }
 
     if (transactions.length === 0) {
-      throw new Error("No training data found");
+      throw new Error("No valid training data found");
     }
 
-    // Store data needed for training
-    var userProperties = PropertiesService.getUserProperties();
-    userProperties.setProperties({
-      TEMP_TRANSACTIONS: JSON.stringify(transactions),
-      TEMP_CONFIG: JSON.stringify(config),
-      TEMP_SHEET_NAME: originalSheetName,
-      TEMP_SERVICE_URL: serviceConfig.serviceUrl,
-    });
-
-    // Show progress dialog BEFORE making the API call
-    showTrainingProgress(transactions, config);
-  } catch (error) {
-    Logger.log("Training error: " + error.toString());
-    updateStatus("Error: " + error.toString());
-    ui.alert("Error: " + error.toString());
-  }
-}
-
-function showTrainingProgress(transactions, config) {
-  try {
-    // Call startTraining function which handles the API request
-    var result = startTraining();
-
-    if (result.error) {
-      // If there was an error, show it
-      SpreadsheetApp.getUi().alert("Error: " + result.error);
-    } else {
-      // If successful, the dialog will already be shown by the training function
-      Logger.log("Training started with ID: " + result.predictionId);
+    if (transactions.length < 10) {
+      throw new Error(
+        `Not enough valid transactions. Found only ${transactions.length} valid transactions after validation. At least 10 are required.`
+      );
     }
+
+    // Call startTraining directly, passing the prepared data
+    // No need to store large data in properties
+    var result = startTraining(transactions, serviceConfig, config);
+
+    // Handle potential immediate errors from startTraining (e.g., API key issue)
+    if (result && result.error) {
+      throw new Error(result.error);
+    }
+
+    // Success: startTraining will handle showing the polling dialog
+    Logger.log("Training request initiated successfully.");
   } catch (error) {
-    Logger.log("Error in showTrainingProgress: " + error);
-    SpreadsheetApp.getUi().alert("Error: " + error.toString());
+    Logger.log("Training setup error: " + error.toString());
+    updateStatus("Error during training setup: " + error.toString());
+    // Show error in the dialog if it's still open, otherwise use alert
+    try {
+      // This might fail if the dialog is already closed
+      throw error; // Re-throw to be caught by the dialog's failure handler
+    } catch (e) {
+      ui.alert("Error during training setup: " + error.toString());
+    }
   }
 }
 
@@ -1291,22 +1341,9 @@ function pollOperationStatus() {
   }
 }
 
-// Helper function to calculate progress
-function calculateProgress(startTime) {
-  var elapsedMinutes = (Date.now() - startTime) / (60 * 1000);
-  return Math.min(90, Math.round(elapsedMinutes * 10)); // ~10% per minute up to 90%
-}
-
 // Global function to handle training API call
-function startTraining() {
+function startTraining(transactions, serviceConfig, config) {
   try {
-    var userProperties = PropertiesService.getUserProperties();
-    var transactions = JSON.parse(userProperties.getProperty("TEMP_TRANSACTIONS"));
-    var serviceConfig = getServiceConfig();
-    var config = JSON.parse(userProperties.getProperty("TEMP_CONFIG"));
-    var originalSheetName = userProperties.getProperty("TEMP_SHEET_NAME");
-    var serviceUrl = userProperties.getProperty("TEMP_SERVICE_URL");
-
     // Validate required data
     if (!transactions || !transactions.length) {
       return { error: "No training data available" };
@@ -1316,56 +1353,14 @@ function startTraining() {
       return { error: "API key not configured" };
     }
 
-    // Transform data format to match the updated API requirements
-    // The API expects Transaction objects with description and Category fields
-    var transformedTransactions = transactions
-      .map(function (t) {
-        // Make sure description is a valid string
-        var description = t.Narrative || t.description || t.Description || "";
-        if (typeof description !== "string") {
-          description = String(description);
-        }
-        // Trim and ensure it's not empty
-        description = description.trim();
-        if (!description) {
-          description = "Unknown transaction";
-        }
-
-        var category = t.Category || t.category || "";
-        if (typeof category !== "string") {
-          category = String(category);
-        }
-
-        return {
-          description: description,
-          Category: category,
-        };
-      })
-      // Filter out any potentially problematic transactions
-      .filter(function (t) {
-        // Remove entries with empty descriptions or categories
-        return t.description.length > 0 && t.Category.length > 0;
-      });
-
-    // Log transaction counts for debugging
-    Logger.log(
-      `Original transaction count: ${transactions.length}, Validated transaction count: ${transformedTransactions.length}`
-    );
-
-    // Check if we have enough valid transactions
-    if (transformedTransactions.length < 10) {
-      return {
-        error: `Not enough valid transactions. Found only ${transformedTransactions.length} valid transactions after validation. At least 10 are required.`,
-      };
-    }
-
-    // Prepare payload with the new format
+    // Prepare payload (already contains amount and money_in from trainModel)
     var payload = JSON.stringify({
-      transactions: transformedTransactions,
+      transactions: transactions, // These now potentially include amount/money_in
       userId: serviceConfig.userId,
     });
 
-    Logger.log("Sending training request with " + transformedTransactions.length + " transactions");
+    Logger.log("Sending training request with " + transactions.length + " transactions");
+    Logger.log("Sample transaction in payload: " + JSON.stringify(transactions[0]));
 
     var options = {
       method: "post",
@@ -1392,7 +1387,7 @@ function startTraining() {
         }
 
         // Make the API call
-        response = UrlFetchApp.fetch(serviceUrl + "/train", options);
+        response = UrlFetchApp.fetch(serviceConfig.serviceUrl + "/train", options);
         var responseCode = response.getResponseCode();
 
         // Handle different response codes
@@ -1405,7 +1400,9 @@ function startTraining() {
           continue;
         } else {
           // Don't retry on other errors
-          throw new Error(`Server returned error code: ${responseCode}`);
+          var errorText = response.getContentText(); // Get error message from server
+          Logger.log(`Training API call failed with status ${responseCode}: ${errorText}`);
+          throw new Error(`Server returned error code: ${responseCode} - ${errorText}`);
         }
       } catch (e) {
         error = e;
@@ -1438,7 +1435,7 @@ function startTraining() {
         if (result.details && Array.isArray(result.details)) {
           var validationErrors = result.details
             .map((err) => {
-              return `Field ${err.location}: ${err.message}`;
+              return `Field ${err.location}: ${err.message}`; // Adjusted error format
             })
             .join(", ");
 
@@ -1455,19 +1452,22 @@ function startTraining() {
         return { error: "No prediction ID received from server" };
       }
 
-      // Set properties for polling
+      // Set properties ONLY for polling
+      var userProperties = PropertiesService.getUserProperties();
       userProperties.setProperties({
         PREDICTION_ID: result.prediction_id,
         OPERATION_TYPE: "training",
         START_TIME: Date.now().toString(),
-        SERVICE_URL: serviceUrl,
+        SERVICE_URL: serviceConfig.serviceUrl, // Still need service URL for polling
+        // Store minimal config needed for polling/status display if any
+        // (Currently, none seem essential for polling itself)
       });
 
       // Track the training operation in stats
       updateStats("training_operations", 1);
-      updateStats("trained_transactions", transformedTransactions.length);
+      updateStats("trained_transactions", transactions.length);
 
-      // Show the polling dialog
+      // Show the polling dialog AFTER successful API call
       showPollingDialog();
 
       return {
