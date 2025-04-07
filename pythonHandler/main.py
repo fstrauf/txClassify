@@ -1297,6 +1297,39 @@ def get_classification_or_training_status(prediction_id):
         logger.info(f"Prediction {prediction_id} succeeded on Replicate. Processing...")
         process_start_time = time.time()
 
+        # === Refetch context *after* Replicate success to ensure we have the latest ===
+        try:
+            # Fetch the primary record first
+            context = prisma_client.get_webhook_result(prediction_id)
+            if not isinstance(context, dict):
+                # This should theoretically not happen if we got here, but handle defensively
+                logger.error(
+                    f"Could not retrieve primary context for {prediction_id} after Replicate success"
+                )
+                return create_error_response(
+                    "Job context missing or invalid after prediction success", 500
+                )
+
+            job_type = context.get("type")
+            user_id = context.get("user_id")
+
+            # Security check again before processing
+            if user_id != requesting_user_id:
+                logger.error(
+                    f"Mismatch between context user {user_id} and requesting user {requesting_user_id} for {prediction_id}"
+                )
+                return create_error_response("Permission denied", 403)
+
+        except Exception as fetch_err:
+            logger.error(
+                f"Error refetching context for {prediction_id}: {fetch_err}",
+                exc_info=True,
+            )
+            return create_error_response(
+                "Error retrieving job context after prediction success", 500
+            )
+        # === End Refetch context ===
+
         # Get Embeddings from Output
         if not prediction.output or not isinstance(prediction.output, list):
             logger.error(f"Prediction {prediction_id} succeeded but output is invalid.")
@@ -1408,9 +1441,11 @@ def get_classification_or_training_status(prediction_id):
             # For classification, we need to fetch the full context that includes transactions_input
             # This is stored in a separate record with "_context" suffix
             try:
-                context_with_transactions = prisma_client.get_webhook_result(
-                    f"{prediction_id}_context"
+                context_id = (
+                    f"{prediction_id}_context"  # Define the context ID explicitly
                 )
+                context_with_transactions = prisma_client.get_webhook_result(context_id)
+
                 if not isinstance(
                     context_with_transactions, dict
                 ) or not context_with_transactions.get("transactions_input"):
