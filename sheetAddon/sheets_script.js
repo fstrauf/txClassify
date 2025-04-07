@@ -843,7 +843,8 @@ function categoriseTransactions(config) {
           muteHttpExceptions: true,
         });
 
-        if (response.getResponseCode() === 200) {
+        // Accept 200 OK or 202 Accepted as success for starting the job
+        if (response.getResponseCode() === 200 || response.getResponseCode() === 202) {
           break; // Success, exit retry loop
         } else if (
           response.getResponseCode() === 502 ||
@@ -1051,9 +1052,9 @@ function writeResultsToSheet(result, config, sheet) {
       moneyInRange.setValues(moneyInValues);
 
       // Write a header for the column if we're in the first row
-      if (startRow === 1) {
-        sheet.getRange(moneyInCol + "1").setValue("Type");
-      }
+      //if (startRow === 1) {
+      //  sheet.getRange(moneyInCol + "1").setValue("Type");
+      //}
     }
 
     // Check if amount data is available
@@ -1084,9 +1085,9 @@ function writeResultsToSheet(result, config, sheet) {
       amountRange.setNumberFormat("$#,##0.00;($#,##0.00)");
 
       // Write a header for the column if we're in the first row
-      if (startRow === 1) {
-        sheet.getRange(amountCol + "1").setValue("Amount");
-      }
+      //if (startRow === 1) {
+      //  sheet.getRange(amountCol + "1").setValue("Amount");
+      //}
     }
 
     // Update status with success message
