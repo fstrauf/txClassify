@@ -522,10 +522,12 @@ def run_prediction(descriptions: list) -> dict:
         raise
 
 
-def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
-    """Store embeddings in database with quantization."""
+def store_embeddings(data: np.ndarray, embedding_id: str, user_id: str) -> bool:
+    """Store embeddings in database with quantization, including userId."""
     try:
-        logger.info(f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}")
+        logger.info(
+            f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}, for User: {user_id}"
+        )
         start_time = time.time()
 
         # Prepare data before database operation
@@ -544,7 +546,11 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
         else:
             # For regular arrays (embeddings), use quantization
             if data.dtype == np.float32:
-                scale = np.max(np.abs(data)) / 127
+                # Avoid division by zero if data is all zeros
+                abs_max = np.max(np.abs(data))
+                scale = (
+                    abs_max / 127 if abs_max > 0 else 1.0
+                )  # Default scale to 1 if max is 0
                 quantized_data = (data / scale).astype(np.int8)
                 metadata = {
                     "is_structured": False,
@@ -570,17 +576,12 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
 
         for attempt in range(max_retries):
             try:
-                result = prisma_client.store_embedding(embedding_id, data_bytes)
+                # Correctly call the singular method name in prisma_client
+                result = prisma_client.store_embedding(
+                    embedding_id, data_bytes, user_id
+                )
 
-                # Try to link embedding to account if we have an API key
-                try:
-                    if hasattr(request, "headers") and request.headers.get("X-API-Key"):
-                        api_key = request.headers.get("X-API-Key")
-                        prisma_client.track_embedding_creation(
-                            api_key, str(embedding_id)
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to track embedding creation: {str(e)}")
+                # Removed the redundant tracking code below, as userId is stored directly
 
                 logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
                 return result
@@ -593,12 +594,22 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
                         )
                         time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
                         continue
-                raise
+                # Log the error before re-raising or returning False
+                logger.error(
+                    f"Attempt {attempt + 1} failed to store embedding {embedding_id}: {e}"
+                )
+                # Re-raise the exception on the last attempt or if it's not a pool/timeout error
+                if attempt == max_retries - 1 or not (
+                    "connection pool" in str(e).lower() or "timeout" in str(e).lower()
+                ):
+                    raise
 
+        # If loop completes without success (should only happen if pool/timeout errors persist)
         return False
 
     except Exception as e:
-        logger.error(f"Error storing embeddings: {e}")
+        # Catch potential errors during data prep or final re-raise from loop
+        logger.error(f"Error storing embedding {embedding_id}: {e}", exc_info=True)
         return False
 
 
@@ -833,12 +844,12 @@ def train_model():
         )
 
         # Store index data
-        store_embeddings(index_data, f"{user_id}_index")
+        store_embeddings(index_data, f"{user_id}_index", user_id)
         logger.info(f"Stored index data with {len(index_data)} entries")
 
         # Create a placeholder for the embeddings
         placeholder = np.array([[0.0] * EMBEDDING_DIMENSION])
-        store_embeddings(placeholder, f"{user_id}")
+        store_embeddings(placeholder, f"{user_id}", user_id)
 
         # Get descriptions for embedding
         descriptions = df["description"].tolist()
@@ -1405,7 +1416,7 @@ def get_classification_or_training_status(prediction_id):
                 f"Processing TRAINING completion for prediction {prediction_id}, user {user_id}"
             )
             try:
-                store_result = store_embeddings(embeddings, f"{user_id}")
+                store_result = store_embeddings(embeddings, f"{user_id}", user_id)
                 final_db_record = {
                     "status": "completed",
                     "message": "Training completed successfully",
@@ -1509,7 +1520,7 @@ def get_classification_or_training_status(prediction_id):
                 # Store embeddings for future recalculation
                 # Use a unique ID that combines prediction_id and user_id
                 embeddings_id = f"{prediction_id}_embeddings"
-                store_result = store_embeddings(embeddings, embeddings_id)
+                store_result = store_embeddings(embeddings, embeddings_id, user_id)
 
                 if not store_result:
                     logger.error(f"Failed to store embeddings for {prediction_id}")
