@@ -332,55 +332,6 @@ class PrismaClient:
             logger.error(f"Error tracking API usage: {str(e)}")
             return False
 
-    def track_embedding_creation(self, api_key, embedding_id):
-        """
-        Track API key usage for embedding creation and link the embedding to the account.
-
-        Args:
-            api_key: The API key used for the request
-            embedding_id: The ID of the embedding being created
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            self.connect()
-
-            # First, track the API usage
-            self.track_api_usage(api_key)
-
-            # Find the user with this API key
-            user = self.get_user_by_api_key(api_key)
-            if not user:
-                logger.warning(
-                    f"No user found for API key: {str(api_key)[:4]}...{str(api_key)[-4:]}"
-                )
-                return False
-
-            # Find the account for this user
-            account = self.get_account_by_user_id(user["id"])
-            if not account:
-                logger.warning(f"No account found for user ID: {str(user['id'])}")
-                return False
-
-            # Update the embedding with the account ID
-            query = """
-                UPDATE embeddings 
-                SET "accountId" = %s
-                WHERE embedding_id = %s
-            """
-
-            self.execute_query(query, (account["id"], str(embedding_id)), fetch=False)
-
-            logger.info(
-                f"Linked embedding {str(embedding_id)} to account {str(account['id'])}"
-            )
-            return True
-
-        except Exception as e:
-            logger.error(f"Error tracking embedding creation: {str(e)}")
-            return False
-
     def get_account_usage_stats(self, user_id):
         """
         Get usage statistics for an account.
@@ -544,8 +495,8 @@ class PrismaClient:
             return None
 
     # Embedding methods
-    def store_embedding(self, embedding_id, data_bytes):
-        """Store embedding data in the database."""
+    def store_embedding(self, embedding_id, data_bytes, user_id):
+        """Store embedding data in the database, including the userId."""
         try:
             self.connect()
 
@@ -558,27 +509,38 @@ class PrismaClient:
 
             if existing:
                 # Update existing embedding
+                # Ensure userId is also set during update
                 query = """
                     UPDATE embeddings
-                    SET data = %s, updated_at = %s
+                    SET data = %s, updated_at = %s, "userId" = %s
                     WHERE embedding_id = %s
                 """
                 self.execute_query(
-                    query, (data_base64, datetime.now(), embedding_id), fetch=False
+                    query,
+                    (data_base64, datetime.now(), user_id, embedding_id),
+                    fetch=False,  # Added user_id
                 )
             else:
-                # Create new embedding
+                # Create new embedding, including userId
                 query = """
-                    INSERT INTO embeddings (embedding_id, data, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO embeddings (embedding_id, data, created_at, updated_at, "userId")
+                    VALUES (%s, %s, %s, %s, %s)
                 """
                 self.execute_query(
                     query,
-                    (embedding_id, data_base64, datetime.now(), datetime.now()),
+                    (
+                        embedding_id,
+                        data_base64,
+                        datetime.now(),
+                        datetime.now(),
+                        user_id,
+                    ),  # Added user_id
                     fetch=False,
                 )
 
-            logger.info(f"Successfully stored embedding: {embedding_id}")
+            logger.info(
+                f"Successfully stored embedding: {embedding_id} for user {user_id}"
+            )
             return True
         except Exception as e:
             logger.error(f"Error storing embedding: {str(e)}")
