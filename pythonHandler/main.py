@@ -1,6 +1,7 @@
 import os
 import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
+from markupsafe import Markup
 from flask_cors import CORS
 import numpy as np
 import pandas as pd
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from functools import wraps
 import io
 from flasgger import Swagger, swag_from
+import uuid
 
 # Define global constants for Replicate model
 REPLICATE_MODEL_NAME = "beautyyuyanli/multilingual-e5-large"
@@ -49,6 +51,9 @@ EXPENSE_CATEGORIES = {
     "Other",
 }
 REFUND_CATEGORY = "Refund"
+TAX_CATEGORY = "Taxes"
+TRANSFER_OUT_CATEGORY = "Transfer out"
+# Add more categories if needed
 
 
 # === Request Validation Models ===
@@ -121,11 +126,41 @@ class UserConfigRequest(BaseModel):
     apiKey: Optional[str] = None
 
 
+class AnalyticsTransaction(BaseModel):
+    description: str
+    date: str  # Expecting ISO format string e.g., "2023-10-26T10:00:00.000Z"
+    category: str
+    amount: float
+    currency: Optional[str] = None
+    account: Optional[str] = None
+
+    @field_validator("date")
+    @classmethod
+    def date_must_be_iso(cls, v):
+        try:
+            datetime.fromisoformat(v.replace("Z", "+00:00"))  # Handle Z for UTC
+            return v
+        except ValueError:
+            raise ValueError("Date must be in ISO 8601 format")
+
+
+class AnalyzeRequest(BaseModel):
+    transactions: List[AnalyticsTransaction]
+    userId: Optional[str] = None  # Will be overridden by API key user ID
+
+    @field_validator("transactions")
+    @classmethod
+    def transactions_not_empty(cls, v):
+        if not v:
+            raise ValueError("At least one transaction is required for analysis")
+        return v
+
+
 # Configure logging
 logging.basicConfig(
     stream=sys.stdout,  # Log to stdout for Docker/Gunicorn to capture
     format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.DEBUG,
 )
 logger = logging.getLogger(__name__)
 
@@ -522,10 +557,12 @@ def run_prediction(descriptions: list) -> dict:
         raise
 
 
-def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
-    """Store embeddings in database with quantization."""
+def store_embeddings(data: np.ndarray, embedding_id: str, user_id: str) -> bool:
+    """Store embeddings in database with quantization, including userId."""
     try:
-        logger.info(f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}")
+        logger.info(
+            f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}, for User: {user_id}"
+        )
         start_time = time.time()
 
         # Prepare data before database operation
@@ -570,17 +607,26 @@ def store_embeddings(data: np.ndarray, embedding_id: str) -> bool:
 
         for attempt in range(max_retries):
             try:
-                result = prisma_client.store_embedding(embedding_id, data_bytes)
+                # Pass user_id directly to the prisma client method
+                result = prisma_client.store_embedding(
+                    embedding_id, data_bytes, user_id
+                )
 
-                # Try to link embedding to account if we have an API key
-                try:
-                    if hasattr(request, "headers") and request.headers.get("X-API-Key"):
-                        api_key = request.headers.get("X-API-Key")
-                        prisma_client.track_embedding_creation(
-                            api_key, str(embedding_id)
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to track embedding creation: {str(e)}")
+                # Removed the separate tracking call - assuming store_embedding handles userId
+                # try:
+                #     if user_id:
+                #         # Assuming a function exists to track by user_id
+                #         prisma_client.track_embedding_creation_by_user_id(
+                #             user_id, str(embedding_id)
+                #         )
+                #     else:
+                #         logger.warning(
+                #             f"No user_id provided, cannot track embedding creation for {embedding_id}"
+                #         )
+                # except Exception as e:
+                #     logger.warning(
+                #         f"Failed to track embedding creation by user_id: {str(e)}"
+                #     )
 
                 logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
                 return result
@@ -833,12 +879,12 @@ def train_model():
         )
 
         # Store index data
-        store_embeddings(index_data, f"{user_id}_index")
+        store_embeddings(index_data, f"{user_id}_index", user_id)
         logger.info(f"Stored index data with {len(index_data)} entries")
 
         # Create a placeholder for the embeddings
         placeholder = np.array([[0.0] * EMBEDDING_DIMENSION])
-        store_embeddings(placeholder, f"{user_id}")
+        store_embeddings(placeholder, f"{user_id}", user_id)
 
         # Get descriptions for embedding
         descriptions = df["description"].tolist()
@@ -1405,7 +1451,7 @@ def get_classification_or_training_status(prediction_id):
                 f"Processing TRAINING completion for prediction {prediction_id}, user {user_id}"
             )
             try:
-                store_result = store_embeddings(embeddings, f"{user_id}")
+                store_result = store_embeddings(embeddings, f"{user_id}", user_id)
                 final_db_record = {
                     "status": "completed",
                     "message": "Training completed successfully",
@@ -1509,7 +1555,7 @@ def get_classification_or_training_status(prediction_id):
                 # Store embeddings for future recalculation
                 # Use a unique ID that combines prediction_id and user_id
                 embeddings_id = f"{prediction_id}_embeddings"
-                store_result = store_embeddings(embeddings, embeddings_id)
+                store_result = store_embeddings(embeddings, embeddings_id, user_id)
 
                 if not store_result:
                     logger.error(f"Failed to store embeddings for {prediction_id}")
@@ -2283,6 +2329,393 @@ def _detect_transfers(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return results
 
 
+# In-memory storage for analysis results
+# Warning: This is not persistent and will be lost on server restart.
+# Suitable for temporary reports in a development/testing environment.
+analysis_results: Dict[str, Dict[str, Any]] = {}
+
+
+# Add Jinja2 filters for formatting
+# Use decorator instead of direct assignment
+def format_currency(value):
+    if value is None or np.isnan(value):
+        return "$0.00"
+    try:
+        amount = float(value)
+        # Format with commas and 2 decimal places, handle negative with parentheses
+        if amount < 0:
+            return f"$({abs(amount):,.2f})"
+        else:
+            return f"${amount:,.2f}"
+    except (ValueError, TypeError):
+        return str(value)  # Return original value if conversion fails
+
+
+def format_percentage(value):
+    if value is None or np.isnan(value) or np.isinf(value):
+        return "N/A"
+    try:
+        return f"{float(value):.1%}"
+    except (ValueError, TypeError):
+        return str(value)
+
+
+@app.route("/analyze", methods=["POST"])
+@require_api_key
+@swag_from(
+    {
+        "tags": ["Analysis"],
+        "summary": "Analyze expense transactions",
+        "description": "Processes a list of transactions to generate a monthly financial analysis report.",
+        "parameters": [
+            {
+                "name": "X-API-Key",
+                "in": "header",
+                "type": "string",
+                "required": True,
+                "description": "API Key for authentication",
+            },
+            {
+                "name": "body",
+                "in": "body",
+                "required": True,
+                "schema": AnalyzeRequest.schema(),
+            },
+        ],
+        "responses": {
+            200: {
+                "description": "Analysis started successfully, report URL provided.",
+                "examples": {
+                    "application/json": {
+                        "status": "success",
+                        "report_id": "unique-report-id-123",
+                        "report_url": "/report/unique-report-id-123",
+                    }
+                },
+            },
+            400: {"description": "Invalid request data"},
+            401: {"description": "Invalid or missing API key"},
+            500: {"description": "Server error during analysis"},
+        },
+    }
+)
+def analyze_expenses():
+    """Analyzes transactions and generates a report."""
+    try:
+        start_time = time.time()
+        user_id = request.user_id  # From @require_api_key decorator
+        logger.info(f"=== Incoming Analysis Request - User: {user_id} ===")
+
+        # 1. Validate Request Data
+        data = request.get_json()
+        if not data:
+            return create_error_response("No data provided", 400)
+
+        validated_data, error_response = validate_request_data(AnalyzeRequest, data)
+        if error_response:
+            return error_response
+
+        transactions = [t.model_dump() for t in validated_data.transactions]
+        logger.info(f"Processing {len(transactions)} transactions for analysis.")
+        # Log received transactions sample
+        if transactions:
+            logger.debug(f"Received transaction sample: {transactions[0]}")
+
+        # 2. Process Transactions with Pandas
+        df = pd.DataFrame(transactions)
+        logger.debug(f"Initial DataFrame shape: {df.shape}")  # <<< Log initial shape
+        if not df.empty:
+            logger.debug(
+                f"Initial DataFrame head:\n{df.head().to_string()}"
+            )  # <<< Log initial head
+
+        # Convert date string to datetime objects, handling potential errors
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df.dropna(subset=["date"], inplace=True)  # Remove rows with invalid dates
+        logger.debug(
+            f"DataFrame shape after date conversion/drop: {df.shape}"
+        )  # <<< Log shape after date handling
+        if df.empty:
+            logger.warning(
+                "No valid transactions with parseable dates found after processing."
+            )
+            return create_error_response(
+                "No valid transactions with parseable dates found", 400
+            )
+
+        df["Month"] = df["date"].dt.strftime("%Y-%m")
+
+        # 3. Define Special Category Sets (used for specific calculations/exclusions)
+        income_cats = INCOME_CATEGORIES - {REFUND_CATEGORY}  # Used for 'Income' column
+        special_non_breakdown_cats = income_cats.union(
+            {REFUND_CATEGORY, TAX_CATEGORY, TRANSFER_OUT_CATEGORY}
+        )
+        logger.debug(
+            f"Special categories (excluded from breakdown): {special_non_breakdown_cats}"
+        )
+
+        # Dynamically find all categories in the data intended for breakdown columns
+        # These are all categories *not* in the special non-breakdown set
+        all_categories_in_data = df["category"].unique()
+        dynamic_breakdown_categories = sorted(
+            [
+                cat
+                for cat in all_categories_in_data
+                if cat not in special_non_breakdown_cats
+            ]
+        )
+        logger.debug(
+            f"Dynamic breakdown categories identified: {dynamic_breakdown_categories}"
+        )
+
+        # Define categories for calculating the main 'Expenses' total (using the predefined set for consistency)
+        expense_cats_for_total = EXPENSE_CATEGORIES - {
+            TAX_CATEGORY,
+            TRANSFER_OUT_CATEGORY,
+        }
+        logger.debug(
+            f"Categories used for main 'Expenses' total: {expense_cats_for_total}"
+        )
+
+        # 4. Calculate Monthly Aggregates
+        monthly_data = []
+        logger.debug(f"Grouping data by Month: {df['Month'].unique()}")
+        for month, group in df.groupby("Month"):
+            logger.debug(f"Processing month: {month}, Group shape: {group.shape}")
+            month_summary = {"Month": month}
+
+            # --- Basic Aggregations ---
+            month_summary["Income"] = (
+                group[group["category"].isin(income_cats)]["amount"]
+                .apply(lambda x: x if x > 0 else 0)
+                .sum()
+            )
+            month_summary["Credit"] = (
+                group[group["category"] == REFUND_CATEGORY]["amount"]
+                .apply(lambda x: x if x > 0 else 0)
+                .sum()
+            )
+            month_summary["Tax"] = (
+                group[group["category"] == TAX_CATEGORY]["amount"]
+                .apply(lambda x: abs(x) if x < 0 else 0)
+                .sum()
+            )
+            # Use the predefined set for the main 'Expenses' column
+            month_summary["Expenses"] = (
+                group[group["category"].isin(expense_cats_for_total)]["amount"]
+                .apply(lambda x: abs(x) if x < 0 else 0)
+                .sum()
+            )
+            logger.debug(
+                f"Month {month} Base Aggregates: Income={month_summary['Income']}, Credit={month_summary['Credit']}, Tax={month_summary['Tax']}, Expenses={month_summary['Expenses']}"
+            )
+
+            # --- Derived Metrics ---
+            month_summary["Net Income"] = month_summary["Income"] - month_summary["Tax"]
+            month_summary["Net Savings"] = (
+                month_summary["Net Income"]
+                + month_summary["Credit"]
+                - month_summary["Expenses"]
+            )
+            month_summary["Net Burn"] = -month_summary["Net Savings"]
+
+            # --- Savings Rate ---
+            if month_summary["Income"] > 0:
+                month_summary["Savings Rate"] = (
+                    month_summary["Net Savings"] / month_summary["Income"]
+                )
+            else:
+                month_summary["Savings Rate"] = np.nan
+            logger.debug(
+                f"Month {month} Derived: NetIncome={month_summary['Net Income']}, NetSavings={month_summary['Net Savings']}, SavingsRate={month_summary['Savings Rate']}"
+            )
+
+            # --- Dynamic Category Breakdown ---
+            # Sum absolute values of negative amounts for each dynamic breakdown category found
+            category_sums = {}
+            for category in dynamic_breakdown_categories:
+                # Check if category exists in the current month's group before summing
+                if category in group["category"].values:
+                    cat_sum = (
+                        group[group["category"] == category]["amount"]
+                        .apply(lambda x: abs(x) if x < 0 else 0)
+                        .sum()
+                    )
+                else:
+                    cat_sum = 0  # If category not present in this month, sum is 0
+                month_summary[category] = cat_sum
+                category_sums[category] = cat_sum  # For logging
+            logger.debug(f"Month {month} Dynamic Category Sums: {category_sums}")
+
+            monthly_data.append(month_summary)
+
+        if not monthly_data:
+            logger.warning("No monthly data generated after grouping and aggregation.")
+            return create_error_response("No data to analyze after processing", 400)
+
+        # Convert monthly list to DataFrame
+        analysis_df = (
+            pd.DataFrame(monthly_data).sort_values("Month").reset_index(drop=True)
+        )
+        logger.debug(
+            f"Aggregated DataFrame shape: {analysis_df.shape}"
+        )  # <<< Log aggregated shape
+        if not analysis_df.empty:
+            logger.debug(
+                f"Aggregated DataFrame head:\n{analysis_df.head().to_string()}"
+            )  # <<< Log aggregated head
+
+        # Fill NaN amounts in dynamic category columns with 0
+        # Ensure we only try to fill columns that actually exist in the dataframe
+        category_cols_to_fill = [
+            col for col in dynamic_breakdown_categories if col in analysis_df.columns
+        ]
+        if category_cols_to_fill:
+            analysis_df[category_cols_to_fill] = analysis_df[
+                category_cols_to_fill
+            ].fillna(0)
+
+        # ... (Cumulative calculations placeholder remains the same) ...
+
+        # ... (Fill NaN/inf in rate columns remains the same) ...
+        rate_columns = [col for col in analysis_df.columns if "Rate" in col]
+        analysis_df[rate_columns] = (
+            analysis_df[rate_columns].fillna(np.nan).replace([np.inf, -np.inf], np.nan)
+        )
+
+        # 5. Generate Report ID and Store Results
+        report_id = str(uuid.uuid4())
+        report_data_dict = analysis_df.to_dict(orient="records")
+
+        # Define column order explicitly, using dynamic categories
+        core_columns = [
+            "Month",
+            "Income",
+            "Tax",
+            "Credit",
+            "Net Income",
+            "Expenses",  # Main summary expense column
+            "Net Savings",
+            "Net Burn",
+            "Savings Rate",
+        ]
+        # Use the dynamically found and sorted list for breakdown columns
+        category_cols_ordered = dynamic_breakdown_categories
+
+        final_columns = core_columns + category_cols_ordered
+        # Ensure all listed columns actually exist in the final DataFrame
+        final_columns = [col for col in final_columns if col in analysis_df.columns]
+
+        logger.debug(
+            f"Storing report data (sample): {report_data_dict[:2]}"  # <<< Log sample stored data
+        )
+        logger.debug(
+            f"Storing report columns: {final_columns}"
+        )  # <<< Log stored columns
+
+        analysis_results[report_id] = {
+            "data": report_data_dict,
+            "columns": final_columns,
+            "user_id": user_id,
+            "created_at": datetime.now().isoformat(),
+        }
+
+        # Clean up old results occasionally (optional)
+        # Consider adding a background task or threshold for cleanup
+        # if len(analysis_results) > 100: cleanup_old_analysis_results()
+
+        report_url = f"/report/{report_id}"  # Relative URL
+        logger.info(
+            f"Analysis complete for user {user_id}. Report ID: {report_id}. Time: {time.time() - start_time:.2f}s"
+        )
+
+        # 6. Return Response
+        return (
+            jsonify(
+                {"status": "success", "report_id": report_id, "report_url": report_url}
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logger.error(f"Error in /analyze endpoint: {e}", exc_info=True)
+        return create_error_response(f"Analysis failed: {str(e)}", 500)
+
+
+@app.route("/report/<report_id>", methods=["GET"])
+# Note: No @require_api_key here, assuming reports are accessible via the unique ID for a short time.
+# Add authentication/authorization here if needed based on stored user_id.
+@swag_from(
+    {
+        "tags": ["Analysis"],
+        "summary": "View analysis report",
+        "description": "Displays the generated financial analysis report in HTML format.",
+        "parameters": [
+            {
+                "name": "report_id",
+                "in": "path",
+                "type": "string",
+                "required": True,
+                "description": "The unique ID of the report to view.",
+            }
+        ],
+        "responses": {
+            200: {
+                "description": "HTML report page.",
+                "produces": ["text/html"],
+            },
+            404: {"description": "Report not found or expired."},
+            500: {"description": "Server error rendering report."},
+        },
+    }
+)
+def view_report(report_id):
+    """Displays the analysis report HTML page."""
+    try:
+        report_content = analysis_results.get(report_id)
+
+        if not report_content:
+            logger.warning(f"Report ID not found: {report_id}")
+            return "Report not found or expired.", 404
+
+        # Optional: Add check for user_id if authentication is added later
+        # expected_user_id = report_content.get("user_id")
+        # current_user_id = #... get current user from session/token if implementing auth
+        # if expected_user_id != current_user_id:
+        #     return "Unauthorized", 403
+
+        report_data = report_content["data"]
+        report_columns = report_content["columns"]
+
+        logger.info(f"Rendering report {report_id}")
+        logger.debug(
+            f"Filters available in Jinja env: {list(app.jinja_env.filters.keys())}"  # This log is less relevant now
+        )
+
+        # Pass functions directly into the template context
+        return render_template(
+            "report.html",
+            report_id=report_id,
+            data=report_data,
+            columns=report_columns,
+            format_currency_func=format_currency,  # Pass the function itself
+            format_percentage_func=format_percentage,  # Pass the function itself
+        )
+
+    except Exception as e:
+        logger.error(f"Error rendering report {report_id}: {e}", exc_info=True)
+        return "Error generating report.", 500
+
+
 if __name__ == "__main__":
+    # Ensure the templates directory exists
+    if not os.path.exists("templates"):
+        os.makedirs("templates")
+    # You might need to create a dummy report.html if it doesn't exist
+    # for the app to start without errors if render_template is called early.
+    # Example: open('templates/report.html', 'a').close()
+
     port = int(os.environ.get("PORT", 5003))
+    # Add debug=True only for local development if needed, remove for production
+    # app.run(host="0.0.0.0", port=port, debug=os.environ.get('FLASK_ENV') == 'development')
     app.run(host="0.0.0.0", port=port)

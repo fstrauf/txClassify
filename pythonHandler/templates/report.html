@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Expense Analysis Report</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background-color: #fff;
+            box-shadow: 0 2px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 10px 12px;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        th {
+            background-color: #e9e9e9;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+            /* Sticky header */
+            z-index: 10;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        tr:hover {
+            background-color: #f1f1f1;
+        }
+
+        .currency {
+            text-align: right;
+        }
+
+        .percentage {
+            text-align: right;
+        }
+
+        .report-container {
+            overflow-x: auto;
+            /* Allow horizontal scrolling for wide tables */
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Monthly Expense Analysis</h1>
+    <p>Report ID: {{ report_id }}</p>
+    <div class="report-container">
+        <table>
+            <thead>
+                <tr>
+                    {% for col in columns %}
+                    <th>{{ col }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in data %}
+                <tr>
+                    {% for col in columns %}
+                    {% set value = row[col] %}
+                    {# Check if column name suggests percentage formatting #}
+                    {% if 'Rate' in col or 'rate' in col or '% ' in col %}
+                    <td class="percentage">{{ format_percentage_func(value) }}</td>
+                    {# Check if column name is 'Month' or similar text field #}
+                    {% elif col == 'Month' %}
+                    <td>{{ value }}</td>
+                    {# Otherwise, assume currency #}
+                    {% else %}
+                    <td class="currency">{{ format_currency_func(value) }}</td>
+                    {% endif %}
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+
+</html>

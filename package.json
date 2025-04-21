@@ -8,6 +8,7 @@
     "test:all": "node tests/test-api-endpoints.js --verbose",
     "test:train": "node tests/test-api-endpoints.js --train-only --verbose",
     "test:cat": "node tests/test-api-endpoints.js --cat-only --verbose",
+    "test:api": "node tests/test-api-endpoints.js --analyze-only --verbose",
     "test:quiet": "node tests/test-api-endpoints.js",
     "test-db": "node test-db-connection.js",
     "debug-test": "NODE_OPTIONS='--inspect' node tests/test-api-endpoints.js --verbose",
@@ -28,6 +29,7 @@
       "test:all": "Alias for 'test' - runs both training and categorization tests",
       "test:train": "Runs only the training test (skips training)",
       "test:cat": "Runs only the categorization test (skips training)",
+      "test:api": "Runs only the analyze-only test (skips training)",
       "test-db": "Tests the database connection",
       "debug-test": "Runs the tests with Node.js inspector enabled for debugging",
       "start:api": "Starts the Flask API server on port 5003"

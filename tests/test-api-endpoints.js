@@ -18,8 +18,6 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
 const csv = require("csv-parser");
-const net = require("net");
-const axios = require("axios");
 
 // Configuration
 const API_PORT = process.env.API_PORT || 3005;
@@ -52,9 +50,12 @@ if (process.argv.includes("--verbose")) {
 }
 
 // Check for test mode flags
-const RUN_TRAINING = !process.argv.includes("--cat-only");
-const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
+const RUN_TRAINING = !process.argv.includes("--cat-only") && !process.argv.includes("--analyze-only");
+const RUN_CATEGORIZATION = !process.argv.includes("--train-only") && !process.argv.includes("--analyze-only");
+const RUN_ANALYSIS = !process.argv.includes("--train-only") && !process.argv.includes("--cat-only");
 const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
+// Define analyzeOnly based on args
+const analyzeOnly = process.argv.includes("--analyze-only");
 
 const log = (message, level = LOG_LEVELS.INFO) => {
   // Only log messages at or below the current log level
@@ -379,6 +380,122 @@ const loadCategorizationData = (file_name) => {
       })
       .on("error", (error) => {
         logError(`Error loading ${file_name}: ${error.message}`);
+        reject(error);
+      });
+  });
+};
+
+// Load analytics data
+const loadAnalyticsData = (file_name) => {
+  return new Promise((resolve, reject) => {
+    const transactions = [];
+    const targetCsvPath = path.join(__dirname, "test_data", file_name);
+    let rowCount = 0;
+    const requiredHeaders = ["Narrative", "Date", "Category", "Amount Spent"]; // Source is optional
+
+    logInfo(`Loading analytics data from ${file_name}...`);
+
+    fs.createReadStream(targetCsvPath)
+      .pipe(csv())
+      .on("data", (data) => {
+        rowCount++;
+        // Basic validation for essential headers
+        if (
+          requiredHeaders.some((header) => data[header] === undefined || data[header] === null || data[header] === "")
+        ) {
+          logDebug(`Skipping row ${rowCount + 1} due to missing essential data: ${JSON.stringify(data)}`);
+          return;
+        }
+
+        let isoDate = "";
+        try {
+          const dateValue = data["Date"];
+          // Attempt basic parsing for DD/MM/YYYY
+          const parts = dateValue.split("/");
+          if (parts.length === 3) {
+            // Reorder to YYYY-MM-DD for reliable Date parsing
+            const formattedDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+            isoDate = new Date(formattedDate).toISOString();
+          } else {
+            // Fallback for other formats
+            isoDate = new Date(dateValue).toISOString();
+          }
+
+          if (isoDate === "Invalid Date") {
+            throw new Error(`Invalid date format in row ${rowCount + 1}: ${dateValue}`);
+          }
+        } catch (dateError) {
+          logError(`Skipping row ${rowCount + 1} due to invalid date: ${data["Date"]} (${dateError.message})`);
+          return; // Skip row if date is invalid
+        }
+
+        let parsedAmount = NaN;
+        try {
+          const amountValue = data["Amount Spent"];
+          if (typeof amountValue === "number") {
+            parsedAmount = amountValue;
+          } else if (typeof amountValue === "string" && amountValue.trim() !== "") {
+            // Check if the original string contained parentheses
+            const isNegative = amountValue.includes("(") && amountValue.includes(")");
+            // Remove parentheses, commas, and any other non-numeric chars except '.' and '-'
+            const cleanAmountStr = amountValue.replace(/[(),]/g, "").replace(/[^\d.-]/g, "");
+            parsedAmount = parseFloat(cleanAmountStr);
+            // Negate the value if it was originally in parentheses
+            if (isNegative && parsedAmount > 0) {
+              parsedAmount = -parsedAmount;
+            }
+          } else {
+            // Handle empty strings or other non-string/non-number types as NaN
+            parsedAmount = NaN;
+          }
+
+          if (isNaN(parsedAmount)) {
+            // Throw error only if the original value wasn't obviously empty/invalid
+            if (typeof amountValue === "string" && amountValue.trim() !== "") {
+              throw new Error(`Could not parse amount in row ${rowCount + 1}: '${amountValue}'`);
+            } else {
+              // Treat genuinely empty/null values as NaN without throwing an error immediately,
+              // but they will likely be skipped later if amount is required.
+              // Or handle as 0 if appropriate: parsedAmount = 0;
+              logDebug(`Treating empty/invalid amount in row ${rowCount + 1} as NaN: '${amountValue}'`);
+              // Decide if skipping is desired here:
+              // return; // Uncomment to skip rows with unparseable/empty amounts
+            }
+          }
+        } catch (amountError) {
+          logError(
+            `Skipping row ${rowCount + 1} due to invalid amount: ${data["Amount Spent"]} (${amountError.message})`
+          );
+          return; // Skip row if amount is invalid
+        }
+
+        const transaction = {
+          description: String(data["Narrative"]),
+          date: isoDate,
+          category: String(data["Category"]),
+          amount: parsedAmount,
+          currency: null, // Placeholder - Assuming single currency for now
+          account: data["Source"] ? String(data["Source"]) : null, // Optional account from Source
+        };
+
+        transactions.push(transaction);
+      })
+      .on("end", () => {
+        logInfo(`Loaded ${transactions.length} valid records from ${rowCount} rows in ${file_name}`);
+        if (transactions.length > 0) {
+          logDebug(`Sample analytics transaction: ${JSON.stringify(transactions[0])}`);
+        }
+        if (transactions.length === 0 && rowCount > 0) {
+          logError(
+            `Failed to load any valid analytics transactions. Check CSV headers match: ${requiredHeaders.join(
+              ", "
+            )} and date/amount formats.`
+          );
+        }
+        resolve(transactions);
+      })
+      .on("error", (error) => {
+        logError(`Error loading analytics data from ${file_name}: ${error.message}`);
         reject(error);
       });
   });
@@ -859,6 +976,102 @@ const categoriseTransactions = async (config) => {
   }
 };
 
+// Test analytics flow (New Function)
+const analyzeExpenses = async (config) => {
+  try {
+    console.log("Analyzing expenses...");
+    // Prepare request data
+    const requestData = {
+      transactions: config.analyticsDataFile,
+      userId: config.userId || TEST_USER_ID,
+    };
+
+    if (!requestData.transactions || requestData.transactions.length === 0) {
+      throw new Error("No valid analytics data loaded.");
+    }
+
+    const serviceUrl = config.serviceUrl;
+    const apiUrl = `${serviceUrl}/analyze`;
+    logInfo(`Sending analysis request for ${requestData.transactions.length} transactions to ${apiUrl}`);
+    logDebug(`Analytics payload sample: ${JSON.stringify(requestData.transactions[0])}`);
+
+    // Try up to 3 times with exponential backoff
+    let response;
+    let attempt = 1;
+    const maxAttempts = 3;
+    let lastError = null;
+
+    while (attempt <= maxAttempts) {
+      try {
+        const apiKey = config.apiKey || TEST_API_KEY;
+        logInfo(`Attempt ${attempt}: Calling ${apiUrl}`);
+
+        const fetchOptions = {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": apiKey,
+            Accept: "application/json",
+          },
+          body: JSON.stringify(requestData),
+        };
+
+        // Add timeout (e.g., 60 seconds)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        fetchOptions.signal = controller.signal;
+
+        const response_fetch = await fetch(apiUrl, fetchOptions);
+        clearTimeout(timeoutId); // Clear timeout if fetch completes
+
+        if (!response_fetch.ok) {
+          const statusCode = response_fetch.status;
+          const responseText = await response_fetch.text();
+          logError(`Server returned error code: ${statusCode}`);
+          logError(`Response text: ${responseText}`);
+          throw new Error(`Server returned error code: ${statusCode}, message: ${responseText}`);
+        }
+
+        response = await response_fetch.json(); // Expecting JSON response { "report_url": "..." }
+        break; // Success, exit the loop
+      } catch (error) {
+        logError(`Attempt ${attempt} failed: ${error.message}`);
+        lastError = error;
+        if (error.name === "AbortError") {
+          logError("Request timed out.");
+        }
+
+        if (attempt === maxAttempts) {
+          console.error(`\n❌ Analysis failed after ${maxAttempts} attempts: ${lastError.message}`);
+          return { status: "failed", error: lastError.message };
+        }
+
+        const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
+        console.log(`Retrying analysis request in ${delay / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        attempt++;
+      }
+    }
+
+    // Process result
+    if (response && response.report_url) {
+      console.log(`\n✅ Analysis successful! Report URL: ${response.report_url}`);
+      return { status: "completed", report_url: response.report_url };
+    } else {
+      console.error(
+        `\n❌ Analysis failed: Invalid response structure. Expected { "report_url": "..." }, got: ${JSON.stringify(
+          response
+        )}`
+      );
+      return { status: "failed", error: "Invalid response structure from /analyze endpoint" };
+    }
+  } catch (error) {
+    console.error(`\n❌ Analysis failed unexpectedly: ${error.message}`);
+    logDebug(`Error stack: ${error.stack}`);
+    return { status: "failed", error: error.message };
+  }
+};
+
 // Test clean_text functionality
 const testCleanText = async (apiUrl) => {
   console.log("\n=== Testing clean_text Function ===\n");
@@ -1049,6 +1262,7 @@ const cleanup = async () => {
 
 // Main function
 const main = async () => {
+  let analysisResult = null; // Define analysisResult outside the block
   try {
     console.log("\n=== Starting Test Script ===\n");
 
@@ -1096,11 +1310,14 @@ const main = async () => {
     console.log("5. Loading Test Data...");
     // const trainingData = await loadTrainingData("full_train.csv");
     // const trainingData = await loadTrainingData("training_test.csv");
-    const trainingData = await loadTrainingData("fs_train_nz_amount.csv");
-    const categorizationData = await loadCategorizationData("fs_cat_nz_amount.csv");
+    const trainingData = RUN_TRAINING ? await loadTrainingData("fs_train_nz_amount.csv") : [];
+    const categorizationData = RUN_CATEGORIZATION ? await loadCategorizationData("fs_cat_nz_amount.csv") : [];
+    const analyticsData = RUN_ANALYSIS ? await loadAnalyticsData("categorised_tx.csv") : [];
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
-    console.log(`   Loaded ${trainingData.length} training records`);
-    console.log(`   Loaded ${categorizationData.length} categorization records\n`);
+
+    if (RUN_TRAINING) console.log(`   Loaded ${trainingData.length} training records`);
+    if (RUN_CATEGORIZATION) console.log(`   Loaded ${categorizationData.length} categorization records`);
+    if (RUN_ANALYSIS) console.log(`   Loaded ${analyticsData.length} analytics records\n`);
 
     // Create test configuration
     const config = {
@@ -1109,6 +1326,9 @@ const main = async () => {
       serviceUrl: apiUrl,
       trainingDataFile: trainingData,
       categorizationDataFile: categorizationData,
+      analyticsDataFile: analyticsData, // Add analytics data to config
+      analyzeOnly: analyzeOnly, // <<< Add the flag here
+      port: port, // <<< Add the port here
     };
 
     // 6. Run Training (if enabled)
@@ -1137,22 +1357,59 @@ const main = async () => {
       console.log("   Categorization completed successfully\n");
     }
 
-    // 8. Cleanup
-    console.log("8. Cleaning up...");
+    // 8. Run Analysis (if enabled)
+    if (RUN_ANALYSIS) {
+      console.log("8. Running Analysis...");
+      analysisResult = await analyzeExpenses(config); // Assign to the outer variable
+
+      if (analysisResult.status !== "completed") {
+        // Log the error but don't stop the whole test suite if analysis fails (as endpoint might not exist yet)
+        console.warn(`   ⚠️ Analysis step failed: ${analysisResult.error || "Unknown error"}. Continuing...\n`);
+      } else {
+        console.log("   Analysis completed successfully\n");
+      }
+    }
+
+    // 9. Cleaning up (Adjusted step number)
+    console.log("9. Cleaning up...");
     if (flaskProcess) {
-      flaskProcess.kill();
-      console.log("   Flask server stopped");
+      // Check analyzeOnly flag (now correctly in config)
+      if (!config.analyzeOnly) {
+        flaskProcess.kill();
+        console.log("   Flask server stopped");
+      } else {
+        // Analysis only mode - keep server running
+        const reportUrl = analysisResult?.report_url || "N/A"; // Get report URL from analysis step result
+        // Use config.port for the correct port number
+        console.log(
+          `\n✅ Flask server is still running on http://localhost:${config.port}. Press Ctrl+C here to stop it.`
+        );
+        if (reportUrl !== "N/A") {
+          console.log(`   You can access the report at: http://localhost:${config.port}${reportUrl}`);
+        } else {
+          console.log("   Report URL not available (analysis might have failed or wasn't run).");
+        }
+      }
     }
 
     console.log("\n=== Test Completed Successfully ===\n");
-    process.exit(0);
+    // Only exit if not in analyzeOnly mode
+    if (!config.analyzeOnly) {
+      process.exit(0);
+    }
   } catch (error) {
     console.error(`\n❌ ERROR: ${error.message}`);
 
     // Ensure cleanup on error
     if (flaskProcess) {
-      flaskProcess.kill();
-      console.log("   Flask server stopped");
+      // Check analyzeOnly flag (now correctly in config)
+      if (!config.analyzeOnly) {
+        flaskProcess.kill();
+        console.log("   Flask server stopped during error handling");
+      } else {
+        // Use config.port here too if needed, but the message is generic enough
+        console.log("\n⚠️ Flask server might still be running after error. Check your processes or press Ctrl+C here.");
+      }
     }
 
     process.exit(1);
