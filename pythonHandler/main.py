@@ -979,31 +979,19 @@ def classify_transactions_async():
             )
 
         # 4. Store Context for later processing in /status
+        #    Store ALL necessary info, including transactions_input, in the main record
         context = {
             "user_id": user_id,
             "status": "processing",  # Initial status stored in DB
-            "type": "classification",  # Ensure 'type' field is included here
+            "type": "classification",
             "transactions_input": transactions_input_for_context,  # Store original list with flags
-            "created_at": datetime.now().isoformat(),  # Add timestamp
+            "created_at": datetime.now().isoformat(),
         }
         try:
-            # Store only minimal info for the prediction itself
-            minimal_context = {
-                "user_id": user_id,
-                "status": "processing",
-                "type": "classification",
-                "created_at": context["created_at"],
-            }
+            # Store the full context in the single record associated with prediction_id
+            prisma_client.insert_webhook_result(prediction.id, context)
+            logger.info(f"Stored full context for prediction {prediction.id}")
 
-            # Use insert_webhook_result (assuming it handles updates/overwrites)
-            prisma_client.insert_webhook_result(prediction.id, minimal_context)
-
-            # Store the full context with transactions_input separately
-            # This allows us to recalculate results later without storing sensitive data
-            # in the main result record
-            prisma_client.insert_webhook_result(f"{prediction.id}_context", context)
-
-            logger.info(f"Stored context for prediction {prediction.id}")
         except Exception as e:
             logger.error(
                 f"Failed to store context for prediction {prediction.id}: {e}",
@@ -1276,24 +1264,13 @@ def get_classification_or_training_status(prediction_id):
                 f"Processing CLASSIFICATION completion for {prediction_id}, user {user_id}"
             )
 
-            # Fetch the *full* context which includes the transactions input
-            full_context = None
-            context_id = f"{prediction_id}_context"
-            try:
-                full_context = prisma_client.get_webhook_result(context_id)
-                if not isinstance(full_context, dict) or not full_context.get(
-                    "transactions_input"
-                ):
-                    raise ValueError(
-                        f"Missing or invalid transactions_input in full context record: {context_id}"
-                    )
-                transactions_input = full_context.get("transactions_input")
-                logger.info(
-                    f"Retrieved {len(transactions_input)} transactions from full context for {prediction_id}"
-                )
-            except Exception as e:
+            # Fetch the transactions_input directly from the context fetched earlier
+            transactions_input = context.get("transactions_input")
+
+            # Validate that transactions_input exists in the context
+            if not transactions_input or not isinstance(transactions_input, list):
                 logger.error(
-                    f"Failed to retrieve full transaction context ({context_id}) for {prediction_id}: {e}"
+                    f"Missing or invalid transactions_input in main context for {prediction_id}"
                 )
                 final_db_record = {
                     "status": "failed",
@@ -1303,6 +1280,10 @@ def get_classification_or_training_status(prediction_id):
                 }
                 prisma_client.insert_webhook_result(prediction_id, final_db_record)
                 return jsonify(final_db_record), 500
+
+            logger.info(
+                f"Using {len(transactions_input)} transactions from main context for {prediction_id}"
+            )
 
             # Validate counts
             if len(embeddings) != len(transactions_input):
@@ -1363,7 +1344,6 @@ def get_classification_or_training_status(prediction_id):
                     "user_id": user_id,
                     "transaction_count": len(final_results_clean),
                     "embeddings_id": embeddings_id,  # Reference stored embeddings
-                    "context_id": context_id,  # Reference stored context
                     "completed_at": datetime.now().isoformat(),
                 }
                 prisma_client.insert_webhook_result(prediction_id, db_record)
