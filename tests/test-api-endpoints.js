@@ -18,8 +18,6 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
 const csv = require("csv-parser");
-const net = require("net");
-const axios = require("axios");
 
 // Configuration
 const API_PORT = process.env.API_PORT || 3005;
@@ -55,6 +53,8 @@ if (process.argv.includes("--verbose")) {
 const RUN_TRAINING = !process.argv.includes("--cat-only");
 const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
 const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
+const USE_DEV_API = process.argv.includes("--use-dev-api");
+const DEV_API_URL = "https://txclassify-dev.onrender.com";
 
 const log = (message, level = LOG_LEVELS.INFO) => {
   // Only log messages at or below the current log level
@@ -1103,8 +1103,8 @@ const testCleanText = async (apiUrl) => {
 
 // Cleanup function
 const cleanup = async () => {
-  // Stop Flask server
-  if (flaskProcess) {
+  // Stop Flask server only if it was started locally
+  if (flaskProcess && !USE_DEV_API) {
     log("Stopping Flask server...");
     flaskProcess.kill();
 
@@ -1158,11 +1158,19 @@ const main = async () => {
   try {
     console.log("\n=== Starting Test Script ===\n");
 
-    // 1. Start Flask Server
-    console.log("1. Starting Flask Server...");
-    const port = await startFlaskServer(API_PORT);
-    const apiUrl = `http://localhost:${port}`;
-    console.log(`   Server URL: ${apiUrl}\n`);
+    let apiUrl;
+
+    if (USE_DEV_API) {
+      console.log("1. Using Development API...");
+      apiUrl = DEV_API_URL;
+      console.log(`   API URL: ${apiUrl}\n`);
+    } else {
+      // 1. Start Flask Server Locally
+      console.log("1. Starting Local Flask Server...");
+      const port = await startFlaskServer(API_PORT);
+      apiUrl = `http://localhost:${port}`;
+      console.log(`   Server URL: ${apiUrl}\n`);
+    }
 
     // 2. Setup Test User...
     console.log("2. Setting up Test User...");
@@ -1245,7 +1253,8 @@ const main = async () => {
 
     // 8. Cleanup
     console.log("8. Cleaning up...");
-    if (flaskProcess) {
+    // Only stop flask process if it was started locally
+    if (flaskProcess && !USE_DEV_API) {
       flaskProcess.kill();
       console.log("   Flask server stopped");
     }
@@ -1256,7 +1265,7 @@ const main = async () => {
     console.error(`\n❌ ERROR: ${error.message}`);
 
     // Ensure cleanup on error
-    if (flaskProcess) {
+    if (flaskProcess && !USE_DEV_API) {
       flaskProcess.kill();
       console.log("   Flask server stopped");
     }
