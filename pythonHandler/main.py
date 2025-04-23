@@ -26,30 +26,6 @@ REPLICATE_MODEL_VERSION = (
 )
 EMBEDDING_DIMENSION = 1024  # Embedding dimension for the model
 
-# Define transaction category constants
-INCOME_CATEGORIES = {"Income", "Transfer in", "Refund"}
-EXPENSE_CATEGORIES = {
-    "Transfer out",
-    "Food & Dining",
-    "Shopping",
-    "Entertainment",
-    "Travel",
-    "Transport",
-    "Bills & Utilities",
-    "Health & Wellness",
-    "Personal Care",
-    "Education",
-    "Gifts & Donations",
-    "Home",
-    "Business",
-    "Investments",
-    "Financial",
-    "Taxes",
-    "Insurance",
-    "Other",
-}
-REFUND_CATEGORY = "Refund"
-
 
 # === Request Validation Models ===
 class TransactionBase(BaseModel):
@@ -1312,11 +1288,11 @@ def get_classification_or_training_status(prediction_id):
         # context = stored_result # This is the variable holding the result from the first fetch
         # Check if the context fetched earlier is valid
         if not isinstance(stored_result, dict):
-             logger.error(
-                 f"Job context for {prediction_id} is missing or invalid *after* Replicate success (was {type(stored_result)} earlier)"
-             )
-             # This indicates a potential state inconsistency
-             return create_error_response("Job context lost during processing", 500)
+            logger.error(
+                f"Job context for {prediction_id} is missing or invalid *after* Replicate success (was {type(stored_result)} earlier)"
+            )
+            # This indicates a potential state inconsistency
+            return create_error_response("Job context lost during processing", 500)
 
         # Extract job_type and user_id from the context we already have (stored_result)
         job_type = stored_result.get("type")
@@ -1328,10 +1304,10 @@ def get_classification_or_training_status(prediction_id):
         # or the initial security check would have handled it.
         # However, a final check is good practice.
         if user_id != requesting_user_id:
-             logger.error(
-                 f"Mismatch between context user {user_id} and requesting user {requesting_user_id} for {prediction_id}"
-             )
-             return create_error_response("Permission denied", 403)
+            logger.error(
+                f"Mismatch between context user {user_id} and requesting user {requesting_user_id} for {prediction_id}"
+            )
+            return create_error_response("Permission denied", 403)
         # === MODIFICATION END ===
 
         # Get Embeddings from Output
@@ -2032,9 +2008,7 @@ def _apply_initial_categorization(
 
         for i, tx in enumerate(transactions_input):
             money_in = tx.get("money_in")  # Could be True, False, or None
-            is_expense = (
-                False if money_in is True else (True if money_in is False else None)
-            )
+            # Removed is_expense calculation as it's no longer used for compatibility check
 
             current_similarities = similarities[i]
             sorted_indices = np.argsort(-current_similarities)
@@ -2042,63 +2016,29 @@ def _apply_initial_categorization(
             best_match_idx = -1
             best_category = "Unknown"
             best_score = 0.0
-            original_best_category = "Unknown"
-            adjustment_reason = None
+            # Removed original_best_category and adjustment_reason initialization related to compatibility
 
-            found_compatible = False
-            for rank, trained_idx in enumerate(sorted_indices):
+            # Simplified logic: Find the top match directly
+            if len(sorted_indices) > 0:
                 try:
-                    if trained_idx >= len(trained_data):
+                    best_match_idx = sorted_indices[0]
+                    if best_match_idx < len(trained_data):
+                        best_category = str(trained_data[best_match_idx]["category"])
+                        best_score = float(current_similarities[best_match_idx])
+                    else:
                         logger.warning(
-                            f"Index {trained_idx} out of bounds for trained_data (len {len(trained_data)})"
+                            f"Best match index {best_match_idx} out of bounds for trained_data (len {len(trained_data)})"
                         )
-                        continue
-
-                    category = str(trained_data[trained_idx]["category"])
-
-                    if rank == 0:
-                        original_best_category = category
-                        original_best_score = float(current_similarities[trained_idx])
-
-                    compatible = True
-                    if is_expense is True and category in INCOME_CATEGORIES:
-                        compatible = False
-                        adjustment_reason = f"Filtered income category '{category}' for expense transaction (money_out)"
-                    elif (
-                        is_expense is False
-                        and category in EXPENSE_CATEGORIES
-                        and category != REFUND_CATEGORY
-                    ):
-                        compatible = False
-                        adjustment_reason = f"Filtered expense category '{category}' for income transaction (money_in)"
-
-                    if compatible:
-                        best_match_idx = trained_idx
-                        best_category = category
-                        best_score = float(current_similarities[trained_idx])
-                        found_compatible = True
-                        break
-
                 except IndexError:
                     logger.error(
-                        f"IndexError accessing trained_data at index {trained_idx}"
+                        f"IndexError accessing trained_data at index {best_match_idx}"
                     )
-                    continue
                 except Exception as e:
-                    logger.error(f"Error processing match index {trained_idx}: {e}")
-                    continue
+                    logger.error(
+                        f"Error processing best match index {best_match_idx}: {e}"
+                    )
 
-            if not found_compatible and len(sorted_indices) > 0:
-                best_match_idx = sorted_indices[0]
-                best_category = original_best_category
-                best_score = original_best_score
-                adjustment_reason = (
-                    "No compatible category found, using best overall match."
-                )
-                logger.warning(
-                    f"No compatible category for '{tx['description']}' (money_in={money_in}), using best overall: '{best_category}'"
-                )
-
+            # Always use the best match found by similarity
             results.append(
                 {
                     "narrative": tx["description"],
@@ -2106,27 +2046,12 @@ def _apply_initial_categorization(
                     "similarity_score": best_score,
                     "money_in": money_in,
                     "amount": tx.get("amount"),  # Store amount if available
-                    "adjustment_info": {
-                        "adjusted": (
-                            best_category != original_best_category
-                            and original_best_category != "Unknown"
-                        ),
-                        "reason": adjustment_reason,
-                        "original_category": (
-                            original_best_category
-                            if (
-                                best_category != original_best_category
-                                and original_best_category != "Unknown"
-                            )
-                            else None
-                        ),
-                    },
+                    # Removed adjustment_info as compatibility adjustments are gone
                 }
             )
 
     except Exception as e:
         logger.error(f"Error during initial categorization: {e}", exc_info=True)
-        raise
 
     return results
 
@@ -2134,75 +2059,82 @@ def _apply_initial_categorization(
 def _detect_refunds(
     initial_results: List[Dict[str, Any]], input_embeddings: np.ndarray, user_id: str
 ) -> List[Dict[str, Any]]:
-    """Identifies potential refunds among credit transactions by comparing expense category scores."""
-    try:
-        trained_embeddings = fetch_embeddings(f"{user_id}")
-        trained_data = fetch_embeddings(f"{user_id}_index")
-
-        if trained_embeddings.size == 0 or trained_data.size == 0:
-            logger.warning(
-                f"Cannot detect refunds, no training data/index for user {user_id}"
-            )
-            return initial_results
-
-        similarities = cosine_similarity(input_embeddings, trained_embeddings)
-
-        for i, result in enumerate(initial_results):
-            if (
-                result["money_in"] is True
-                and result["predicted_category"] not in INCOME_CATEGORIES
-            ):
-                current_similarities = similarities[i]
-                sorted_indices = np.argsort(-current_similarities)
-
-                best_expense_score = -1.0
-                best_expense_category = None
-                for trained_idx in sorted_indices:
-                    try:
-                        if trained_idx >= len(trained_data):
-                            continue
-                        category = str(trained_data[trained_idx]["category"])
-                        if (
-                            category in EXPENSE_CATEGORIES
-                            and category != REFUND_CATEGORY
-                        ):
-                            best_expense_score = float(
-                                current_similarities[trained_idx]
-                            )
-                            best_expense_category = category
-                            break
-                    except Exception as e:
-                        logger.warning(
-                            f"Error checking index {trained_idx} during refund detection: {e}"
-                        )
-                        continue
-
-                refund_confidence_threshold = 0.05
-
-                is_potential_refund = False
-                if best_expense_category and (
-                    result["predicted_category"] == "Unknown"
-                    or best_expense_score
-                    > (result["similarity_score"] + refund_confidence_threshold)
-                ):
-                    is_potential_refund = True
-                    result["predicted_category"] = best_expense_category
-                    result["similarity_score"] = best_expense_score
-                    reason = f"Re-categorized as '{best_expense_category}' (refund candidate, score {best_expense_score:.2f})"
-
-                    if "adjustment_info" not in result:
-                        result["adjustment_info"] = {}
-                    result["adjustment_info"]["is_refund_candidate"] = True
-                    result["adjustment_info"]["refund_detection_reason"] = reason
-                    result["adjustment_info"]["adjusted"] = True
-
-                    logger.info(
-                        f"Potential refund detected: '{result['narrative']}' -> '{best_expense_category}'"
-                    )
-
-    except Exception as e:
-        logger.error(f"Error during refund detection: {e}", exc_info=True)
-
+    """Identifies potential refunds among credit transactions by comparing expense category scores.
+    NOTE: This function's logic is currently disabled as per user request to remove
+    dependency on hardcoded EXPENSE_CATEGORIES.
+    """
+    logger.info("Refund detection logic is currently bypassed.")
+    # Original logic removed/commented out as it relied on EXPENSE_CATEGORIES
+    # try:
+    #     trained_embeddings = fetch_embeddings(f"{user_id}")
+    #     trained_data = fetch_embeddings(f"{user_id}_index")
+    #
+    #     if trained_embeddings.size == 0 or trained_data.size == 0:
+    #         logger.warning(
+    #             f"Cannot detect refunds, no training data/index for user {user_id}"
+    #         )
+    #         return initial_results
+    #
+    #     similarities = cosine_similarity(input_embeddings, trained_embeddings)
+    #
+    #     for i, result in enumerate(initial_results):
+    #         # Only check transactions marked as money_in (potential credits/refunds)
+    #         # And skip those already definitively classified as income types by initial step
+    #         # (Although initial step no longer uses INCOME_CATEGORIES for filtering)
+    #         if result["money_in"] is True:
+    #             current_similarities = similarities[i]
+    #             sorted_indices = np.argsort(-current_similarities)
+    #
+    #             best_expense_score = -1.0
+    #             best_expense_category = None
+    #
+    #             # Find the highest scoring *expense* category for this transaction
+    #             for trained_idx in sorted_indices:
+    #                 try:
+    #                     if trained_idx >= len(trained_data):
+    #                         continue
+    #                     category = str(trained_data[trained_idx]["category"])
+    #
+    #                     # RELIES ON HARDCODED SET:
+    #                     # if category in EXPENSE_CATEGORIES and category != REFUND_CATEGORY:
+    #                     #    best_expense_score = float(current_similarities[trained_idx])
+    #                     #    best_expense_category = category
+    #                     #    break # Found the best *expense* match
+    #                 except Exception as e:
+    #                     logger.warning(
+    #                         f"Error checking index {trained_idx} during refund detection: {e}"
+    #                     )
+    #                     continue
+    #
+    #             # Define a threshold - how much higher must the expense score be?
+    #             refund_confidence_threshold = 0.05 # Example threshold
+    #
+    #             # If we found an expense category & its score is significantly higher
+    #             # than the currently assigned category (which might be 'Unknown' or a low-confidence match)
+    #             is_potential_refund = False
+    #             if best_expense_category and (
+    #                 result["predicted_category"] == "Unknown" or
+    #                 best_expense_score > (result["similarity_score"] + refund_confidence_threshold)
+    #             ):
+    #                 is_potential_refund = True
+    #
+    #                 # Re-categorize as the best matching *expense* category, marking as refund candidate
+    #                 original_category = result["predicted_category"]
+    #                 result["predicted_category"] = best_expense_category
+    #                 result["similarity_score"] = best_expense_score # Update score too
+    #                 reason = f"Potential refund: Matched expense category '{best_expense_category}' (score {best_expense_score:.2f}) better than original '{original_category}' (score {result['similarity_score']:.2f})"
+    #
+    #                 if "adjustment_info" not in result:
+    #                       result["adjustment_info"] = {}
+    #                 result["adjustment_info"]["is_refund_candidate"] = True
+    #                 result["adjustment_info"]["refund_detection_reason"] = reason
+    #                 result["adjustment_info"]["adjusted"] = True
+    #
+    #                 logger.info(f"Potential refund detected: '{result['narrative']}' -> '{best_expense_category}'")
+    #
+    # except Exception as e:
+    #     logger.error(f"Error during refund detection: {e}", exc_info=True)
+    # Pass results through without modification
     return initial_results
 
 
