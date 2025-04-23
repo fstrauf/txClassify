@@ -1148,8 +1148,8 @@ const main = async () => {
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
     // const trainingData = await loadTrainingData("full_train.csv");
-    const trainingData = await loadTrainingData("training_data.csv");
-    // const trainingData = await loadTrainingData("training_data_num_cat.csv");
+    // const trainingData = await loadTrainingData("training_data.csv");
+    const trainingData = await loadTrainingData("training_data_num_cat.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
     const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
