@@ -9,6 +9,7 @@
     "test:train": "node tests/test-api-endpoints.js --train-only --verbose",
     "test:cat": "node tests/test-api-endpoints.js --cat-only --verbose",
     "test:quiet": "node tests/test-api-endpoints.js",
+    "test:dev": "node tests/test-api-endpoints.js --use-dev-api",
     "test-db": "node test-db-connection.js",
     "debug-test": "NODE_OPTIONS='--inspect' node tests/test-api-endpoints.js --verbose",
     "install:python": "cd pythonHandler && pip install -r requirements.txt",
