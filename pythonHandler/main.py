@@ -1156,6 +1156,9 @@ def get_classification_or_training_status(prediction_id):
         logger.info(
             f"Prediction {prediction_id} succeeded on Replicate. Fetching context and processing..."
         )
+        # Add a small delay to allow DB write from /classify to propagate
+        time.sleep(1)
+
         process_start_time = time.time()
 
         # 3. Fetch Job Context from *our* Database (Crucial Step)
