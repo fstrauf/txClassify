@@ -1308,38 +1308,31 @@ def get_classification_or_training_status(prediction_id):
         logger.info(f"Prediction {prediction_id} succeeded on Replicate. Processing...")
         process_start_time = time.time()
 
-        # === Refetch context *after* Replicate success to ensure we have the latest ===
-        try:
-            # Fetch the primary record first
-            context = prisma_client.get_webhook_result(prediction_id)
-            if not isinstance(context, dict):
-                # This should theoretically not happen if we got here, but handle defensively
-                logger.error(
-                    f"Could not retrieve primary context for {prediction_id} after Replicate success"
-                )
-                return create_error_response(
-                    "Job context missing or invalid after prediction success", 500
-                )
+        # === MODIFICATION START: Use the context fetched earlier (stored_result) ===
+        # context = stored_result # This is the variable holding the result from the first fetch
+        # Check if the context fetched earlier is valid
+        if not isinstance(stored_result, dict):
+             logger.error(
+                 f"Job context for {prediction_id} is missing or invalid *after* Replicate success (was {type(stored_result)} earlier)"
+             )
+             # This indicates a potential state inconsistency
+             return create_error_response("Job context lost during processing", 500)
 
-            job_type = context.get("type")
-            user_id = context.get("user_id")
+        # Extract job_type and user_id from the context we already have (stored_result)
+        job_type = stored_result.get("type")
+        user_id = stored_result.get("user_id")
 
-            # Security check again before processing
-            if user_id != requesting_user_id:
-                logger.error(
-                    f"Mismatch between context user {user_id} and requesting user {requesting_user_id} for {prediction_id}"
-                )
-                return create_error_response("Permission denied", 403)
-
-        except Exception as fetch_err:
-            logger.error(
-                f"Error refetching context for {prediction_id}: {fetch_err}",
-                exc_info=True,
-            )
-            return create_error_response(
-                "Error retrieving job context after prediction success", 500
-            )
-        # === End Refetch context ===
+        # We already performed the security check earlier if stored_result was found.
+        # If stored_result was None initially, user_id would be None here,
+        # but we wouldn't have reached this point because the Replicate check would fail
+        # or the initial security check would have handled it.
+        # However, a final check is good practice.
+        if user_id != requesting_user_id:
+             logger.error(
+                 f"Mismatch between context user {user_id} and requesting user {requesting_user_id} for {prediction_id}"
+             )
+             return create_error_response("Permission denied", 403)
+        # === MODIFICATION END ===
 
         # Get Embeddings from Output
         if not prediction.output or not isinstance(prediction.output, list):
@@ -1347,7 +1340,7 @@ def get_classification_or_training_status(prediction_id):
             final_db_record = {
                 "status": "failed",
                 "error": "Invalid prediction output",
-                "user_id": requesting_user_id,  # Include user_id in all responses
+                "user_id": user_id,
             }
             prisma_client.insert_webhook_result(prediction_id, final_db_record)
             return jsonify(final_db_record), 500
@@ -1380,7 +1373,7 @@ def get_classification_or_training_status(prediction_id):
             final_db_record = {
                 "status": "failed",
                 "error": "Failed to process prediction output",
-                "user_id": requesting_user_id,
+                "user_id": user_id,
             }
             prisma_client.insert_webhook_result(prediction_id, final_db_record)
             return jsonify(final_db_record), 500
