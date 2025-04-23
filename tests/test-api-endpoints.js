@@ -202,47 +202,81 @@ const loadTrainingData = (file_name) => {
   return new Promise((resolve, reject) => {
     const results = [];
     const startTime = Date.now();
+    let headersProcessed = false;
+    let descriptionIndex = -1;
+    let categoryIndex = -1;
+    let amountIndex = -1;
 
-    fs.createReadStream(path.join(__dirname, "test_data", file_name))
-      .pipe(csv())
-      .on("data", (data) => {
-        // Check if we're using the fs_train_nz_amount.csv format
-        // which has description, amount, and category
-        const keys = Object.keys(data);
-        let description, category, amount;
-        let money_in = null;
+    const stream = fs
+      .createReadStream(path.join(__dirname, "test_data", file_name))
+      .pipe(
+        csv({
+          mapHeaders: ({ header, index }) => {
+            const lowerHeader = header.toLowerCase().trim();
+            // Allow for variations like 'Description' or 'Narrative'
+            if (["description", "narrative"].includes(lowerHeader)) {
+              return "description";
+            }
+            // Allow 'Category'
+            if (lowerHeader === "category") {
+              return "category";
+            }
+            // Allow 'Amount' or 'Amount Spent'
+            if (["amount", "amount spent"].includes(lowerHeader)) {
+              return "amount";
+            }
+            // Return null for headers we don't explicitly map to keep them if needed, or ignore others
+            return null;
+          },
+        })
+      )
+      .on("headers", (headers) => {
+        // Find the indices based on the mapped headers
+        descriptionIndex = headers.indexOf("description");
+        categoryIndex = headers.indexOf("category");
+        amountIndex = headers.indexOf("amount");
+        headersProcessed = true;
 
-        if (keys.length >= 3 && !isNaN(parseFloat(data[keys[1]]))) {
-          // Format: description,amount,category
-          description = data[keys[0]];
-          amount = data[keys[1]];
-          category = data[keys[2]];
-        } else if (keys.length >= 2 && data.description && data.Category) {
-          // Standard format with named columns
-          description = data.description || data.Narrative || data.narrative;
-          category = data.Category || data.category;
-          amount = data.Amount || data.amount;
-        } else {
-          // Fallback: try to find description and category in any order
-          description = data.description || data.Narrative || data.narrative || data[keys[0]];
-          category = data.Category || data.category || data[keys[keys.length - 1]];
+        logDebug(
+          `Header indices found: Description=${descriptionIndex}, Category=${categoryIndex}, Amount=${amountIndex}`
+        );
 
-          // Try to find amount in the second column
-          if (keys.length > 1) {
-            amount = data[keys[1]];
-          }
+        // Validate required headers
+        if (descriptionIndex === -1) {
+          stream.destroy(); // Stop processing the stream
+          return reject(new Error("CSV file must contain a header named 'Description' or 'Narrative'"));
         }
+        if (categoryIndex === -1) {
+          stream.destroy();
+          return reject(new Error("CSV file must contain a header named 'Category'"));
+        }
+        if (amountIndex === -1) {
+          logInfo("Optional 'Amount' or 'Amount Spent' header not found. Proceeding without amount data.");
+        }
+      })
+      .on("data", (row) => {
+        // Ensure headers were processed before handling data
+        if (!headersProcessed) return;
 
-        // Clean and parse amount
+        const description = row.description; // Access by mapped name
+        const category = row.category; // Access by mapped name
+        const amountValue = amountIndex !== -1 ? row.amount : undefined; // Access by mapped name if index found
+
+        let money_in = null;
         let parsedAmount = null;
-        if (amount !== undefined) {
+
+        // Process amount only if the column exists
+        if (amountIndex !== -1 && amountValue !== undefined && amountValue !== null) {
           // Remove currency symbols and commas
-          const cleanAmount = String(amount).replace(/[^\d.-]/g, "");
+          const cleanAmount = String(amountValue).replace(/[^\d.-]/g, "");
           parsedAmount = parseFloat(cleanAmount);
 
           if (!isNaN(parsedAmount)) {
             money_in = parsedAmount >= 0;
             logDebug(`Parsed amount ${parsedAmount} as money_in=${money_in}`);
+          } else {
+            logDebug(`Could not parse amount: "${amountValue}" for description: "${description}"`);
+            parsedAmount = null; // Ensure it's null if parsing failed
           }
         }
 
@@ -257,15 +291,16 @@ const loadTrainingData = (file_name) => {
           transaction.money_in = money_in;
         }
 
-        // Add actual amount for transfer detection
+        // Add actual amount for transfer detection if parsed
         if (parsedAmount !== null) {
           transaction.amount = parsedAmount;
         }
 
+        // Ensure we have the required fields before adding
         if (transaction.description && transaction.Category) {
           results.push(transaction);
         } else {
-          logDebug(`Skipping invalid transaction: ${JSON.stringify(data)}`);
+          logDebug(`Skipping invalid transaction data: ${JSON.stringify(row)}`);
         }
       })
       .on("end", () => {
@@ -300,61 +335,79 @@ const loadCategorizationData = (file_name) => {
   return new Promise((resolve, reject) => {
     const transactions = [];
     const targetCsvPath = path.join(__dirname, "test_data", file_name);
+    let headersProcessed = false;
+    let descriptionIndex = -1;
+    let amountIndex = -1;
 
     logDebug(`Loading categorization data from ${file_name}...`);
 
-    // Check if we're using fs_cat_nz_amount.csv format (which has amount,description)
-    const isFsCatFormat = file_name.includes("fs_cat_nz_amount");
-    logInfo(`Using ${isFsCatFormat ? "fs_cat_nz_amount" : "standard"} format for parsing`);
+    const stream = fs
+      .createReadStream(targetCsvPath)
+      .pipe(
+        csv({
+          mapHeaders: ({ header, index }) => {
+            const lowerHeader = header.toLowerCase().trim();
+            // Allow for variations like 'Description' or 'Narrative'
+            if (["description", "narrative"].includes(lowerHeader)) {
+              return "description";
+            }
+            // Allow 'Amount' or 'Amount Spent'
+            if (["amount", "amount spent"].includes(lowerHeader)) {
+              return "amount";
+            }
+            return null; // Ignore other headers
+          },
+        })
+      )
+      .on("headers", (headers) => {
+        descriptionIndex = headers.indexOf("description");
+        amountIndex = headers.indexOf("amount");
+        headersProcessed = true;
 
-    // Read the CSV file - fs_cat format has amount in column 0, description in column 1
-    // standard format has description in column 2
-    fs.createReadStream(targetCsvPath)
-      .pipe(csv({ headers: false }))
-      .on("data", (data) => {
-        let description, amount;
+        logDebug(`Header indices found: Description=${descriptionIndex}, Amount=${amountIndex}`);
 
-        if (isFsCatFormat) {
-          // fs_cat_nz_amount.csv format: amount,description
-          amount = data[0];
-          description = data[1];
-        } else {
-          // Standard format: description in column 2, possibly amount in column 3
-          description = data[2];
-          amount = data[3]; // may be undefined
+        // Validate required headers
+        if (descriptionIndex === -1) {
+          stream.destroy();
+          return reject(new Error("Categorization CSV must contain a header named 'Description' or 'Narrative'"));
         }
+        if (amountIndex === -1) {
+          logInfo("Optional 'Amount' or 'Amount Spent' header not found. Proceeding without amount/money_in data.");
+        }
+      })
+      .on("data", (row) => {
+        if (!headersProcessed) return;
+
+        const description = row.description;
+        const amountValue = amountIndex !== -1 ? row.amount : undefined;
 
         if (description) {
-          let added = false;
+          let parsedAmount = null;
+          let money_in = null;
 
           // Check if we have a valid amount to determine money_in
-          if (amount !== undefined) {
+          if (amountIndex !== -1 && amountValue !== undefined && amountValue !== null) {
             // Clean and parse the amount
-            const cleanAmount = String(amount).replace(/[^\d.-]/g, "");
-            const parsedAmount = parseFloat(cleanAmount);
+            const cleanAmount = String(amountValue).replace(/[^\d.-]/g, "");
+            parsedAmount = parseFloat(cleanAmount);
 
             if (!isNaN(parsedAmount)) {
-              // Create TransactionInput object with money_in flag
-              transactions.push({
-                description: description,
-                money_in: parsedAmount >= 0,
-                amount: parsedAmount, // Add actual amount for transfer detection
-              });
-              logDebug(
-                `Added transaction with description "${description}", money_in=${
-                  parsedAmount >= 0
-                }, amount=${parsedAmount}`
-              );
-              added = true;
+              money_in = parsedAmount >= 0;
+            } else {
+              logDebug(`Could not parse amount: "${amountValue}" for description: "${description}"`);
+              parsedAmount = null; // Ensure null if parsing failed
             }
           }
 
-          // If no valid amount and not already added, just add the description as a string
-          if (!added) {
-            transactions.push(description);
-          }
+          // Create a TransactionInput object, including amount/money_in if available
+          transactions.push({
+            description: description,
+            money_in: money_in, // Will be null if amount wasn't found or parsed
+            amount: parsedAmount, // Will be null if amount wasn't found or parsed
+          });
+          logDebug(`Added transaction: desc="${description}", money_in=${money_in}, amount=${parsedAmount}`);
         } else {
-          logDebug(`Skipping row with missing description: ${JSON.stringify(data)}`);
+          logDebug(`Skipping row with missing description: ${JSON.stringify(row)}`);
         }
       })
       .on("end", () => {
@@ -1095,10 +1148,10 @@ const main = async () => {
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
     // const trainingData = await loadTrainingData("full_train.csv");
-    // const trainingData = await loadTrainingData("training_test.csv");
-    const trainingData = await loadTrainingData("fs_train_nz_amount.csv");
-    const categorizationData = await loadCategorizationData("fs_cat_nz_amount.csv");
+    const trainingData = await loadTrainingData("training_data.csv");
+    // const trainingData = await loadTrainingData("training_data_num_cat.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
+    const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
 
