@@ -471,6 +471,7 @@ const trainModel = async (config) => {
     let retryCount = 0;
     let lastError = null;
     let response = null;
+    let predictionId = null; // To store prediction ID if async
 
     // Retry loop for the initial training request
     while (retryCount < maxRetries) {
@@ -507,7 +508,42 @@ const trainModel = async (config) => {
 
         // Handle different response codes
         if (responseStatus === 200) {
-          break; // Success, exit retry loop
+          // Could be synchronous success OR async start (check body)
+          const responseText = await response.text();
+          logTrace(`Response body (status 200/202): ${responseText}`);
+          const result = JSON.parse(responseText);
+
+          if (result.status === "completed") {
+            // Synchronous Success!
+            console.log("Training completed synchronously.");
+            // Return a success object immediately, mimicking pollForTrainingCompletion result
+            return {
+              status: "completed",
+              message: "Training completed successfully (synchronous)!",
+              result: result,
+              elapsedMinutes: 0, // Indicate immediate completion
+            };
+          } else if (result.status === "processing" && result.prediction_id) {
+            // Asynchronous start indicated by 200 status + processing status in body
+            console.log("Training started asynchronously (indicated by 200 response).");
+            predictionId = result.prediction_id;
+            break; // Exit retry loop, proceed to polling
+          } else {
+            // Unexpected body format for 200 status
+            throw new Error(`Training failed: Received status 200 but unexpected body format: ${responseText}`);
+          }
+        } else if (responseStatus === 202) {
+          // Asynchronous start indicated by 202 status
+          const responseText = await response.text();
+          logTrace(`Response body (status 202): ${responseText}`);
+          const result = JSON.parse(responseText);
+          if (result.prediction_id) {
+            console.log("Training started asynchronously (indicated by 202 response).");
+            predictionId = result.prediction_id;
+            break; // Exit retry loop, proceed to polling
+          } else {
+            throw new Error(`Training failed: Received status 202 but no prediction_id in body: ${responseText}`);
+          }
         } else if (responseStatus === 502 || responseStatus === 503 || responseStatus === 504) {
           // Retry on gateway errors
           lastError = `Server returned ${responseStatus}`;
@@ -530,36 +566,29 @@ const trainModel = async (config) => {
       }
     }
 
-    // Parse response
-    let result;
-    try {
-      const responseText = await response.text();
-      logTrace(`Response body: ${responseText}`);
-      result = JSON.parse(responseText);
-    } catch (parseError) {
-      logError(`Error parsing response: ${parseError.toString()}`);
-      throw new Error(`Failed to parse server response: ${parseError.toString()}`);
+    // If we exited the loop without a predictionId (and didn't return sync success),
+    // it means all retries failed or an unexpected error occurred.
+    if (!predictionId) {
+      logError(
+        `Error: Training request failed after ${maxRetries} attempts. Last error: ${
+          lastError?.toString() || "Unknown error"
+        }`
+      );
+      throw new Error(
+        `Training request failed after ${maxRetries} attempts: ${lastError?.toString() || "Unknown error"}`
+      );
     }
-
-    // Validate result structure
-    if (!result || typeof result !== "object") {
-      logError("Error: Invalid response structure");
-      throw new Error("Invalid response structure from server");
-    }
-
-    // Log the full response for debugging
-    logDebug(`Training response: ${JSON.stringify(result, null, 2)}`);
 
     // Check if we got a prediction ID
-    if (result.prediction_id) {
-      logInfo(`Training in progress with prediction ID: ${result.prediction_id}`);
+    if (predictionId) {
+      logInfo(`Training requires polling with prediction ID: ${predictionId}`);
       console.log("Training in progress, please wait...");
 
       // Store start time for polling
       const startTime = new Date().getTime();
 
       // Poll for status until completion or timeout
-      const pollResult = await pollForTrainingCompletion(result.prediction_id, startTime, config);
+      const pollResult = await pollForTrainingCompletion(predictionId, startTime, config);
 
       return pollResult;
     } else {

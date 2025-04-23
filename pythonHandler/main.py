@@ -832,6 +832,7 @@ def train_model():
 
         # Create prediction using the run_prediction function
         prediction = run_prediction(descriptions)
+        prediction_id = prediction.id
 
         # Store initial configuration for status endpoint
         context = {
@@ -844,13 +845,13 @@ def train_model():
 
         # Store the configuration
         try:
-            prisma_client.insert_webhook_result(prediction.id, context)
+            prisma_client.insert_webhook_result(prediction_id, context)
             logger.info(
-                f"Stored initial training context for prediction {prediction.id}"
+                f"Stored initial training context for prediction {prediction_id}"
             )
         except Exception as e:
             logger.error(
-                f"Failed to store initial context for training prediction {prediction.id}: {e}",
+                f"Failed to store initial context for training prediction {prediction_id}: {e}",
                 exc_info=True,
             )
             # If storing context fails, we might still proceed but log it.
@@ -860,15 +861,82 @@ def train_model():
         elapsed_time = time.time() - start_time
         logger.info(f"Training request processed in {elapsed_time:.2f}s")
 
+        # === Try Synchronous Completion (Poll for 10 seconds) ===
+        SYNC_TIMEOUT = 10  # seconds
+        sync_end_time = time.time() + SYNC_TIMEOUT
+        poll_interval = 0.5  # seconds
+
+        while time.time() < sync_end_time:
+            try:
+                # Check Replicate prediction status
+                current_prediction = replicate.predictions.get(prediction_id)
+                replicate_status = current_prediction.status
+
+                if replicate_status == "succeeded":
+                    logger.info(
+                        f"Training prediction {prediction_id} completed synchronously."
+                    )
+                    # Process successful completion immediately
+                    embeddings = np.array(current_prediction.output, dtype=np.float32)
+                    store_result = store_embeddings(embeddings, f"{user_id}", user_id)
+                    if not store_result:
+                        raise Exception(
+                            "Failed to store training embeddings in database synchronously."
+                        )
+
+                    # Update DB status
+                    final_db_record = {
+                        "status": "completed",
+                        "message": "Training completed successfully (synchronous)",
+                        "user_id": user_id,
+                        "type": "training",
+                        "completed_at": datetime.now().isoformat(),
+                    }
+                    prisma_client.insert_webhook_result(prediction_id, final_db_record)
+
+                    # Return synchronous success response
+                    return jsonify(final_db_record), 200
+
+                elif replicate_status == "failed":
+                    error_msg = current_prediction.error or "Unknown Replicate error"
+                    logger.error(
+                        f"Training prediction {prediction_id} failed synchronously: {error_msg}"
+                    )
+                    # Update DB status
+                    final_db_record = {
+                        "status": "failed",
+                        "error": f"Training failed during prediction: {str(error_msg)}",
+                        "user_id": user_id,
+                        "type": "training",
+                    }
+                    prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                    # Return error response
+                    return jsonify(final_db_record), 500  # Or appropriate error code
+
+                # If still processing, wait and poll again
+                time.sleep(poll_interval)
+
+            except Exception as poll_error:
+                logger.warning(
+                    f"Error during synchronous polling for {prediction_id}: {poll_error}"
+                )
+                # Decide if the error is fatal or if we should continue polling
+                # For now, we'll let the loop continue until timeout
+
+        # --- Fallback to Asynchronous Response ---
+        # If the loop finished without success/failure (i.e., timed out)
+        logger.info(
+            f"Training {prediction_id} did not complete within {SYNC_TIMEOUT}s, returning async response."
+        )
         return (
             jsonify(
                 {
                     "status": "processing",
-                    "prediction_id": prediction.id,
+                    "prediction_id": prediction_id,
                     "message": "Training started. Check status endpoint for updates.",
                 }
             ),
-            200,
+            202,  # Use 202 Accepted for async processing
         )
 
     except Exception as e:
