@@ -832,6 +832,7 @@ def train_model():
 
         # Create prediction using the run_prediction function
         prediction = run_prediction(descriptions)
+        prediction_id = prediction.id
 
         # Store initial configuration for status endpoint
         context = {
@@ -844,13 +845,13 @@ def train_model():
 
         # Store the configuration
         try:
-            prisma_client.insert_webhook_result(prediction.id, context)
+            prisma_client.insert_webhook_result(prediction_id, context)
             logger.info(
-                f"Stored initial training context for prediction {prediction.id}"
+                f"Stored initial training context for prediction {prediction_id}"
             )
         except Exception as e:
             logger.error(
-                f"Failed to store initial context for training prediction {prediction.id}: {e}",
+                f"Failed to store initial context for training prediction {prediction_id}: {e}",
                 exc_info=True,
             )
             # If storing context fails, we might still proceed but log it.
@@ -860,15 +861,82 @@ def train_model():
         elapsed_time = time.time() - start_time
         logger.info(f"Training request processed in {elapsed_time:.2f}s")
 
+        # === Try Synchronous Completion (Poll for 10 seconds) ===
+        SYNC_TIMEOUT = 10  # seconds
+        sync_end_time = time.time() + SYNC_TIMEOUT
+        poll_interval = 0.5  # seconds
+
+        while time.time() < sync_end_time:
+            try:
+                # Check Replicate prediction status
+                current_prediction = replicate.predictions.get(prediction_id)
+                replicate_status = current_prediction.status
+
+                if replicate_status == "succeeded":
+                    logger.info(
+                        f"Training prediction {prediction_id} completed synchronously."
+                    )
+                    # Process successful completion immediately
+                    embeddings = np.array(current_prediction.output, dtype=np.float32)
+                    store_result = store_embeddings(embeddings, f"{user_id}", user_id)
+                    if not store_result:
+                        raise Exception(
+                            "Failed to store training embeddings in database synchronously."
+                        )
+
+                    # Update DB status
+                    final_db_record = {
+                        "status": "completed",
+                        "message": "Training completed successfully (synchronous)",
+                        "user_id": user_id,
+                        "type": "training",
+                        "completed_at": datetime.now().isoformat(),
+                    }
+                    prisma_client.insert_webhook_result(prediction_id, final_db_record)
+
+                    # Return synchronous success response
+                    return jsonify(final_db_record), 200
+
+                elif replicate_status == "failed":
+                    error_msg = current_prediction.error or "Unknown Replicate error"
+                    logger.error(
+                        f"Training prediction {prediction_id} failed synchronously: {error_msg}"
+                    )
+                    # Update DB status
+                    final_db_record = {
+                        "status": "failed",
+                        "error": f"Training failed during prediction: {str(error_msg)}",
+                        "user_id": user_id,
+                        "type": "training",
+                    }
+                    prisma_client.insert_webhook_result(prediction_id, final_db_record)
+                    # Return error response
+                    return jsonify(final_db_record), 500  # Or appropriate error code
+
+                # If still processing, wait and poll again
+                time.sleep(poll_interval)
+
+            except Exception as poll_error:
+                logger.warning(
+                    f"Error during synchronous polling for {prediction_id}: {poll_error}"
+                )
+                # Decide if the error is fatal or if we should continue polling
+                # For now, we'll let the loop continue until timeout
+
+        # --- Fallback to Asynchronous Response ---
+        # If the loop finished without success/failure (i.e., timed out)
+        logger.info(
+            f"Training {prediction_id} did not complete within {SYNC_TIMEOUT}s, returning async response."
+        )
         return (
             jsonify(
                 {
                     "status": "processing",
-                    "prediction_id": prediction.id,
+                    "prediction_id": prediction_id,
                     "message": "Training started. Check status endpoint for updates.",
                 }
             ),
-            200,
+            202,  # Use 202 Accepted for async processing
         )
 
     except Exception as e:
@@ -926,36 +994,34 @@ def train_model():
     }
 )
 def classify_transactions_async():
-    """Starts the asynchronous classification process."""
+    """Attempts synchronous classification first, falls back to async if needed."""
     try:
         start_time = time.time()
         user_id = request.user_id
+        SYNC_TIMEOUT = 10  # 10 seconds timeout for sync attempt
 
         # 1. Validate Request Data
         data = request.get_json()
         if not data:
             return create_error_response("No data provided", 400)
-        # Use the updated ClassifyRequest model
         validated_data, error_response = validate_request_data(ClassifyRequest, data)
         if error_response:
             return error_response
 
-        # 2. Prepare Input Data for Embedding and Context Storage
+        # 2. Prepare Input Data
         transactions_input_for_context = []
         descriptions_to_embed = []
         for tx_input_item in validated_data.transactions:
-            # Handle both string and object inputs
             if isinstance(tx_input_item, str):
                 desc = tx_input_item
-                money_in = None  # Mark as unknown
-            else:  # It's a TransactionInput object (validated by Pydantic)
+                money_in = None
+            else:
                 desc = tx_input_item.description
-                money_in = tx_input_item.money_in  # Could be True, False, or None
+                money_in = tx_input_item.money_in
 
             transactions_input_for_context.append(
                 {"description": desc, "money_in": money_in}
             )
-            # Use original description for embedding
             descriptions_to_embed.append(desc)
 
         if not descriptions_to_embed:
@@ -964,61 +1030,129 @@ def classify_transactions_async():
             )
 
         logger.info(
-            f"Starting classification job for {len(transactions_input_for_context)} txns, user {user_id}"
+            f"Starting classification for {len(transactions_input_for_context)} txns, user {user_id}"
         )
 
-        # 3. Start Replicate Prediction (DO NOT WAIT)
+        # 3. Start Replicate Prediction
         try:
-            prediction = run_prediction(
-                descriptions_to_embed
-            )  # Gets embeddings for the descriptions
+            prediction = run_prediction(descriptions_to_embed)
+            prediction_id = prediction.id
         except Exception as e:
             logger.error(f"Failed to start Replicate prediction: {e}", exc_info=True)
             return create_error_response(
                 f"Failed to start embedding prediction: {str(e)}", 502
             )
 
-        # 4. Store Context for later processing in /status
-        #    Store ALL necessary info, including transactions_input, in the main record
+        # 4. Store Initial Context
         context = {
             "user_id": user_id,
-            "status": "processing",  # Initial status stored in DB
+            "status": "processing",
             "type": "classification",
-            "transactions_input": transactions_input_for_context,  # Store original list with flags
+            "transactions_input": transactions_input_for_context,
             "created_at": datetime.now().isoformat(),
         }
         try:
-            # Store the full context in the single record associated with prediction_id
-            prisma_client.insert_webhook_result(prediction.id, context)
-            logger.info(f"Stored full context for prediction {prediction.id}")
-
+            prisma_client.insert_webhook_result(prediction_id, context)
+            logger.info(f"Stored initial context for prediction {prediction_id}")
         except Exception as e:
-            logger.error(
-                f"Failed to store context for prediction {prediction.id}: {e}",
-                exc_info=True,
-            )
+            logger.error(f"Failed to store context for prediction {prediction_id}: {e}")
             return create_error_response(f"Failed to store job context: {str(e)}", 500)
 
-        # 5. Return Prediction ID Immediately
+        # 5. Try Synchronous Completion (poll for 10 seconds)
+        sync_end_time = time.time() + SYNC_TIMEOUT
+        poll_interval = 0.5  # 500ms between polls
+
+        while time.time() < sync_end_time:
+            try:
+                # Check prediction status
+                current_prediction = replicate.predictions.get(prediction_id)
+
+                if current_prediction.status == "succeeded":
+                    # Process results immediately
+                    try:
+                        embeddings = np.array(
+                            current_prediction.output, dtype=np.float32
+                        )
+
+                        # Store embeddings for potential future use
+                        embeddings_id = f"{prediction_id}_embeddings"
+                        if not store_embeddings(embeddings, embeddings_id, user_id):
+                            raise Exception(
+                                f"Failed to store embeddings {embeddings_id}"
+                            )
+
+                        # Run categorization pipeline
+                        initial_results = _apply_initial_categorization(
+                            transactions_input_for_context, embeddings, user_id
+                        )
+                        results_after_refunds = _detect_refunds(
+                            initial_results, embeddings, user_id
+                        )
+                        final_results = _detect_transfers(results_after_refunds)
+
+                        # Update status in DB
+                        completion_record = {
+                            "status": "completed",
+                            "message": "Classification completed successfully",
+                            "type": "classification",
+                            "user_id": user_id,
+                            "transaction_count": len(final_results),
+                            "embeddings_id": embeddings_id,
+                            "completed_at": datetime.now().isoformat(),
+                        }
+                        prisma_client.insert_webhook_result(
+                            prediction_id, completion_record
+                        )
+
+                        # Return synchronous response
+                        return (
+                            jsonify(
+                                {
+                                    "status": "completed",
+                                    "message": "Classification completed successfully",
+                                    "results": final_results,
+                                    "prediction_id": prediction_id,  # Always include prediction_id
+                                }
+                            ),
+                            200,
+                        )
+
+                    except Exception as process_error:
+                        logger.error(f"Error processing quick results: {process_error}")
+                        # Fall through to async response
+
+                elif current_prediction.status == "failed":
+                    error_msg = current_prediction.error or "Unknown error"
+                    return create_error_response(
+                        f"Classification failed: {error_msg}", 500
+                    )
+
+                # Wait before next poll
+                time.sleep(poll_interval)
+
+            except Exception as poll_error:
+                logger.warning(f"Error during sync polling: {poll_error}")
+                # Continue polling until timeout
+
+        # 6. If we reach here, fall back to async response
         elapsed_time = time.time() - start_time
         logger.info(
-            f"/classify request handled in {elapsed_time:.2f}s, prediction {prediction.id} started."
+            f"Switching to async mode after {elapsed_time:.2f}s for prediction {prediction_id}"
         )
 
-        # Return 202 Accepted status code might be more appropriate for async start
         return (
             jsonify(
                 {
                     "status": "processing",
-                    "prediction_id": prediction.id,
-                    "message": "Classification job started. Poll the /status endpoint.",
+                    "prediction_id": prediction_id,  # Ensure prediction_id is included
+                    "message": "Classification in progress. Please check status endpoint for results.",
                 }
             ),
-            202,
-        )  # Use 202 Accepted
+            202,  # Use 202 for async processing
+        )
 
     except Exception as e:
-        logger.error(f"Critical error in /classify start: {e}", exc_info=True)
+        logger.error(f"Critical error in /classify: {e}", exc_info=True)
         return create_error_response(
             f"An unexpected server error occurred: {str(e)}", 500
         )
@@ -1156,6 +1290,9 @@ def get_classification_or_training_status(prediction_id):
         logger.info(
             f"Prediction {prediction_id} succeeded on Replicate. Fetching context and processing..."
         )
+        # Add a small delay to allow DB write from /classify to propagate
+        time.sleep(1)
+
         process_start_time = time.time()
 
         # 3. Fetch Job Context from *our* Database (Crucial Step)
