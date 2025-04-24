@@ -108,17 +108,21 @@ function showClassifyDialog() {
       <span class="processing-text">Processing...</span>
       <div class="spinner"></div>
     </button>
+    <button onclick="closeDialog()" id="closeBtn" style="display: none; background: #6c757d; margin-left: 10px;">Close</button>
     <script>
+      // Declare UI variables globally within the script scope
+      var errorDiv = document.getElementById('error');
+      var submitBtn = document.getElementById('submitBtn');
+      var spinner = document.querySelector('.spinner');
+      var buttonText = document.querySelector('.button-text');
+      var processingText = document.querySelector('.processing-text');
+      var closeBtn = document.getElementById('closeBtn');
+
       function submitForm() {
         var descriptionCol = document.getElementById('descriptionCol').value;
         var categoryCol = document.getElementById('categoryCol').value;
         var startRow = document.getElementById('startRow').value;
         var amountCol = document.getElementById('amountCol').value;
-        var errorDiv = document.getElementById('error');
-        var submitBtn = document.getElementById('submitBtn');
-        var spinner = document.querySelector('.spinner');
-        var buttonText = document.querySelector('.button-text');
-        var processingText = document.querySelector('.processing-text');
         
         // Validate inputs
         if (!descriptionCol || !categoryCol || !startRow) {
@@ -152,8 +156,13 @@ function showClassifyDialog() {
         };
         
         google.script.run
-          .withSuccessHandler(function() { 
-            google.script.host.close(); 
+          .withSuccessHandler(function(result) {
+            // Log exactly what the success handler received
+            console.log("SuccessHandler received:", JSON.stringify(result));
+            // Server-side will always show the polling dialog on success (sync or async).
+            // So, the only job of this handler is to close the initial dialog.
+            console.log("SuccessHandler: Closing initial dialog as server handled polling/completion.");
+            google.script.host.close();
           })
           .withFailureHandler(function(error) {
             errorDiv.textContent = error.message || 'An error occurred';
@@ -172,6 +181,11 @@ function showClassifyDialog() {
         var startRowInput = document.getElementById('startRow');
         startRowInput.value = "1";
         startRowInput.min = "1";
+      }
+
+      // Add a function for the close button
+      function closeDialog() {
+        google.script.host.close();
       }
     </script>
   `
@@ -306,17 +320,21 @@ function showTrainingDialog() {
       <span class="processing-text">Processing...</span>
       <div class="spinner"></div>
     </button>
+    <button onclick="closeDialog()" id="closeBtn" style="display: none; background: #6c757d; margin-left: 10px;">Close</button>
     <script>
+      // Declare UI variables globally within the script scope
+      var errorDiv = document.getElementById('error');
+      var submitBtn = document.getElementById('submitBtn');
+      var spinner = document.querySelector('.spinner');
+      var buttonText = document.querySelector('.button-text');
+      var processingText = document.querySelector('.processing-text');
+      var closeBtn = document.getElementById('closeBtn');
+
       function submitForm() {
         var narrativeCol = document.getElementById('narrativeCol').value;
         var categoryCol = document.getElementById('categoryCol').value;
         var startRow = document.getElementById('startRow').value;
         var amountCol = document.getElementById('amountCol').value;
-        var errorDiv = document.getElementById('error');
-        var submitBtn = document.getElementById('submitBtn');
-        var spinner = document.querySelector('.spinner');
-        var buttonText = document.querySelector('.button-text');
-        var processingText = document.querySelector('.processing-text');
         
         // Validate inputs
         if (!narrativeCol || !categoryCol || !startRow) {
@@ -342,7 +360,12 @@ function showTrainingDialog() {
         processingText.style.display = 'inline-block';
         
         google.script.run
-          .withSuccessHandler(function() {
+          .withSuccessHandler(function(result) {
+            // Log exactly what the success handler received
+            console.log("SuccessHandler received:", JSON.stringify(result));
+            // Server-side will always show the polling dialog on success (sync or async).
+            // So, the only job of this handler is to close the initial dialog.
+            console.log("SuccessHandler: Closing initial dialog as server handled polling/completion.");
             google.script.host.close();
           })
           .withFailureHandler(function(error) {
@@ -356,11 +379,16 @@ function showTrainingDialog() {
           })
           .trainModel(config);
       }
+
+      // Add a function for the close button
+      function closeDialog() {
+        google.script.host.close();
+      }
     </script>
   `
   )
     .setWidth(400)
-    .setHeight(400); // Increased height for the new field
+    .setHeight(500);
 
   SpreadsheetApp.getUi().showModalDialog(html, "Train Model");
 }
@@ -843,21 +871,19 @@ function categoriseTransactions(config) {
           muteHttpExceptions: true,
         });
 
+        var responseCode = response.getResponseCode();
+
         // Accept 200 OK or 202 Accepted as success for starting the job
-        if (response.getResponseCode() === 200 || response.getResponseCode() === 202) {
+        if (responseCode === 200 || responseCode === 202) {
           break; // Success, exit retry loop
-        } else if (
-          response.getResponseCode() === 502 ||
-          response.getResponseCode() === 503 ||
-          response.getResponseCode() === 504
-        ) {
+        } else if (responseCode === 502 || responseCode === 503 || responseCode === 504) {
           // Retry on gateway errors
-          error = `Server returned ${response.getResponseCode()}`;
+          error = `Server returned ${responseCode}`;
           retryCount++;
           continue;
         } else {
           // Don't retry on other errors
-          throw new Error(`Server returned error code: ${response.getResponseCode()}`);
+          throw new Error(`Server returned error code: ${responseCode}`);
         }
       } catch (e) {
         error = e;
@@ -870,44 +896,78 @@ function categoriseTransactions(config) {
     }
 
     var result;
+    var responseCode = response.getResponseCode(); // Get code again outside loop
+
     try {
       var responseText = response.getContentText();
       Logger.log("Raw response: " + responseText);
       result = JSON.parse(responseText);
 
       if (result.error) {
-        throw new Error("API error: " + result.error);
+        // Check for detailed validation errors
+        if (result.details && Array.isArray(result.details)) {
+          var validationErrors = result.details
+            .map(function (err) {
+              return `Field ${err.location}: ${err.message}`;
+            })
+            .join(", ");
+          throw new Error("Validation error: " + validationErrors);
+        } else {
+          throw new Error("API error: " + result.error);
+        }
       }
 
       Logger.log("Categorisation response: " + JSON.stringify(result));
     } catch (parseError) {
       Logger.log("Error parsing response: " + parseError);
-      throw new Error("Error processing server response: " + parseError.toString());
+      throw new Error("Error processing server response: " + parseError.toString() + "\nRaw response: " + responseText);
     }
 
-    if (!result.prediction_id) {
-      throw new Error("No prediction ID received from server");
+    // --- Handle Sync vs Async ---
+    if (responseCode === 200 && result.status === "completed") {
+      // Synchronous Success!
+      Logger.log("Categorisation completed synchronously.");
+      updateStatus("Processing synchronous results...");
+      try {
+        var writeSuccess = writeResultsToSheet(result, config, sheet);
+        if (writeSuccess) {
+          updateStatus("Categorisation completed successfully!");
+          return { status: "success", message: "Categorisation completed synchronously!" };
+        } else {
+          throw new Error("Failed to write synchronous results to sheet.");
+        }
+      } catch (writeError) {
+        throw new Error("Error processing synchronous results: " + writeError.toString());
+      }
+    } else if ((responseCode === 202 || responseCode === 200) && result.prediction_id) {
+      // Asynchronous start (either 202 or 200 with status=processing)
+      Logger.log("Categorisation started asynchronously. Prediction ID: " + result.prediction_id);
+      updateStatus("Categorisation started, processing in background...");
+
+      // Store properties for polling
+      var userProperties = PropertiesService.getUserProperties();
+      userProperties.setProperties({
+        PREDICTION_ID: result.prediction_id,
+        OPERATION_TYPE: "categorise",
+        START_TIME: Date.now().toString(),
+        CONFIG: JSON.stringify(config),
+        SERVICE_URL: serviceConfig.serviceUrl,
+      });
+
+      // Show the polling dialog
+      showPollingDialog();
+
+      // Return success for async start
+      return {
+        status: "processing",
+        message: "Categorisation started. Please wait for results.",
+        predictionId: result.prediction_id,
+      };
+    } else {
+      // Unexpected response format or state
+      Logger.log("Unexpected response state. Code: " + responseCode + ", Body: " + JSON.stringify(result));
+      throw new Error("Unexpected response from server. Cannot determine status.");
     }
-
-    // Store properties for polling
-    var userProperties = PropertiesService.getUserProperties();
-    userProperties.setProperties({
-      PREDICTION_ID: result.prediction_id,
-      OPERATION_TYPE: "categorise",
-      START_TIME: Date.now().toString(),
-      CONFIG: JSON.stringify(config),
-      SERVICE_URL: serviceConfig.serviceUrl,
-    });
-
-    // Show the polling dialog
-    showPollingDialog();
-
-    // Return success
-    return {
-      status: "success",
-      message: "Categorisation started. Please wait for results.",
-      predictionId: result.prediction_id,
-    };
   } catch (error) {
     Logger.log("Categorisation error: " + error.toString());
     updateStatus("Error: " + error.toString());
@@ -1121,7 +1181,7 @@ function columnToLetter(column) {
 
 function trainModel(config) {
   var ui = SpreadsheetApp.getUi();
-
+  Logger.log("Entering trainModel (Refactored). Config: " + JSON.stringify(config));
   try {
     // Validate config and get data first
     if (!config || !config.narrativeCol || !config.categoryCol || !config.startRow) {
@@ -1219,26 +1279,156 @@ function trainModel(config) {
       );
     }
 
-    // Call startTraining directly, passing the prepared data
-    // No need to store large data in properties
-    var result = startTraining(transactions, serviceConfig, config);
+    // === Start API Interaction Logic (Moved from startTraining) ===
 
-    // Handle potential immediate errors from startTraining (e.g., API key issue)
-    if (result && result.error) {
-      throw new Error(result.error);
+    // Prepare payload
+    var payload = JSON.stringify({
+      transactions: transactions,
+      userId: serviceConfig.userId,
+    });
+
+    Logger.log("Sending training request with " + transactions.length + " transactions");
+
+    var options = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "X-API-Key": serviceConfig.apiKey },
+      payload: payload,
+      muteHttpExceptions: true,
+    };
+
+    // Retry logic for API call
+    var maxRetries = 3;
+    var retryCount = 0;
+    var response;
+    var apiError;
+
+    while (retryCount < maxRetries) {
+      try {
+        if (retryCount > 0) {
+          Logger.log(`Retrying training request (attempt ${retryCount + 1}/${maxRetries})...`);
+          Utilities.sleep(Math.pow(2, retryCount) * 1000);
+        }
+        response = UrlFetchApp.fetch(serviceConfig.serviceUrl + "/train", options);
+        var responseCode = response.getResponseCode();
+
+        if (responseCode === 200 || responseCode === 202) {
+          apiError = null; // Clear error on success
+          break; // Success, exit retry loop
+        } else if (responseCode === 502 || responseCode === 503 || responseCode === 504) {
+          apiError = `Server gateway error: ${responseCode}`;
+          Logger.log(apiError + ", retrying...");
+          retryCount++;
+          continue;
+        } else {
+          var errorText = response.getContentText();
+          apiError = `Server returned error code: ${responseCode} - ${errorText}`;
+          Logger.log(`Training API call failed: ${apiError}`);
+          throw new Error(apiError);
+        }
+      } catch (e) {
+        apiError = e; // Store the caught error
+        if (retryCount === maxRetries - 1) {
+          Logger.log("Max retries reached for API call.");
+          throw new Error(`Training failed after ${maxRetries} attempts: ${e.toString()}`);
+        }
+        Logger.log("Error during API fetch attempt: " + e.toString() + ", retrying...");
+        retryCount++;
+      }
     }
 
-    // Success: startTraining will handle showing the polling dialog
-    Logger.log("Training request initiated successfully.");
+    // --- Parse Response and Handle Sync/Async ---
+
+    var responseCode = response.getResponseCode();
+    var responseText = response.getContentText();
+    Logger.log("Raw API response. Code: " + responseCode + ", Body: " + responseText);
+
+    var result;
+    try {
+      result = JSON.parse(responseText);
+      Logger.log("Parsed JSON result: " + JSON.stringify(result));
+    } catch (jsonError) {
+      Logger.log("Error parsing JSON response: " + jsonError);
+      throw new Error("Invalid JSON response from server: " + responseText);
+    }
+
+    // Check for error property within the JSON response itself
+    if (result.error) {
+      Logger.log("API returned error in JSON body: " + result.error);
+      // Handle validation errors specifically if present
+      if (result.details && Array.isArray(result.details)) {
+        var validationErrors = result.details
+          .map(function (err) {
+            return `Field ${err.location}: ${err.message}`;
+          })
+          .join(", ");
+        throw new Error("API Validation error: " + validationErrors);
+      }
+      throw new Error("API error: " + result.error);
+    }
+
+    // --- Final Sync/Async Decision ---
+
+    if (responseCode === 200 && result.status === "completed") {
+      // Synchronous Success BUT we still show polling dialog for consistency
+      Logger.log("Training completed synchronously, but showing polling dialog anyway.");
+      updateStatus("Training finished quickly, showing progress...");
+      // Update stats immediately
+      updateStats("Last Training Time", new Date().toLocaleString());
+      updateStats("Model Status", "Ready");
+      updateStats("training_operations", 1);
+      updateStats("trained_transactions", transactions.length);
+
+      // Set properties needed for the polling dialog
+      var userProperties = PropertiesService.getUserProperties();
+      userProperties.setProperties({
+        PREDICTION_ID: "sync_complete_" + Date.now(), // Use unique dummy ID
+        OPERATION_TYPE: "training",
+        START_TIME: Date.now().toString(),
+        SERVICE_URL: serviceConfig.serviceUrl,
+      });
+
+      // Show the polling dialog (which should show 100% immediately)
+      showPollingDialog();
+
+      Logger.log("trainModel finished (sync success). Returning OK to close initial dialog.");
+      return { status: "ok" }; // Signal OK to close the initial dialog
+    } else if ((responseCode === 202 || responseCode === 200) && result.prediction_id) {
+      // Asynchronous Start
+      Logger.log("Training started asynchronously (handled within trainModel). Prediction ID: " + result.prediction_id);
+      updateStatus("Training started, processing in background...");
+
+      // Set properties for polling (as before)
+      var userProperties = PropertiesService.getUserProperties();
+      userProperties.setProperties({
+        PREDICTION_ID: result.prediction_id,
+        OPERATION_TYPE: "training",
+        START_TIME: Date.now().toString(),
+        SERVICE_URL: serviceConfig.serviceUrl,
+      });
+
+      // Show polling dialog
+      showPollingDialog();
+
+      Logger.log("trainModel finished (async start). Returning OK to close initial dialog.");
+      return { status: "ok" }; // Indicate success to client handler (polling started)
+    } else {
+      // Unexpected state
+      Logger.log("Unexpected training response state. Code: " + responseCode + ", Body: " + JSON.stringify(result));
+      throw new Error("Unexpected response from server during training.");
+    }
+
+    // === End API Interaction Logic ===
   } catch (error) {
     Logger.log("Training setup error: " + error.toString());
-    updateStatus("Error during training setup: " + error.toString());
     // Show error in the dialog if it's still open, otherwise use alert
     try {
       // This might fail if the dialog is already closed
-      throw error; // Re-throw to be caught by the dialog's failure handler
+      // Re-throw with a clear message, ensuring error.message is captured if available
+      throw new Error("Error in trainModel: " + (error.message || error.toString()));
     } catch (e) {
-      ui.alert("Error during training setup: " + error.toString());
+      // If re-throwing fails (dialog closed), show alert
+      ui.alert("Error during training setup: " + (error.message || error.toString()));
     }
   }
 }
@@ -1252,13 +1442,29 @@ function pollOperationStatus() {
   try {
     var userProperties = PropertiesService.getUserProperties();
     var predictionId = userProperties.getProperty("PREDICTION_ID");
-    var serviceUrl = userProperties.getProperty("SERVICE_URL") || CLASSIFICATION_SERVICE_URL;
-    var operationType = userProperties.getProperty("OPERATION_TYPE");
-    var config = JSON.parse(userProperties.getProperty("CONFIG") || "{}");
+
+    // Log the retrieved properties
+    Logger.log("pollOperationStatus: Retrieved PREDICTION_ID = " + predictionId);
 
     if (!predictionId) {
       return { error: "No operation in progress" };
     }
+
+    // --- Handle SYNC completion case based on dummy ID ---
+    if (predictionId.startsWith("sync_complete_")) {
+      Logger.log("Poll detected synchronous completion via dummy ID: " + predictionId);
+      userProperties.deleteAllProperties(); // Clear state
+      return {
+        status: "completed",
+        message: "Training completed successfully!", // Hardcode message here
+        progress: 100,
+      };
+    }
+
+    // --- Proceed with actual polling for ASYNC case ---
+    var serviceUrl = userProperties.getProperty("SERVICE_URL") || CLASSIFICATION_SERVICE_URL;
+    var operationType = userProperties.getProperty("OPERATION_TYPE");
+    var config = JSON.parse(userProperties.getProperty("CONFIG") || "{}");
 
     // Call the status endpoint
     var options = {
@@ -1339,150 +1545,6 @@ function pollOperationStatus() {
       message: "Processing continues...",
       progress: 50,
     };
-  }
-}
-
-// Global function to handle training API call
-function startTraining(transactions, serviceConfig, config) {
-  try {
-    // Validate required data
-    if (!transactions || !transactions.length) {
-      return { error: "No training data available" };
-    }
-
-    if (!serviceConfig || !serviceConfig.apiKey) {
-      return { error: "API key not configured" };
-    }
-
-    // Prepare payload (already contains amount and money_in from trainModel)
-    var payload = JSON.stringify({
-      transactions: transactions, // These now potentially include amount/money_in
-      userId: serviceConfig.userId,
-    });
-
-    Logger.log("Sending training request with " + transactions.length + " transactions");
-    Logger.log("Sample transaction in payload: " + JSON.stringify(transactions[0]));
-
-    var options = {
-      method: "post",
-      contentType: "application/json",
-      headers: {
-        "X-API-Key": serviceConfig.apiKey,
-      },
-      payload: payload,
-      muteHttpExceptions: true,
-    };
-
-    // Retry logic for API call
-    var maxRetries = 3;
-    var retryCount = 0;
-    var response;
-    var error;
-
-    while (retryCount < maxRetries) {
-      try {
-        if (retryCount > 0) {
-          Logger.log(`Retrying training request (attempt ${retryCount + 1}/${maxRetries})...`);
-          // Simple delay for retries
-          Utilities.sleep(Math.pow(2, retryCount) * 1000);
-        }
-
-        // Make the API call
-        response = UrlFetchApp.fetch(serviceConfig.serviceUrl + "/train", options);
-        var responseCode = response.getResponseCode();
-
-        // Handle different response codes
-        if (responseCode === 200 || responseCode === 201) {
-          break; // Success, exit retry loop
-        } else if (responseCode === 502 || responseCode === 503 || responseCode === 504) {
-          // Retry on gateway errors
-          error = `Server returned ${responseCode}`;
-          retryCount++;
-          continue;
-        } else {
-          // Don't retry on other errors
-          var errorText = response.getContentText(); // Get error message from server
-          Logger.log(`Training API call failed with status ${responseCode}: ${errorText}`);
-          throw new Error(`Server returned error code: ${responseCode} - ${errorText}`);
-        }
-      } catch (e) {
-        error = e;
-        if (retryCount === maxRetries - 1) {
-          // Last attempt failed
-          return { error: `Training failed after ${maxRetries} attempts: ${e.toString()}` };
-        }
-        retryCount++;
-      }
-    }
-
-    // Parse response
-    try {
-      var responseText = response.getContentText();
-      Logger.log("Raw training response: " + responseText);
-
-      var result;
-      try {
-        result = JSON.parse(responseText);
-      } catch (jsonError) {
-        Logger.log("Error parsing JSON response: " + jsonError);
-        return { error: "Invalid JSON response from server" };
-      }
-
-      // Check for error response
-      if (result.error) {
-        Logger.log("API returned error: " + result.error);
-
-        // Special handling for validation errors
-        if (result.details && Array.isArray(result.details)) {
-          var validationErrors = result.details
-            .map((err) => {
-              return `Field ${err.location}: ${err.message}`; // Adjusted error format
-            })
-            .join(", ");
-
-          Logger.log("Validation errors: " + validationErrors);
-          return { error: "Validation error: " + validationErrors };
-        }
-
-        return { error: "API error: " + result.error };
-      }
-
-      Logger.log("Training response: " + JSON.stringify(result));
-
-      if (!result.prediction_id) {
-        return { error: "No prediction ID received from server" };
-      }
-
-      // Set properties ONLY for polling
-      var userProperties = PropertiesService.getUserProperties();
-      userProperties.setProperties({
-        PREDICTION_ID: result.prediction_id,
-        OPERATION_TYPE: "training",
-        START_TIME: Date.now().toString(),
-        SERVICE_URL: serviceConfig.serviceUrl, // Still need service URL for polling
-        // Store minimal config needed for polling/status display if any
-        // (Currently, none seem essential for polling itself)
-      });
-
-      // Track the training operation in stats
-      updateStats("training_operations", 1);
-      updateStats("trained_transactions", transactions.length);
-
-      // Show the polling dialog AFTER successful API call
-      showPollingDialog();
-
-      return {
-        status: "processing",
-        predictionId: result.prediction_id,
-        message: "Training started. Check back in a few minutes.",
-      };
-    } catch (parseError) {
-      Logger.log("Error parsing training response: " + parseError);
-      return { error: "Error processing server response: " + parseError.toString() };
-    }
-  } catch (error) {
-    Logger.log("Error in startTraining: " + error);
-    return { error: error.toString() };
   }
 }
 
