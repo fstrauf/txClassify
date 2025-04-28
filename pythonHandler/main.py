@@ -670,6 +670,33 @@ def require_api_key(f):
             logger.error("Invalid API key provided")
             return create_error_response("Invalid API key", 401)
 
+        # Check subscription status
+        try:
+            subscription_status = prisma_client.get_user_subscription_status(user_id)
+            # Allowed statuses based on schema.ts
+            allowed_statuses = ["ACTIVE", "TRIALING"]
+
+            if subscription_status not in allowed_statuses:
+                logger.warning(
+                    f"User {user_id} has invalid subscription status: {subscription_status}"
+                )
+                return create_error_response(
+                    "API key does not have a valid subscription (ACTIVE or TRIALING).",
+                    403,
+                )
+
+            logger.info(
+                f"User {user_id} subscription status ({subscription_status}) validated."
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to verify subscription status for user {user_id}: {e}",
+                exc_info=True,
+            )
+            # Fail closed - if we can't check status, deny access
+            return create_error_response("Could not verify subscription status.", 500)
+
         # Add user_id to request context
         request.user_id = user_id
         request.api_key = api_key
