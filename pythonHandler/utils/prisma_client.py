@@ -275,6 +275,25 @@ class PrismaClient:
             logger.error(f"Error updating user: {str(e)}")
             raise
 
+    def get_user_subscription_status(self, user_id):
+        """Get the subscription status for a user."""
+        try:
+            self.connect()
+            query = 'SELECT "subscriptionStatus" FROM users WHERE id = %s'
+            results = self.execute_query(query, (user_id,))
+            if results and results[0].get("subscriptionStatus"):
+                return results[0]["subscriptionStatus"]
+            else:
+                # Return None if user not found or status is null
+                logger.warning(f"Subscription status not found for user ID: {user_id}")
+                return None
+        except Exception as e:
+            logger.error(
+                f"Error getting user subscription status for {user_id}: {str(e)}"
+            )
+            # Re-raise the exception so the caller knows something went wrong
+            raise
+
     # API Usage Tracking methods
     def track_api_usage(self, api_key):
         """
