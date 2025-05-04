@@ -85,13 +85,8 @@ function showClassifyDialog() {
       </select>
       <div class="help-text">Column where categories will be written</div>
     </div>
-    <div class="form-group">
-      <label>Start Row:</label>
-      <input type="number" id="startRow" value="1" min="1" style="width: 100%; padding: 5px;">
-      <div class="help-text">First row of data to categorise</div>
-    </div>
     <div class="form-group optional-field">
-      <label>Amount Column (optional):</label>
+      <label>Amount Column (optional input):</label>
       <select id="amountCol">
         <option value="">-- None --</option>
         <option value="A">A</option>
@@ -100,11 +95,35 @@ function showClassifyDialog() {
         <option value="D">D</option>
         <option value="E">E</option>
       </select>
-      <div class="help-text">Column containing transaction amounts (positive = money in, negative = money out)</div>
+      <div class="help-text">Column containing transaction amounts (used for prediction if provided)</div>
+    </div>
+    <div class="form-group optional-field">
+      <label>Confidence Score Column (optional output):</label>
+      <select id="confidenceCol">
+        <option value="">-- None --</option>
+        <option value="E">E</option>
+        <option value="F" selected>F</option>
+        <option value="G">G</option>
+        <option value="H">H</option>
+        <option value="I">I</option>
+      </select>
+      <div class="help-text">Column where confidence scores will be written (optional)</div>
+    </div>
+    <div class="form-group optional-field">
+      <label>Money In/Out Column (optional output):</label>
+      <select id="moneyInOutCol">
+        <option value="">-- None --</option>
+        <option value="F">F</option>
+        <option value="G" selected>G</option>
+        <option value="H">H</option>
+        <option value="I">I</option>
+        <option value="J">J</option>
+      </select>
+      <div class="help-text">Column where 'IN'/'OUT' flag will be written (optional)</div>
     </div>
     <div id="error" class="error"></div>
     <button onclick="submitForm()" id="submitBtn">
-      <span class="button-text">Categorise Transactions</span>
+      <span class="button-text">Categorise Selected Rows</span>
       <span class="processing-text">Processing...</span>
       <div class="spinner"></div>
     </button>
@@ -121,20 +140,13 @@ function showClassifyDialog() {
       function submitForm() {
         var descriptionCol = document.getElementById('descriptionCol').value;
         var categoryCol = document.getElementById('categoryCol').value;
-        var startRow = document.getElementById('startRow').value;
         var amountCol = document.getElementById('amountCol').value;
+        var confidenceCol = document.getElementById('confidenceCol').value;
+        var moneyInOutCol = document.getElementById('moneyInOutCol').value;
         
         // Validate inputs
-        if (!descriptionCol || !categoryCol || !startRow) {
-          errorDiv.textContent = 'Please fill in all required fields';
-          errorDiv.style.display = 'block';
-          return;
-        }
-        
-        // Ensure start row is at least 1
-        startRow = parseInt(startRow);
-        if (isNaN(startRow) || startRow < 1) {
-          errorDiv.textContent = 'Start row must be 1 or higher';
+        if (!descriptionCol || !categoryCol) {
+          errorDiv.textContent = 'Description and Category columns are required.';
           errorDiv.style.display = 'block';
           return;
         }
@@ -151,8 +163,9 @@ function showClassifyDialog() {
         var config = {
           descriptionCol: descriptionCol,
           categoryCol: categoryCol,
-          startRow: startRow.toString(),
-          amountCol: amountCol // Optional amount column
+          amountCol: amountCol,
+          confidenceCol: confidenceCol,
+          moneyInOutCol: moneyInOutCol
         };
         
         google.script.run
@@ -176,13 +189,6 @@ function showClassifyDialog() {
           .categoriseTransactions(config);
       }
       
-      // Set default value and min for start row
-      window.onload = function() {
-        var startRowInput = document.getElementById('startRow');
-        startRowInput.value = "1";
-        startRowInput.min = "1";
-      }
-
       // Add a function for the close button
       function closeDialog() {
         google.script.host.close();
@@ -191,9 +197,9 @@ function showClassifyDialog() {
   `
   )
     .setWidth(400)
-    .setHeight(400);
+    .setHeight(500);
 
-  SpreadsheetApp.getUi().showModalDialog(html, "Categorise Transactions");
+  SpreadsheetApp.getUi().showModalDialog(html, "Categorise Selected Transactions");
 }
 
 // Show dialog to select columns for training
@@ -745,59 +751,86 @@ function categoriseTransactions(config) {
     Logger.log("Starting categorisation with config: " + JSON.stringify(config));
     updateStatus("Starting categorisation...");
 
-    var sheet = SpreadsheetApp.getActiveSheet();
     var serviceConfig = getServiceConfig();
+    var sheet = SpreadsheetApp.getActiveSheet();
     var spreadsheetId = sheet.getParent().getId();
-    var lastRow = sheet.getLastRow();
-    var startRow = parseInt(config.startRow);
 
-    // Get descriptions from the specified column
-    var descriptionsData = sheet
-      .getRange(config.descriptionCol + startRow + ":" + config.descriptionCol + lastRow)
-      .getValues()
-      .filter((row) => row[0] && row[0].toString().trim() !== "");
+    // --- Get selected range ---
+    var range = null;
+    var startRow, numRows, endRow, rangeA1;
+    try {
+      Logger.log("Attempting to get active range...");
+      range = SpreadsheetApp.getActiveRange();
 
-    // Store original descriptions for logging
-    var originalDescriptions = descriptionsData.map((row) => {
-      var desc = row[0];
-      // Ensure it's a string
-      if (typeof desc !== "string") {
-        desc = String(desc);
+      if (!range) {
+        throw new Error("No cells selected. Please select the transaction rows you want to categorise first.");
       }
-      return desc.toString().trim();
-    });
 
-    // Validate descriptions
-    var invalidDescriptions = originalDescriptions.filter((desc) => !desc || desc.length === 0);
-    if (invalidDescriptions.length > 0) {
-      Logger.log(
-        `Found ${invalidDescriptions.length} invalid descriptions out of ${originalDescriptions.length} total`
+      Logger.log("Got active range. Attempting to get range properties...");
+      startRow = range.getRow();
+      numRows = range.getNumRows();
+      endRow = startRow + numRows - 1;
+      rangeA1 = range.getA1Notation();
+      Logger.log(`Selected range: ${rangeA1}, StartRow: ${startRow}, NumRows: ${numRows}, EndRow: ${endRow}`);
+
+      // Add startRow and endRow to the config object passed from the dialog
+      config.startRow = startRow;
+      config.endRow = endRow;
+      Logger.log("Updated config with range info: " + JSON.stringify(config));
+    } catch (e) {
+      Logger.log("Error getting or processing active range: " + e.toString());
+      // Provide a more user-friendly error message
+      throw new Error(
+        "Could not get selected range. Please ensure cells are selected before running. Error details: " + e.message
       );
-      // Filter out invalid descriptions
-      originalDescriptions = originalDescriptions.filter((desc) => desc && desc.length > 0);
     }
 
-    // Get amount data if amount column is provided
+    // --- Validate selection --- (Moved validation after successful range acquisition)
+    if (numRows < 1) {
+      // This check might be redundant if getActiveRange throws an error for invalid selections, but keep for safety
+      throw new Error("Invalid selection. Please select at least one row containing data.");
+    }
+
+    // --- Read data from selected range ---
+    // Get descriptions
+    var descriptionRangeA1 = config.descriptionCol + startRow + ":" + config.descriptionCol + endRow;
+    Logger.log(`Attempting to read descriptions from range: ${descriptionRangeA1}`);
+    var descriptionsData = sheet.getRange(descriptionRangeA1).getValues();
+    // Filter out rows where description is empty in the original selection
+    var validRows = [];
+    for (let i = 0; i < descriptionsData.length; i++) {
+      if (descriptionsData[i][0] && descriptionsData[i][0].toString().trim() !== "") {
+        validRows.push({ index: i, description: descriptionsData[i][0] });
+      }
+    }
+
+    if (validRows.length === 0) {
+      throw new Error("No valid descriptions found in the selected range's description column.");
+    }
+    Logger.log(`Found ${validRows.length} valid descriptions in selection.`);
+
+    // Get amounts if column specified
     var amountData = [];
     var hasAmounts = config.amountCol && config.amountCol.trim() !== "";
-
     if (hasAmounts) {
-      Logger.log("Reading amounts from column " + config.amountCol);
-      amountData = sheet
-        .getRange(config.amountCol + startRow + ":" + config.amountCol + lastRow)
-        .getValues()
-        .slice(0, descriptionsData.length); // Match the length of descriptions
+      var amountRangeA1 = config.amountCol + startRow + ":" + config.amountCol + endRow;
+      Logger.log(`Attempting to read amounts from range: ${amountRangeA1}`);
+      amountData = sheet.getRange(amountRangeA1).getValues();
+    } else {
+      Logger.log("Amount column not specified or empty.");
     }
 
-    // Prepare transactions with money_in flag if amounts are available
+    // Prepare transactions only for rows with valid descriptions
     var transactions = [];
-    for (var i = 0; i < originalDescriptions.length; i++) {
-      var description = originalDescriptions[i];
+    for (var i = 0; i < validRows.length; i++) {
+      var validRow = validRows[i];
+      var originalIndex = validRow.index; // Index relative to the start of the *selection*
+      var description = String(validRow.description).trim(); // Already known to be valid
+      var transaction = { description: description };
 
-      if (hasAmounts && i < amountData.length) {
-        var amount = amountData[i][0];
+      if (hasAmounts && originalIndex < amountData.length) {
+        var amount = amountData[originalIndex][0]; // Use index relative to selection
         var parsedAmount = null;
-
         // Try to parse the amount, handling various formats
         if (typeof amount === "number") {
           parsedAmount = amount;
@@ -808,26 +841,22 @@ function categoriseTransactions(config) {
         }
 
         if (!isNaN(parsedAmount)) {
-          // Create transaction object with money_in flag
-          transactions.push({
-            description: description,
-            money_in: parsedAmount >= 0,
-            amount: parsedAmount,
-          });
-          Logger.log(`Transaction: "${description}" with amount ${parsedAmount}, money_in: ${parsedAmount >= 0}`);
+          transaction.amount = parsedAmount;
+          transaction.money_in = parsedAmount >= 0;
+          Logger.log(`Transaction: "${description}" with amount ${parsedAmount}, money_in: ${transaction.money_in}`);
         } else {
           // If amount is invalid, just use the description
-          transactions.push({
-            description: description,
-          });
+          transaction.amount = description;
+          transaction.money_in = null;
           Logger.log(`Transaction: "${description}" without valid amount`);
         }
       } else {
         // If no amounts column or missing amount, just use the description
-        transactions.push({
-          description: description,
-        });
+        transaction.amount = description;
+        transaction.money_in = null;
       }
+
+      transactions.push(transaction);
     }
 
     if (transactions.length === 0) {
@@ -951,6 +980,9 @@ function categoriseTransactions(config) {
         OPERATION_TYPE: "categorise",
         START_TIME: Date.now().toString(),
         CONFIG: JSON.stringify(config),
+        SHEET_ID: sheet.getSheetId().toString(),
+        START_ROW: startRow.toString(),
+        END_ROW: endRow.toString(),
         SERVICE_URL: serviceConfig.serviceUrl,
       });
 
@@ -980,184 +1012,181 @@ function categoriseTransactions(config) {
 function writeResultsToSheet(result, config, sheet) {
   try {
     Logger.log("Writing results to sheet with config: " + JSON.stringify(config));
-
-    // Extract the results array from the response, handling different response formats
-    var resultsData;
-
-    // Log the structure of the result object to help with debugging
-    Logger.log("Result object structure: " + JSON.stringify(Object.keys(result)));
-
-    // Try different paths to find the results array based on our updated API format
-    if (result.results && Array.isArray(result.results)) {
-      Logger.log("Using result.results array");
-      resultsData = result.results;
-    } else if (result.data && Array.isArray(result.data)) {
-      Logger.log("Using result.data array");
-      resultsData = result.data;
-    } else if (result.result && typeof result.result === "object") {
-      // Handle nested result structures
-      if (result.result.results && Array.isArray(result.result.results)) {
-        Logger.log("Using result.result.results array");
-        resultsData = result.result.results;
-      } else if (result.result.data && Array.isArray(result.result.data)) {
-        Logger.log("Using result.result.data array");
-        resultsData = result.result.data;
-      }
-    } else {
-      // Deep search for any array property that looks like results
-      for (var key in result) {
-        if (
-          Array.isArray(result[key]) &&
-          result[key].length > 0 &&
-          (result[key][0].hasOwnProperty("predicted_category") ||
-            result[key][0].hasOwnProperty("Category") ||
-            result[key][0].hasOwnProperty("category"))
-        ) {
-          Logger.log("Found results array in result." + key);
-          resultsData = result[key];
-          break;
-        }
+    // Make sure we have a valid sheet object
+    if (!sheet || typeof sheet.getRange !== "function") {
+      Logger.log("Invalid sheet object provided to writeResultsToSheet. Attempting to get active sheet.");
+      sheet = SpreadsheetApp.getActiveSheet();
+      if (!sheet) {
+        throw new Error("Could not obtain a valid sheet to write results.");
       }
     }
 
-    if (!resultsData || resultsData.length === 0) {
-      Logger.log("No results to write. Full result: " + JSON.stringify(result));
+    // Extract the results array from the response, handling different potential structures
+    var resultsData = findResultsArray(result);
 
-      // Alert user about the issue
-      SpreadsheetApp.getUi().alert(
-        "No classification results found in the API response. Please check logs for details."
-      );
+    if (!resultsData || resultsData.length === 0) {
+      Logger.log("No results array found in the response. Full result: " + JSON.stringify(result));
+      updateStatus("Processing complete, but no classification results were found in the response.");
+      // Don't throw an error, just indicate no results were written.
       return false;
     }
 
     Logger.log("Found " + resultsData.length + " results to write");
     Logger.log("Sample result: " + JSON.stringify(resultsData[0]));
 
-    // Get configuration from either the result or the provided config
-    var categoryCol = result.config && result.config.categoryColumn ? result.config.categoryColumn : config.categoryCol;
-    var startRow =
-      result.config && result.config.startRow ? parseInt(result.config.startRow) : parseInt(config.startRow);
+    // --- Get configuration from the passed config object ---
+    // The config passed here should now include startRow, endRow, categoryCol, confidenceCol, moneyInOutCol
+    var categoryCol = config.categoryCol;
+    var confidenceCol = config.confidenceCol; // Optional output column
+    var moneyInOutCol = config.moneyInOutCol; // Optional output column
+    var startRow = parseInt(config.startRow);
+    var endRow = parseInt(config.endRow);
 
-    // Validate configuration
-    if (!categoryCol || !startRow) {
-      Logger.log("Missing required configuration: categoryCol=" + categoryCol + ", startRow=" + startRow);
-
-      // Fallback to config from parameter if available
-      categoryCol = categoryCol || config.categoryCol;
-      startRow = startRow || parseInt(config.startRow);
-
-      // If still missing, alert and return
-      if (!categoryCol || !startRow) {
-        SpreadsheetApp.getUi().alert("Missing required configuration for writing results.");
-        return false;
-      }
+    // Validate essential configuration needed for writing
+    if (!categoryCol || !startRow || !endRow || startRow > endRow) {
+      Logger.log(
+        `Invalid configuration for writing results: categoryCol=${categoryCol}, startRow=${startRow}, endRow=${endRow}`
+      );
+      throw new Error(
+        `Invalid range or category column specified for writing results (Rows ${startRow}-${endRow}, Col ${categoryCol}).`
+      );
     }
 
-    var endRow = startRow + resultsData.length - 1;
+    // Ensure the range size matches the results length
+    if (endRow - startRow + 1 !== resultsData.length) {
+      Logger.log(
+        `Mismatch between results count (${resultsData.length}) and selected range size (${
+          endRow - startRow + 1
+        } rows). Attempting to write based on results count.`
+      );
+      // Adjust endRow based on results count to prevent errors, though this indicates a potential issue.
+      endRow = startRow + resultsData.length - 1;
+      updateStatus(
+        `Warning: Number of results (${resultsData.length}) didn't match selected rows. Results written starting from row ${startRow}.`,
+        `Sheet: ${sheet.getName()}`
+      );
+    }
 
-    Logger.log("Writing " + resultsData.length + " results to sheet");
-    Logger.log("Category column: " + categoryCol + ", Start row: " + startRow + ", End row: " + endRow);
+    Logger.log(`Writing ${resultsData.length} results to sheet '${sheet.getName()}'`);
+    Logger.log(`Category column: ${categoryCol}, Start row: ${startRow}, End row: ${endRow}`);
+    if (confidenceCol) Logger.log(`Confidence column: ${confidenceCol}`);
+    if (moneyInOutCol) Logger.log(`Money In/Out column: ${moneyInOutCol}`);
 
-    // Safely extract categories, handling different property names
+    // --- Write Categories (Mandatory) ---
     var categories = resultsData.map(function (r) {
-      return [r.predicted_category || r.category || r.Category || ""];
+      return [r.predicted_category || r.category || r.Category || ""]; // Handle different possible keys
     });
-
-    // Write categories
     var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
     categoryRange.setValues(categories);
+    Logger.log(`Categories written to ${categoryCol}${startRow}:${categoryCol}${endRow}`);
 
-    // Write confidence scores if they exist
+    // --- Write Confidence Scores (Optional) ---
     var hasConfidence = resultsData.some(function (r) {
       return r.hasOwnProperty("similarity_score") || r.hasOwnProperty("confidence") || r.hasOwnProperty("score");
     });
 
-    if (hasConfidence) {
-      var confidenceCol = String.fromCharCode(categoryCol.charCodeAt(0) + 1);
+    if (confidenceCol && hasConfidence) {
+      // Check if column specified AND data exists
+      Logger.log(`Attempting to write confidence scores to column ${confidenceCol}`);
       var confidenceScores = resultsData.map(function (r) {
-        return [r.similarity_score || r.confidence || r.score || ""];
+        // Prioritize specific keys if available
+        var score =
+          r.similarity_score !== undefined
+            ? r.similarity_score
+            : r.confidence !== undefined
+            ? r.confidence
+            : r.score !== undefined
+            ? r.score
+            : "";
+        return [score];
       });
-
-      var confidenceRange = sheet.getRange(confidenceCol + startRow + ":" + confidenceCol + endRow);
-      confidenceRange.setValues(confidenceScores);
-
-      // Format as percentage if they look like decimals between 0-1
-      if (confidenceScores.some((score) => typeof score[0] === "number" && score[0] >= 0 && score[0] <= 1)) {
-        confidenceRange.setNumberFormat("0.00%");
+      try {
+        var confidenceRangeA1 = confidenceCol + startRow + ":" + confidenceCol + endRow;
+        Logger.log(`Attempting to write confidence scores to range: ${confidenceRangeA1}`);
+        var confidenceRange = sheet.getRange(confidenceRangeA1);
+        confidenceRange.setValues(confidenceScores);
+        // Format as percentage only if scores look like decimals between 0-1
+        if (confidenceScores.some((s) => typeof s[0] === "number" && s[0] >= 0 && s[0] <= 1)) {
+          confidenceRange.setNumberFormat("0.00%");
+        }
+        Logger.log(`Confidence scores written to ${confidenceCol}${startRow}:${confidenceCol}${endRow}`);
+      } catch (e) {
+        Logger.log(`Error writing confidence scores to column ${confidenceCol}: ${e}. Skipping confidence scores.`);
+        updateStatus(
+          `Warning: Could not write confidence scores to column ${confidenceCol}. Check column validity.`,
+          `Sheet: ${sheet.getName()}, Error: ${e}`
+        );
       }
+    } else if (confidenceCol && !hasConfidence) {
+      Logger.log(`Confidence column ${confidenceCol} specified, but no confidence scores found in results.`);
+    } else if (!confidenceCol && hasConfidence) {
+      Logger.log(`Confidence scores found in results, but no output column was specified.`);
     }
 
-    // Check if money_in data is available
+    // --- Write Money In/Out Flag (Optional) ---
     var hasMoneyInFlag = resultsData.some(function (r) {
       return r.hasOwnProperty("money_in");
     });
 
-    if (hasMoneyInFlag) {
-      // Column after confidence (or after category if no confidence)
-      var moneyInCol = hasConfidence
-        ? String.fromCharCode(categoryCol.charCodeAt(0) + 2)
-        : String.fromCharCode(categoryCol.charCodeAt(0) + 1);
-
+    if (moneyInOutCol && hasMoneyInFlag) {
+      // Check if column specified AND data exists
+      Logger.log(`Attempting to write Money In/Out flags to column ${moneyInOutCol}`);
       var moneyInValues = resultsData.map(function (r) {
         if (r.money_in === true) {
-          return ["IN"]; // Money in (credit)
+          return ["IN"];
         } else if (r.money_in === false) {
-          return ["OUT"]; // Money out (debit)
-        } else {
-          return [""]; // Unknown
-        }
-      });
-
-      var moneyInRange = sheet.getRange(moneyInCol + startRow + ":" + moneyInCol + endRow);
-      moneyInRange.setValues(moneyInValues);
-
-      // Write a header for the column if we're in the first row
-      //if (startRow === 1) {
-      //  sheet.getRange(moneyInCol + "1").setValue("Type");
-      //}
-    }
-
-    // Check if amount data is available
-    var hasAmount = resultsData.some(function (r) {
-      return r.hasOwnProperty("amount") && r.amount !== null && r.amount !== undefined;
-    });
-
-    if (hasAmount) {
-      // Column after money_in (or after confidence/category if no money_in)
-      var amountCol = hasMoneyInFlag
-        ? String.fromCharCode(moneyInCol.charCodeAt(0) + 1)
-        : hasConfidence
-        ? String.fromCharCode(categoryCol.charCodeAt(0) + 2)
-        : String.fromCharCode(categoryCol.charCodeAt(0) + 1);
-
-      var amountValues = resultsData.map(function (r) {
-        if (r.amount !== null && r.amount !== undefined) {
-          return [r.amount];
+          return ["OUT"];
         } else {
           return [""];
-        }
+        } // Handle null/undefined/other
       });
-
-      var amountRange = sheet.getRange(amountCol + startRow + ":" + amountCol + endRow);
-      amountRange.setValues(amountValues);
-
-      // Format as currency
-      amountRange.setNumberFormat("$#,##0.00;($#,##0.00)");
-
-      // Write a header for the column if we're in the first row
-      //if (startRow === 1) {
-      //  sheet.getRange(amountCol + "1").setValue("Amount");
-      //}
+      try {
+        var moneyInRangeA1 = moneyInOutCol + startRow + ":" + moneyInOutCol + endRow;
+        Logger.log(`Attempting to write Money In/Out flags to range: ${moneyInRangeA1}`);
+        var moneyInRange = sheet.getRange(moneyInRangeA1);
+        moneyInRange.setValues(moneyInValues);
+        Logger.log(`Money In/Out flags written to ${moneyInOutCol}${startRow}:${moneyInOutCol}${endRow}`);
+      } catch (e) {
+        Logger.log(`Error writing Money In/Out flags to column ${moneyInOutCol}: ${e}. Skipping flags.`);
+        updateStatus(
+          `Warning: Could not write Money In/Out flags to column ${moneyInOutCol}. Check column validity.`,
+          `Sheet: ${sheet.getName()}, Error: ${e}`
+        );
+      }
+    } else if (moneyInOutCol && !hasMoneyInFlag) {
+      Logger.log(`Money In/Out column ${moneyInOutCol} specified, but no money_in flags found in results.`);
+    } else if (!moneyInOutCol && hasMoneyInFlag) {
+      Logger.log(`Money In/Out flags found in results, but no output column was specified.`);
     }
 
-    // Update status with success message
-    updateStatus(
-      "Categorised " + resultsData.length + " transactions successfully!",
-      "Categories written to column " + categoryCol
-    );
+    // Final status update
+    var statusMsg = `Categorised ${resultsData.length} selected transactions successfully!`;
+    var details = `Sheet: '${sheet.getName()}', Rows: ${startRow}-${endRow}, Category Col: ${categoryCol}`;
+    if (confidenceCol && hasConfidence) details += `, Confidence Col: ${confidenceCol}`;
+    if (moneyInOutCol && hasMoneyInFlag) details += `, Money In/Out Col: ${moneyInOutCol}`;
+    updateStatus(statusMsg, details);
 
     // Track usage stat
-    updateStats("categorisations", resultsData.length);
+    try {
+      const statsSheet = getStatsSheet(); // Ensure stats sheet exists
+      const metrics = statsSheet.getRange("A2:A").getValues().flat();
+      let currentValue = 0;
+      // Find existing value if metric exists
+      for (let i = 0; i < metrics.length; i++) {
+        if (metrics[i] === "categorisations") {
+          // Read value from corresponding cell in column B
+          const val = statsSheet.getRange(`B${i + 2}`).getValue();
+          if (typeof val === "number") {
+            currentValue = val;
+          }
+          break;
+        }
+      }
+      // Update the stat by adding the new count
+      updateStats("categorisations", currentValue + resultsData.length);
+    } catch (statError) {
+      Logger.log("Could not update categorisation stats: " + statError);
+    }
 
     return true;
   } catch (error) {
@@ -1165,6 +1194,61 @@ function writeResultsToSheet(result, config, sheet) {
     SpreadsheetApp.getUi().alert("Error writing results: " + error.toString());
     return false;
   }
+}
+
+// Helper function to find the results array within the API response
+function findResultsArray(result) {
+  // Log the structure of the result object to help with debugging
+  Logger.log("findResultsArray: Checking structure of result object: " + JSON.stringify(Object.keys(result)));
+
+  // Try common paths first
+  if (result.results && Array.isArray(result.results)) {
+    Logger.log("findResultsArray: Found results in result.results");
+    return result.results;
+  } else if (result.data && Array.isArray(result.data)) {
+    Logger.log("findResultsArray: Found results in result.data");
+    return result.data;
+  } else if (result.result && typeof result.result === "object") {
+    // Handle nested result structures
+    if (result.result.results && Array.isArray(result.result.results)) {
+      Logger.log("findResultsArray: Found results in result.result.results");
+      return result.result.results;
+    } else if (result.result.data && Array.isArray(result.result.data)) {
+      Logger.log("findResultsArray: Found results in result.result.data");
+      return result.result.data;
+    }
+  }
+
+  // If not found in common paths, search deeper for an array with expected properties
+  Logger.log("findResultsArray: Results not found in common paths. Searching object keys...");
+  for (var key in result) {
+    if (
+      result.hasOwnProperty(key) &&
+      Array.isArray(result[key]) &&
+      result[key].length > 0 &&
+      (result[key][0].hasOwnProperty("predicted_category") ||
+        result[key][0].hasOwnProperty("Category") ||
+        result[key][0].hasOwnProperty("category"))
+    ) {
+      Logger.log("findResultsArray: Found results array in result." + key);
+      return result[key];
+    }
+  }
+
+  // Check if the top-level result itself is the array (less common but possible)
+  if (
+    Array.isArray(result) &&
+    result.length > 0 &&
+    (result[0].hasOwnProperty("predicted_category") ||
+      result[0].hasOwnProperty("Category") ||
+      result[0].hasOwnProperty("category"))
+  ) {
+    Logger.log("findResultsArray: Top-level response object appears to be the results array.");
+    return result;
+  }
+
+  Logger.log("findResultsArray: No suitable results array found in the response.");
+  return null; // Return null if no suitable array is found
 }
 
 // Helper function to convert column number to letter
@@ -1442,15 +1526,60 @@ function pollOperationStatus() {
   try {
     var userProperties = PropertiesService.getUserProperties();
     var predictionId = userProperties.getProperty("PREDICTION_ID");
+    var configStr = userProperties.getProperty("CONFIG");
+    var sheetIdStr = userProperties.getProperty("SHEET_ID");
+    var startRowStr = userProperties.getProperty("START_ROW");
+    var endRowStr = userProperties.getProperty("END_ROW");
+    var serviceUrl = userProperties.getProperty("SERVICE_URL"); // Retrieve the service URL
 
-    // Log the retrieved properties
-    Logger.log("pollOperationStatus: Retrieved PREDICTION_ID = " + predictionId);
-
-    if (!predictionId) {
-      return { error: "No operation in progress" };
+    // Ensure essential properties are present
+    if (!predictionId || !configStr || !sheetIdStr || !startRowStr || !endRowStr || !serviceUrl) {
+      // Check serviceUrl too
+      Logger.log("pollOperationStatus: Missing required user properties for polling.");
+      // Attempt to gracefully handle missing properties if possible, otherwise return error
+      if (predictionId && predictionId.startsWith("sync_complete_")) {
+        // Handle sync completion case even if other props are missing
+        Logger.log("Poll detected synchronous completion via dummy ID: " + predictionId);
+        userProperties.deleteAllProperties(); // Clear state
+        return {
+          status: "completed",
+          message: "Operation completed successfully!",
+          progress: 100,
+        };
+      }
+      // If async and properties missing, we can't reliably write results later.
+      return {
+        status: "failed",
+        message: "Error: Could not retrieve necessary details to continue processing.",
+        progress: 0,
+      };
     }
 
-    // --- Handle SYNC completion case based on dummy ID ---
+    // Parse config here as it's needed for writing results
+    var config = JSON.parse(configStr);
+    // Add start/end row from properties into config for writeResultsToSheet consistency
+    config.startRow = parseInt(startRowStr);
+    config.endRow = parseInt(endRowStr);
+
+    // Find the target sheet using its ID
+    var sheet = null;
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var allSheets = ss.getSheets();
+    for (var i = 0; i < allSheets.length; i++) {
+      if (allSheets[i].getSheetId().toString() === sheetIdStr) {
+        sheet = allSheets[i];
+        break;
+      }
+    }
+    if (!sheet) {
+      Logger.log("pollOperationStatus: Could not find sheet with ID " + sheetIdStr);
+      userProperties.deleteAllProperties(); // Clear properties as we can't proceed
+      return { status: "failed", message: "Error: Could not find the original sheet to write results.", progress: 0 };
+    }
+
+    Logger.log("pollOperationStatus: Polling for ID: " + predictionId + " on Sheet: " + sheet.getName());
+
+    // --- Handle SYNC completion case based on dummy ID --- (Check moved earlier)
     if (predictionId.startsWith("sync_complete_")) {
       Logger.log("Poll detected synchronous completion via dummy ID: " + predictionId);
       userProperties.deleteAllProperties(); // Clear state
@@ -1462,17 +1591,15 @@ function pollOperationStatus() {
     }
 
     // --- Proceed with actual polling for ASYNC case ---
-    var serviceUrl = userProperties.getProperty("SERVICE_URL") || CLASSIFICATION_SERVICE_URL;
     var operationType = userProperties.getProperty("OPERATION_TYPE");
-    var config = JSON.parse(userProperties.getProperty("CONFIG") || "{}");
 
     // Call the status endpoint
     var options = {
-      headers: { "X-API-Key": getServiceConfig().apiKey },
+      headers: { "X-API-Key": getServiceConfig().apiKey }, // Still need API key here, get fresh
       muteHttpExceptions: true,
     };
 
-    var response = UrlFetchApp.fetch(serviceUrl + "/status/" + predictionId, options);
+    var response = UrlFetchApp.fetch(serviceUrl + "/status/" + predictionId, options); // Use the retrieved serviceUrl
     var responseCode = response.getResponseCode();
 
     // Handle non-200 responses
@@ -1496,13 +1623,22 @@ function pollOperationStatus() {
         Logger.log("Operation completed successfully");
 
         // Handle categorization results if needed
-        if (operationType === "categorise" && result.results) {
+        if (operationType === "categorise" && result) {
+          // Check if result exists
           try {
-            var sheet = SpreadsheetApp.getActiveSheet();
+            // Pass the retrieved sheet object and the full config
             writeResultsToSheet(result, config, sheet);
-            Logger.log("Results written to sheet successfully");
+            Logger.log("Results written to sheet successfully from polling.");
           } catch (writeError) {
-            Logger.log("Error writing results to sheet: " + writeError);
+            Logger.log("Error writing results to sheet from polling: " + writeError);
+            // Update status to reflect the writing error but still mark as completed?
+            // Let's return a slightly different completed message
+            userProperties.deleteAllProperties(); // Still clear state
+            return {
+              status: "completed",
+              message: "Categorisation complete, but error writing results: " + writeError.message,
+              progress: 100,
+            };
           }
         }
 

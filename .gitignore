@@ -60,3 +60,6 @@ pnpm-lock.yaml
 pythonHandler/prisma/client/
 pythonHandler/prisma/schema.prisma
 pythonHandler/venv/
+
+# Google Apps Script
+sheetAddon/.clasp.json
