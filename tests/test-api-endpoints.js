@@ -958,15 +958,45 @@ const categoriseTransactions = async (config) => {
             const narrative = result.narrative || "N/A"; // Handle missing narrative
             const predicted_category = result.predicted_category || "Unknown";
             const confidence = result.similarity_score ? `${(result.similarity_score * 100).toFixed(2)}%` : "N/A";
+            const second_predicted_category = result.second_predicted_category || "N/A";
+            const second_confidence = result.second_similarity_score
+              ? `${(result.second_similarity_score * 100).toFixed(2)}%`
+              : "N/A";
+
             // Add money_in/money_out display
             const direction =
               result.money_in === true ? "MONEY_IN" : result.money_in === false ? "MONEY_OUT" : "UNKNOWN_DIR";
+
             // Display amount if available
             const amountStr =
               result.amount !== null && result.amount !== undefined ? `$${Math.abs(result.amount).toFixed(2)}` : "";
 
+            // Determine reason if Unknown
+            let unknownReason = "";
+            if (predicted_category === "Unknown") {
+              const score = result.similarity_score;
+              const secondScore = result.second_similarity_score;
+              // Define thresholds here (matching Python)
+              const MIN_ABSOLUTE_CONFIDENCE = 0.85;
+              const MIN_RELATIVE_CONFIDENCE_DIFF = 0.05;
+
+              if (score === null || score === undefined || score < MIN_ABSOLUTE_CONFIDENCE) {
+                unknownReason = "(Low Absolute Confidence)";
+              } else if (
+                secondScore !== null &&
+                secondScore !== undefined &&
+                score - secondScore < MIN_RELATIVE_CONFIDENCE_DIFF
+              ) {
+                unknownReason = "(Low Relative Confidence)";
+              } else {
+                unknownReason = "(Conflicting Neighbors)"; // Inferred reason
+              }
+            }
+
             console.log(
-              `${index + 1}. "${narrative}" → ${predicted_category} (${confidence}) | ${direction} ${amountStr}`
+              `${
+                index + 1
+              }. \"${narrative}\" → ${predicted_category} (${confidence}) ${unknownReason}\n     2nd Match: ${second_predicted_category} (${second_confidence}) | ${direction} ${amountStr}`
             );
           });
 
@@ -1237,9 +1267,9 @@ const main = async () => {
 
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
-    // const trainingData = await loadTrainingData("full_train.csv");
+    const trainingData = await loadTrainingData("training_test.csv");
     // const trainingData = await loadTrainingData("training_data.csv");
-    const trainingData = await loadTrainingData("training_data_num_cat.csv");
+    // const trainingData = await loadTrainingData("training_data_num_cat.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
     const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
