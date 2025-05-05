@@ -394,12 +394,12 @@ def clean_text(text: str) -> str:
         r"\s+#\s*\d+",
         r"\s+\d{2,4}(?:\s|$)",  # Standalone 2-4 digit numbers (likely store numbers)
         # Remove business suffixes
-        r"\s+(?:PTY\s*LTD|P/?L|LIMITED|AUSTRALIA(?:N)?|CORPORATION|CORP|INC|LLC)",
+        r"\\s+(?:PTY\\s*LTD|P/?L|LIMITED|AUSTRALIA(?:N)?|CORPORATION|CORP|INC|LLC|GMBH|SA|AG)",  # Added GMBH, SA, AG
         # Remove common prefixes
-        r"^(?:SQ|LIV|SMP|MWA|EZI|SP|PP)\s*[\*#]?\s*",
+        r"^(?:SQ|LIV|SMP|MWA|EZI|SP|PP)\\s*[\\*#]?\\s*",
         # Remove transaction types
-        r"^(?:POS|ATM|DD|SO|BP|AP)\s+",
-        r"^(?:CRED\s+VOUCHER|PENDING|RETURN|REFUND|CREDIT|DEBIT)\s+",
+        r"^(?:POS|ATM|DD|SO|BP|AP)\\s+",
+        r"^(?:CRED\\s+VOUCHER|PENDING|RETURN|REFUND|CREDIT|DEBIT)\\s+",
         # Remove anything in parentheses or brackets
         r"\s*\([^)]*\)",
         r"\s*\[[^\]]*\]",
@@ -425,8 +425,8 @@ def clean_text(text: str) -> str:
 
     # Trim long transaction names
     words = text.split()
-    if len(words) > 4:  # If more than 4 words
-        text = " ".join(words[:3])
+    if len(words) > 5:  # Changed from 4 to 5
+        text = " ".join(words[:4])  # Changed from 3 to 4
 
     # Remove any remaining noise words at the end
     noise_words = {
@@ -1934,8 +1934,13 @@ def cleanup_old_webhook_results():
 def _apply_initial_categorization(
     transactions_input: List[Dict[str, Any]], input_embeddings: np.ndarray, user_id: str
 ) -> List[Dict[str, Any]]:
-    """Performs initial categorization based on similarity and money_in flag."""
+    """Performs initial categorization based on similarity and returns top 2 matches."""
     results = []
+    # Define confidence thresholds
+    MIN_ABSOLUTE_CONFIDENCE = 0.85  # Minimum score for the best match
+    MIN_RELATIVE_CONFIDENCE_DIFF = 0.03  # Minimum difference between top 2 scores
+    NEIGHBOR_COUNT = 3  # Number of top neighbors to check for category consistency
+
     try:
         trained_embeddings = fetch_embeddings(f"{user_id}")
         trained_data = fetch_embeddings(f"{user_id}_index")
@@ -1983,9 +1988,10 @@ def _apply_initial_categorization(
             best_match_idx = -1
             best_category = "Unknown"
             best_score = 0.0
-            # Removed original_best_category and adjustment_reason initialization related to compatibility
+            second_best_category = "Unknown"
+            second_best_score = 0.0
 
-            # Simplified logic: Find the top match directly
+            # Find top 2 matches
             if len(sorted_indices) > 0:
                 try:
                     best_match_idx = sorted_indices[0]
@@ -1996,26 +2002,105 @@ def _apply_initial_categorization(
                         logger.warning(
                             f"Best match index {best_match_idx} out of bounds for trained_data (len {len(trained_data)})"
                         )
-                except IndexError:
-                    logger.error(
-                        f"IndexError accessing trained_data at index {best_match_idx}"
-                    )
+
+                    if len(sorted_indices) > 1:
+                        second_match_idx = sorted_indices[1]
+                        if second_match_idx < len(trained_data):
+                            second_best_category = str(
+                                trained_data[second_match_idx]["category"]
+                            )
+                            second_best_score = float(
+                                current_similarities[second_match_idx]
+                            )
+                        else:
+                            logger.warning(
+                                f"Second match index {second_match_idx} out of bounds for trained_data (len {len(trained_data)})"
+                            )
+
+                except IndexError as e:
+                    logger.error(f"IndexError accessing trained_data: {e}")
                 except Exception as e:
-                    logger.error(
-                        f"Error processing best match index {best_match_idx}: {e}"
+                    logger.error(f"Error processing top matches: {e}")
+
+            # Determine final category based on thresholds
+            final_category = "Unknown"
+            if (
+                best_score >= MIN_ABSOLUTE_CONFIDENCE
+                and (best_score - second_best_score) >= MIN_RELATIVE_CONFIDENCE_DIFF
+            ):
+                final_category = best_category
+            else:
+                # Log why it was set to Unknown
+                if best_score < MIN_ABSOLUTE_CONFIDENCE:
+                    logger.info(
+                        f"Narrative '{tx['description']}' classified as Unknown due to low absolute confidence ({best_score:.2f} < {MIN_ABSOLUTE_CONFIDENCE})"
+                    )
+                elif (best_score - second_best_score) < MIN_RELATIVE_CONFIDENCE_DIFF:
+                    logger.info(
+                        f"Narrative '{tx['description']}' classified as Unknown due to low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}, Top: '{best_category}'/{best_score:.2f}, Second: '{second_best_category}'/{second_best_score:.2f})"
                     )
 
-            # Always use the best match found by similarity
             results.append(
                 {
                     "narrative": tx["description"],
-                    "predicted_category": best_category,
+                    "predicted_category": final_category,
                     "similarity_score": best_score,
+                    "second_predicted_category": second_best_category,
+                    "second_similarity_score": second_best_score,
                     "money_in": money_in,
-                    "amount": tx.get("amount"),  # Store amount if available
-                    # Removed adjustment_info as compatibility adjustments are gone
+                    "amount": tx.get("amount"),
                 }
             )
+
+            # Neighbor Category Consistency Check
+            neighbor_categories = []
+            for k in range(min(NEIGHBOR_COUNT, len(sorted_indices))):
+                neighbor_idx = sorted_indices[k]
+                if neighbor_idx < len(trained_data):
+                    try:
+                        neighbor_category = str(trained_data[neighbor_idx]["category"])
+                        # Optionally ignore certain categories like 'Unknown' if needed
+                        # if neighbor_category != "Unknown":
+                        neighbor_categories.append(neighbor_category)
+                    except IndexError:
+                        logger.warning(
+                            f"IndexError accessing neighbor category at index {neighbor_idx}"
+                        )
+                else:
+                    logger.warning(
+                        f"Neighbor index {neighbor_idx} out of bounds for trained_data (len {len(trained_data)}) during consistency check"
+                    )
+
+            unique_neighbor_categories = set(neighbor_categories)
+            has_conflicting_neighbors = len(unique_neighbor_categories) > 1
+
+            if has_conflicting_neighbors:
+                logger.info(
+                    f"Narrative '{tx['description']}' has conflicting neighbor categories: {list(unique_neighbor_categories)}"
+                )
+
+            # Determine final category based on thresholds AND neighbor consistency
+            final_category = "Unknown"
+            if (
+                best_score >= MIN_ABSOLUTE_CONFIDENCE
+                and (best_score - second_best_score) >= MIN_RELATIVE_CONFIDENCE_DIFF
+                and not has_conflicting_neighbors
+            ):
+                final_category = best_category
+            else:
+                # Log why it was set to Unknown
+                if best_score < MIN_ABSOLUTE_CONFIDENCE:
+                    logger.info(
+                        f"Narrative '{tx['description']}' classified as Unknown due to low absolute confidence ({best_score:.2f} < {MIN_ABSOLUTE_CONFIDENCE})"
+                    )
+                elif (best_score - second_best_score) < MIN_RELATIVE_CONFIDENCE_DIFF:
+                    logger.info(
+                        f"Narrative '{tx['description']}' classified as Unknown due to low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}, Top: '{best_category}'/{best_score:.2f}, Second: '{second_best_category}'/{second_best_score:.2f})"
+                    )
+                elif has_conflicting_neighbors:
+                    logger.info(
+                        f"Narrative '{tx['description']}' classified as Unknown due to conflicting neighbor categories: {list(unique_neighbor_categories)}"
+                    )
 
     except Exception as e:
         logger.error(f"Error during initial categorization: {e}", exc_info=True)
@@ -2031,77 +2116,7 @@ def _detect_refunds(
     dependency on hardcoded EXPENSE_CATEGORIES.
     """
     logger.info("Refund detection logic is currently bypassed.")
-    # Original logic removed/commented out as it relied on EXPENSE_CATEGORIES
-    # try:
-    #     trained_embeddings = fetch_embeddings(f"{user_id}")
-    #     trained_data = fetch_embeddings(f"{user_id}_index")
-    #
-    #     if trained_embeddings.size == 0 or trained_data.size == 0:
-    #         logger.warning(
-    #             f"Cannot detect refunds, no training data/index for user {user_id}"
-    #         )
-    #         return initial_results
-    #
-    #     similarities = cosine_similarity(input_embeddings, trained_embeddings)
-    #
-    #     for i, result in enumerate(initial_results):
-    #         # Only check transactions marked as money_in (potential credits/refunds)
-    #         # And skip those already definitively classified as income types by initial step
-    #         # (Although initial step no longer uses INCOME_CATEGORIES for filtering)
-    #         if result["money_in"] is True:
-    #             current_similarities = similarities[i]
-    #             sorted_indices = np.argsort(-current_similarities)
-    #
-    #             best_expense_score = -1.0
-    #             best_expense_category = None
-    #
-    #             # Find the highest scoring *expense* category for this transaction
-    #             for trained_idx in sorted_indices:
-    #                 try:
-    #                     if trained_idx >= len(trained_data):
-    #                         continue
-    #                     category = str(trained_data[trained_idx]["category"])
-    #
-    #                     # RELIES ON HARDCODED SET:
-    #                     # if category in EXPENSE_CATEGORIES and category != REFUND_CATEGORY:
-    #                     #    best_expense_score = float(current_similarities[trained_idx])
-    #                     #    best_expense_category = category
-    #                     #    break # Found the best *expense* match
-    #                 except Exception as e:
-    #                     logger.warning(
-    #                         f"Error checking index {trained_idx} during refund detection: {e}"
-    #                     )
-    #                     continue
-    #
-    #             # Define a threshold - how much higher must the expense score be?
-    #             refund_confidence_threshold = 0.05 # Example threshold
-    #
-    #             # If we found an expense category & its score is significantly higher
-    #             # than the currently assigned category (which might be 'Unknown' or a low-confidence match)
-    #             is_potential_refund = False
-    #             if best_expense_category and (
-    #                 result["predicted_category"] == "Unknown" or
-    #                 best_expense_score > (result["similarity_score"] + refund_confidence_threshold)
-    #             ):
-    #                 is_potential_refund = True
-    #
-    #                 # Re-categorize as the best matching *expense* category, marking as refund candidate
-    #                 original_category = result["predicted_category"]
-    #                 result["predicted_category"] = best_expense_category
-    #                 result["similarity_score"] = best_expense_score # Update score too
-    #                 reason = f"Potential refund: Matched expense category '{best_expense_category}' (score {best_expense_score:.2f}) better than original '{original_category}' (score {result['similarity_score']:.2f})"
-    #
-    #                 if "adjustment_info" not in result:
-    #                       result["adjustment_info"] = {}
-    #                 result["adjustment_info"]["is_refund_candidate"] = True
-    #                 result["adjustment_info"]["refund_detection_reason"] = reason
-    #                 result["adjustment_info"]["adjusted"] = True
-    #
-    #                 logger.info(f"Potential refund detected: '{result['narrative']}' -> '{best_expense_category}'")
-    #
-    # except Exception as e:
-    #     logger.error(f"Error during refund detection: {e}", exc_info=True)
-    # Pass results through without modification
+
     return initial_results
 
 
