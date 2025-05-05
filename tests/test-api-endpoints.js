@@ -199,242 +199,246 @@ const startFlaskServer = async (port) => {
 
 // Load training data from CSV
 const loadTrainingData = (file_name) => {
-  return new Promise((resolve, reject) => {
-    const results = [];
-    const startTime = Date.now();
-    let headersProcessed = false;
-    let descriptionIndex = -1;
-    let categoryIndex = -1;
-    let amountIndex = -1;
+  logTrace(`Loading training data from ${file_name}`);
+  const start_time = Date.now();
+  const path = require("path");
+  const fs = require("fs");
+  const { parse } = require("csv-parse/sync"); // Use sync version for simplicity
 
-    const stream = fs
-      .createReadStream(path.join(__dirname, "test_data", file_name))
-      .pipe(
-        csv({
-          mapHeaders: ({ header, index }) => {
-            const lowerHeader = header.toLowerCase().trim();
-            // Allow for variations like 'Description' or 'Narrative'
-            if (["description", "narrative"].includes(lowerHeader)) {
-              return "description";
-            }
-            // Allow 'Category'
-            if (lowerHeader === "category") {
-              return "category";
-            }
-            // Allow 'Amount' or 'Amount Spent'
-            if (["amount", "amount spent"].includes(lowerHeader)) {
-              return "amount";
-            }
-            // Return null for headers we don't explicitly map to keep them if needed, or ignore others
-            return null;
-          },
-        })
-      )
-      .on("headers", (headers) => {
-        // Find the indices based on the mapped headers
-        descriptionIndex = headers.indexOf("description");
-        categoryIndex = headers.indexOf("category");
-        amountIndex = headers.indexOf("amount");
-        headersProcessed = true;
+  const dataPath = path.join(__dirname, "test_data", file_name);
+  logTrace(`Resolved training data path: ${dataPath}`);
+  if (!fs.existsSync(dataPath)) {
+    throw new Error(`Training data file not found: ${dataPath}`);
+  }
 
-        logDebug(
-          `Header indices found: Description=${descriptionIndex}, Category=${categoryIndex}, Amount=${amountIndex}`
-        );
-
-        // Validate required headers
-        if (descriptionIndex === -1) {
-          stream.destroy(); // Stop processing the stream
-          return reject(new Error("CSV file must contain a header named 'Description' or 'Narrative'"));
-        }
-        if (categoryIndex === -1) {
-          stream.destroy();
-          return reject(new Error("CSV file must contain a header named 'Category'"));
-        }
-        if (amountIndex === -1) {
-          logInfo("Optional 'Amount' or 'Amount Spent' header not found. Proceeding without amount data.");
-        }
-      })
-      .on("data", (row) => {
-        // Ensure headers were processed before handling data
-        if (!headersProcessed) return;
-
-        const description = row.description; // Access by mapped name
-        const category = row.category; // Access by mapped name
-        const amountValue = amountIndex !== -1 ? row.amount : undefined; // Access by mapped name if index found
-
-        let money_in = null;
-        let parsedAmount = null;
-
-        // Process amount only if the column exists
-        if (amountIndex !== -1 && amountValue !== undefined && amountValue !== null) {
-          // Remove currency symbols and commas
-          const cleanAmount = String(amountValue).replace(/[^\d.-]/g, "");
-          parsedAmount = parseFloat(cleanAmount);
-
-          if (!isNaN(parsedAmount)) {
-            money_in = parsedAmount >= 0;
-            logDebug(`Parsed amount ${parsedAmount} as money_in=${money_in}`);
-          } else {
-            logDebug(`Could not parse amount: "${amountValue}" for description: "${description}"`);
-            parsedAmount = null; // Ensure it's null if parsing failed
-          }
-        }
-
-        // Map fields to match expected format
-        const transaction = {
-          description: description,
-          Category: category,
-        };
-
-        // Add money_in flag if amount was successfully parsed
-        if (money_in !== null) {
-          transaction.money_in = money_in;
-        }
-
-        // Add actual amount for transfer detection if parsed
-        if (parsedAmount !== null) {
-          transaction.amount = parsedAmount;
-        }
-
-        // Ensure we have the required fields before adding
-        if (transaction.description && transaction.Category) {
-          results.push(transaction);
-        } else {
-          logDebug(`Skipping invalid transaction data: ${JSON.stringify(row)}`);
-        }
-      })
-      .on("end", () => {
-        const duration = (Date.now() - startTime) / 1000;
-        logInfo(`Loaded ${results.length} training records in ${duration.toFixed(1)}s`);
-
-        if (results.length === 0) {
-          logError(
-            "No valid training records found. Check CSV field names - needs 'description'/'Narrative' and 'Category' fields."
-          );
-        } else {
-          logDebug(`Sample transaction: ${JSON.stringify(results[0])}`);
-          // Log how many transactions have the money_in flag
-          const withMoneyIn = results.filter((t) => t.money_in !== undefined).length;
-          logInfo(`${withMoneyIn} of ${results.length} transactions have money_in flag set`);
-          // Log how many transactions have the amount field
-          const withAmount = results.filter((t) => t.amount !== undefined).length;
-          logInfo(`${withAmount} of ${results.length} transactions have amount field set`);
-        }
-
-        resolve(results);
-      })
-      .on("error", (error) => {
-        logError(`Error loading training data: ${error.toString()}`);
-        reject(error);
-      });
+  const content = fs.readFileSync(dataPath);
+  const records = parse(content, {
+    columns: true,
+    skip_empty_lines: true,
   });
+  logTrace(`Parsed ${records.length} raw records from ${file_name}`);
+
+  const transactions = [];
+  let moneyInCount = 0;
+  let amountCount = 0;
+
+  // Check for expected columns (case-insensitive)
+  const header = Object.keys(records[0] || {}).map((h) => h.toLowerCase());
+  const hasDescription = header.includes("description");
+  const hasCategory = header.includes("category");
+  const hasAmount = header.includes("amount");
+  const hasDate = header.includes("date");
+
+  if (!hasDescription) {
+    logError(`Training data file ${file_name} missing 'Description' column.`);
+    // return []; // Or throw error
+  }
+  if (!hasCategory) {
+    logError(`Training data file ${file_name} missing 'Category' column.`);
+    // return []; // Or throw error
+  }
+  if (!hasAmount) {
+    logInfo(`Training data file ${file_name} missing 'Amount' column. Amount/Direction context will be unavailable.`);
+  }
+  if (!hasDate) {
+    logInfo(`Training data file ${file_name} missing 'Date' column. Time context will be unavailable.`);
+  }
+
+  for (const record of records) {
+    const description = record.Description || record.description || "";
+    const category = record.Category || record.category;
+
+    if (!description || !category) {
+      logTrace(`Skipping training record due to missing description or category: ${JSON.stringify(record)}`);
+      continue; // Skip if essential fields are missing
+    }
+
+    const transaction = {
+      description: description.trim(),
+      Category: category.trim(),
+    };
+
+    // Add amount and derive money_in if Amount column exists
+    if (hasAmount) {
+      const amountStr = record.Amount || record.amount;
+      if (amountStr !== null && amountStr !== undefined && amountStr !== "") {
+        const amount = parseFloat(amountStr);
+        if (!isNaN(amount)) {
+          transaction.amount = amount;
+          transaction.money_in = amount >= 0; // True if amount is positive or zero
+          amountCount++;
+          if (transaction.money_in) {
+            moneyInCount++;
+          }
+        } else {
+          logTrace(`Could not parse amount: '${amountStr}' for description: '${transaction.description}'`);
+          transaction.amount = null;
+          // We could default money_in here, but let's leave it undefined if amount is unparseable
+        }
+      } else {
+        transaction.amount = null;
+      }
+    }
+
+    // Add timestamp if Date column exists and is parseable
+    if (hasDate) {
+      const dateStr = record.Date || record.date;
+      if (dateStr) {
+        try {
+          // Attempt to parse DD/MM/YYYY format - Fixed Regex escaping
+          const parts = dateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+          if (parts) {
+            const day = parseInt(parts[1], 10);
+            const month = parseInt(parts[2], 10) - 1; // JS months are 0-indexed
+            const year = parseInt(parts[3], 10);
+            const dateObj = new Date(Date.UTC(year, month, day)); // Use UTC to avoid timezone issues
+            if (!isNaN(dateObj.getTime())) {
+              // Format as ISO 8601 string required by Pydantic/Python datetime
+              transaction.timestamp = dateObj.toISOString();
+            } else {
+              logTrace(`Could not parse date: '${dateStr}' into valid Date object`);
+            }
+          } else {
+            logTrace(`Date format not recognized (expected DD/MM/YYYY): '${dateStr}'`);
+          }
+        } catch (e) {
+          logTrace(`Error parsing date '${dateStr}': ${e.message}`);
+        }
+      }
+    }
+
+    transactions.push(transaction);
+  }
+
+  const duration = (Date.now() - start_time) / 1000;
+  logDebug(`Loaded ${transactions.length} training records in ${duration.toFixed(1)}s`);
+  // Updated logging to be more accurate
+  const totalWithMoneyIn = transactions.filter((t) => t.money_in !== undefined).length;
+  const totalWithAmount = transactions.filter((t) => t.amount !== null).length;
+  logDebug(`${totalWithMoneyIn} of ${transactions.length} transactions have money_in flag set`);
+  logDebug(`${totalWithAmount} of ${transactions.length} transactions have amount field set`);
+
+  return transactions;
 };
 
 // Load categorization data
 const loadCategorizationData = (file_name) => {
-  return new Promise((resolve, reject) => {
-    const transactions = [];
-    const targetCsvPath = path.join(__dirname, "test_data", file_name);
-    let headersProcessed = false;
-    let descriptionIndex = -1;
-    let amountIndex = -1;
+  logTrace(`Loading categorization data from ${file_name}`);
+  const start_time = Date.now();
+  const path = require("path");
+  const fs = require("fs");
+  const { parse } = require("csv-parse/sync"); // Use sync version
 
-    logDebug(`Loading categorization data from ${file_name}...`);
+  const dataPath = path.join(__dirname, "test_data", file_name);
+  logTrace(`Resolved categorization data path: ${dataPath}`);
+  if (!fs.existsSync(dataPath)) {
+    throw new Error(`Categorization data file not found: ${dataPath}`);
+  }
 
-    const stream = fs
-      .createReadStream(targetCsvPath)
-      .pipe(
-        csv({
-          mapHeaders: ({ header, index }) => {
-            const lowerHeader = header.toLowerCase().trim();
-            // Allow for variations like 'Description' or 'Narrative'
-            if (["description", "narrative"].includes(lowerHeader)) {
-              return "description";
-            }
-            // Allow 'Amount' or 'Amount Spent'
-            if (["amount", "amount spent"].includes(lowerHeader)) {
-              return "amount";
-            }
-            return null; // Ignore other headers
-          },
-        })
-      )
-      .on("headers", (headers) => {
-        descriptionIndex = headers.indexOf("description");
-        amountIndex = headers.indexOf("amount");
-        headersProcessed = true;
-
-        logDebug(`Header indices found: Description=${descriptionIndex}, Amount=${amountIndex}`);
-
-        // Validate required headers
-        if (descriptionIndex === -1) {
-          stream.destroy();
-          return reject(new Error("Categorization CSV must contain a header named 'Description' or 'Narrative'"));
-        }
-        if (amountIndex === -1) {
-          logInfo("Optional 'Amount' or 'Amount Spent' header not found. Proceeding without amount/money_in data.");
-        }
-      })
-      .on("data", (row) => {
-        if (!headersProcessed) return;
-
-        const description = row.description;
-        const amountValue = amountIndex !== -1 ? row.amount : undefined;
-
-        if (description) {
-          let parsedAmount = null;
-          let money_in = null;
-
-          // Check if we have a valid amount to determine money_in
-          if (amountIndex !== -1 && amountValue !== undefined && amountValue !== null) {
-            // Clean and parse the amount
-            const cleanAmount = String(amountValue).replace(/[^\d.-]/g, "");
-            parsedAmount = parseFloat(cleanAmount);
-
-            if (!isNaN(parsedAmount)) {
-              money_in = parsedAmount >= 0;
-            } else {
-              logDebug(`Could not parse amount: "${amountValue}" for description: "${description}"`);
-              parsedAmount = null; // Ensure null if parsing failed
-            }
-          }
-
-          // Create a TransactionInput object, including amount/money_in if available
-          transactions.push({
-            description: description,
-            money_in: money_in, // Will be null if amount wasn't found or parsed
-            amount: parsedAmount, // Will be null if amount wasn't found or parsed
-          });
-          logDebug(`Added transaction: desc="${description}", money_in=${money_in}, amount=${parsedAmount}`);
-        } else {
-          logDebug(`Skipping row with missing description: ${JSON.stringify(row)}`);
-        }
-      })
-      .on("end", () => {
-        // Count how many transactions have money_in flag
-        const transactionObjects = transactions.filter((t) => typeof t === "object");
-        logInfo(`Loaded ${transactions.length} descriptions from ${file_name}`);
-        logInfo(`${transactionObjects.length} of ${transactions.length} have money_in flag set`);
-
-        // Count how many transactions have amount
-        const withAmount = transactions.filter((t) => typeof t === "object" && t.amount !== undefined).length;
-        logInfo(`${withAmount} of ${transactions.length} have amount field set`);
-
-        // Print some sample transactions for debugging
-        if (transactions.length > 0) {
-          logInfo("Sample transactions:");
-          for (let i = 0; i < Math.min(3, transactions.length); i++) {
-            logInfo(`  ${i + 1}: ${JSON.stringify(transactions[i])}`);
-          }
-        }
-
-        resolve(transactions);
-      })
-      .on("error", (error) => {
-        logError(`Error loading ${file_name}: ${error.message}`);
-        reject(error);
-      });
+  const content = fs.readFileSync(dataPath);
+  const records = parse(content, {
+    columns: true,
+    skip_empty_lines: true,
   });
+  logTrace(`Parsed ${records.length} raw records from ${file_name}`);
+
+  const transactions = [];
+  let moneyInCount = 0;
+  let amountCount = 0;
+
+  // Check for expected columns (case-insensitive)
+  const header = Object.keys(records[0] || {}).map((h) => h.toLowerCase());
+  const hasDescription = header.includes("description");
+  const hasAmount = header.includes("amount");
+  const hasDate = header.includes("date");
+
+  if (!hasDescription) {
+    logError(`Categorization data file ${file_name} missing 'Description' column.`);
+    // return []; // Or throw error
+  }
+  if (!hasAmount) {
+    logInfo(
+      `Categorization data file ${file_name} missing 'Amount' column. Amount/Direction context will be unavailable.`
+    );
+  }
+  if (!hasDate) {
+    logInfo(`Categorization data file ${file_name} missing 'Date' column. Time context will be unavailable.`);
+  }
+
+  for (const record of records) {
+    const description = record.Description || record.description || "";
+
+    if (!description) {
+      logTrace(`Skipping categorization record due to missing description: ${JSON.stringify(record)}`);
+      continue; // Skip if description is missing
+    }
+
+    const transaction = {
+      description: description.trim(),
+    };
+
+    // Add amount and derive money_in if Amount column exists
+    if (hasAmount) {
+      const amountStr = record.Amount || record.amount;
+      if (amountStr !== null && amountStr !== undefined && amountStr !== "") {
+        const amount = parseFloat(amountStr);
+        if (!isNaN(amount)) {
+          transaction.amount = amount;
+          transaction.money_in = amount >= 0; // True if amount is positive or zero
+          amountCount++;
+          if (transaction.money_in) {
+            moneyInCount++;
+          }
+        } else {
+          logTrace(`Could not parse amount: '${amountStr}' for description: '${transaction.description}'`);
+          transaction.amount = null;
+          transaction.money_in = null; // Explicitly set to null if amount is unparseable
+        }
+      } else {
+        transaction.amount = null;
+        transaction.money_in = null;
+      }
+    }
+
+    // Add timestamp if Date column exists and is parseable
+    if (hasDate) {
+      const dateStr = record.Date || record.date;
+      if (dateStr) {
+        try {
+          // Attempt to parse DD/MM/YYYY format
+          const parts = dateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+          if (parts) {
+            const day = parseInt(parts[1], 10);
+            const month = parseInt(parts[2], 10) - 1; // JS months are 0-indexed
+            const year = parseInt(parts[3], 10);
+            const dateObj = new Date(Date.UTC(year, month, day)); // Use UTC
+            if (!isNaN(dateObj.getTime())) {
+              transaction.timestamp = dateObj.toISOString();
+            } else {
+              logTrace(`Could not parse date: '${dateStr}' into valid Date object`);
+            }
+          } else {
+            logTrace(`Date format not recognized (expected DD/MM/YYYY): '${dateStr}'`);
+          }
+        } catch (e) {
+          logTrace(`Error parsing date '${dateStr}': ${e.message}`);
+        }
+      }
+    }
+
+    // Add the processed transaction
+    transactions.push(transaction);
+  }
+
+  const duration = (Date.now() - start_time) / 1000;
+  logDebug(`Loaded ${transactions.length} descriptions from ${file_name} in ${duration.toFixed(1)}s`);
+  // Updated logging
+  const totalWithMoneyIn = transactions.filter((t) => t.money_in !== null).length; // Check for non-null
+  const totalWithAmount = transactions.filter((t) => t.amount !== null).length;
+  logDebug(`${totalWithMoneyIn} of ${transactions.length} have money_in flag set`);
+  logDebug(`${totalWithAmount} of ${transactions.length} have amount field set`);
+
+  return transactions;
 };
 
 // Test training flow
@@ -955,19 +959,40 @@ const categoriseTransactions = async (config) => {
           console.log(`Total transactions categorised: ${results.length}`);
 
           results.forEach((result, index) => {
-            const narrative = result.narrative || "N/A"; // Handle missing narrative
-            const predicted_category = result.predicted_category || "Unknown";
-            const confidence = result.similarity_score ? `${(result.similarity_score * 100).toFixed(2)}%` : "N/A";
-            // Add money_in/money_out display
+            const narrative = result.narrative || "N/A";
+            const final_predicted_category = result.predicted_category || "Unknown";
             const direction =
               result.money_in === true ? "MONEY_IN" : result.money_in === false ? "MONEY_OUT" : "UNKNOWN_DIR";
-            // Display amount if available
             const amountStr =
               result.amount !== null && result.amount !== undefined ? `$${Math.abs(result.amount).toFixed(2)}` : "";
 
-            console.log(
-              `${index + 1}. "${narrative}" → ${predicted_category} (${confidence}) | ${direction} ${amountStr}`
-            );
+            // Base output line
+            let output = `${index + 1}. "${narrative}" [${direction}${amountStr ? " " + amountStr : ""}]`;
+
+            // Check if context adjustment occurred
+            const adjustmentInfo = result.adjustment_info;
+            if (adjustmentInfo && adjustmentInfo.context_adjusted) {
+              const original_category = adjustmentInfo.original_prediction || "Unknown";
+              const original_similarity = adjustmentInfo.original_similarity;
+              const original_conf_str = original_similarity ? `${(original_similarity * 100).toFixed(2)}%` : "N/A";
+              const final_score_str = result.final_score ? `${(result.final_score * 100).toFixed(2)}%` : "N/A";
+              const context_score_str = result.context_score ? `${(result.context_score * 100).toFixed(2)}%` : "N/A";
+
+              // Output for adjusted prediction
+              output += `\n   Initial Prediction: ${original_category} (Similarity: ${original_conf_str})`;
+              output += `\n   Context Adjusted -> ${final_predicted_category} (Final: ${final_score_str}, Context: ${context_score_str})`;
+              // Optional: Add reason
+              // if (adjustmentInfo.reranking_reason) {
+              //     output += `\n   Reason: ${adjustmentInfo.reranking_reason}`;
+              // }
+            } else {
+              // Output for non-adjusted prediction
+              const similarity_score = result.similarity_score;
+              const similarity_conf_str = similarity_score ? `${(similarity_score * 100).toFixed(2)}%` : "N/A";
+              output += ` → ${final_predicted_category} (Similarity: ${similarity_conf_str})`;
+            }
+
+            console.log(output);
           });
 
           console.log("=====================================\n");
@@ -1237,11 +1262,11 @@ const main = async () => {
 
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
-    // const trainingData = await loadTrainingData("full_train.csv");
+    const trainingData = await loadTrainingData("full_train.csv");
     // const trainingData = await loadTrainingData("training_data.csv");
-    const trainingData = await loadTrainingData("training_data_num_cat.csv");
+    // const trainingData = await loadTrainingData("training_data_num_cat.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
-    const categorizationData = await loadCategorizationData("categorise_test.csv");
+    const categorizationData = await loadCategorizationData("categorise_full.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
 

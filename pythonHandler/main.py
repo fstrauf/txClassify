@@ -26,6 +26,10 @@ REPLICATE_MODEL_VERSION = (
 )
 EMBEDDING_DIMENSION = 1024  # Embedding dimension for the model
 
+# Define weights for combining description similarity and context score
+DESC_SIM_WEIGHT = 0.7
+CONTEXT_SCORE_WEIGHT = 0.3
+
 
 # === Request Validation Models ===
 class TransactionBase(BaseModel):
@@ -46,6 +50,10 @@ class Transaction(TransactionBase):
     """Transaction model with narrative and category fields."""
 
     Category: Optional[str] = None
+    # Make all new fields optional for backward compatibility
+    money_in: Optional[bool] = None  # Defaults to None if not provided
+    amount: Optional[float] = None
+    timestamp: Optional[datetime] = None
 
 
 class TrainRequest(BaseModel):
@@ -98,12 +106,23 @@ class UserConfigRequest(BaseModel):
 
 
 # Configure logging
+# Set log level based on environment (DEBUG for testing/development)
+# log_level = (
+#     logging.DEBUG
+#     if os.environ.get('FLASK_ENV') in ["development", "testing"]
+#     else logging.INFO
+# )
+log_level = logging.INFO  # Reverted: Keep INFO level to reduce library noise
+
 logging.basicConfig(
     stream=sys.stdout,  # Log to stdout for Docker/Gunicorn to capture
     format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=log_level,  # Use the determined log level
 )
 logger = logging.getLogger(__name__)
+
+# Log the effective level
+logger.info(f"Setting log level to: {logging.getLevelName(log_level)}")
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -498,94 +517,96 @@ def run_prediction(descriptions: list) -> dict:
         raise
 
 
-def store_embeddings(data: np.ndarray, embedding_id: str, user_id: str) -> bool:
-    """Store embeddings in database with quantization, including userId."""
+def store_embeddings(
+    data: Union[np.ndarray, bytes], embedding_id: str, user_id: str
+) -> bool:
+    """Store embeddings (NumPy arrays) or other data (bytes) in the database.
+
+    Handles quantization for float32 NumPy arrays.
+    Wraps data and metadata into a .npz archive before storing.
+    """
     try:
-        logger.info(
-            f"Storing embeddings with ID: {embedding_id}, shape: {data.shape}, for User: {user_id}"
-        )
+        log_message = f"Storing data with ID: {embedding_id}, for User: {user_id}"
+        if isinstance(data, np.ndarray):
+            log_message += (
+                f", type: NumPy array, shape: {data.shape}, dtype: {data.dtype}"
+            )
+        elif isinstance(data, bytes):
+            log_message += f", type: bytes, size: {len(data)} bytes"
+        else:
+            log_message += f", type: Unknown"
+        logger.info(log_message)
         start_time = time.time()
 
-        # Prepare data before database operation
         buffer = io.BytesIO()
+        metadata = {}
+        data_to_save = data  # Default to original data
 
-        # Handle structured arrays (like index data) differently
-        if data.dtype.names is not None:
-            dtype_dict = {
-                "names": data.dtype.names,
-                "formats": [
+        # --- Process based on input type ---
+        if isinstance(data, np.ndarray):
+            metadata["is_numpy"] = True
+            metadata["shape"] = data.shape
+            metadata["dtype"] = str(data.dtype)  # Store dtype as string
+
+            # Handle structured arrays (like index data)
+            if data.dtype.names is not None:
+                metadata["is_structured"] = True
+                # Store dtype components separately for reconstruction
+                metadata["dtype_names"] = list(data.dtype.names)
+                metadata["dtype_formats"] = [
                     data.dtype.fields[name][0].str for name in data.dtype.names
-                ],
-            }
-            metadata = {"is_structured": True, "dtype": dtype_dict, "shape": data.shape}
-            np.savez(buffer, metadata=metadata, data=data.tobytes())
-        else:
-            # For regular arrays (embeddings), use quantization
-            if data.dtype == np.float32:
+                ]
+                # Convert structured array to bytes for saving
+                data_to_save = data.tobytes()
+
+            # Handle regular numeric arrays (like embeddings)
+            elif data.dtype == np.float32:
+                metadata["is_structured"] = False
                 # Avoid division by zero if data is all zeros
                 abs_max = np.max(np.abs(data))
-                scale = (
-                    abs_max / 127 if abs_max > 0 else 1.0
-                )  # Default scale to 1 if max is 0
+                scale = abs_max / 127 if abs_max > 1e-6 else 1.0  # Use small epsilon
                 quantized_data = (data / scale).astype(np.int8)
-                metadata = {
-                    "is_structured": False,
-                    "scale": scale,
-                    "shape": data.shape,
-                    "quantized": True,
-                }
-                np.savez_compressed(buffer, metadata=metadata, data=quantized_data)
+                metadata["scale"] = scale
+                metadata["quantized"] = True
+                data_to_save = quantized_data  # Save the quantized data
             else:
-                metadata = {
-                    "is_structured": False,
-                    "quantized": False,
-                    "shape": data.shape,
-                }
-                np.savez_compressed(buffer, metadata=metadata, data=data)
+                # Other NumPy array types (non-float32, non-structured)
+                metadata["is_structured"] = False
+                metadata["quantized"] = False
+                # data_to_save remains the original array
+
+        elif isinstance(data, bytes):
+            # Input is already bytes (e.g., serialized JSON)
+            metadata["is_numpy"] = False
+            metadata["original_type"] = "bytes"
+            # data_to_save remains the original bytes
+        else:
+            logger.error(f"Unsupported data type for store_embeddings: {type(data)}")
+            return False
+
+        # Save data and metadata into the .npz archive format
+        np.savez_compressed(buffer, data=data_to_save, metadata=np.array(metadata))
+        # --- End processing ---
 
         data_bytes = buffer.getvalue()
         buffer.close()
 
-        # Store in database with retry logic
-        max_retries = 3
-        retry_delay = 1  # seconds
+        # Store in database using prisma_client (which handles base64)
+        result = prisma_client.store_embedding(embedding_id, data_bytes, user_id)
 
-        for attempt in range(max_retries):
-            try:
-                # Correctly call the singular method name in prisma_client
-                result = prisma_client.store_embedding(
-                    embedding_id, data_bytes, user_id
-                )
+        if result:
+            logger.info(
+                f"DB storage successful for {embedding_id} in {time.time() - start_time:.2f}s"
+            )
+        else:
+            logger.error(f"DB storage failed for {embedding_id}")
 
-                # Removed the redundant tracking code below, as userId is stored directly
-
-                logger.info(f"Embeddings stored in {time.time() - start_time:.2f}s")
-                return result
-
-            except Exception as e:
-                if "connection pool" in str(e).lower() or "timeout" in str(e).lower():
-                    if attempt < max_retries - 1:
-                        logger.warning(
-                            f"Database operation failed (attempt {attempt + 1}/{max_retries}): {e}"
-                        )
-                        time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-                        continue
-                # Log the error before re-raising or returning False
-                logger.error(
-                    f"Attempt {attempt + 1} failed to store embedding {embedding_id}: {e}"
-                )
-                # Re-raise the exception on the last attempt or if it's not a pool/timeout error
-                if attempt == max_retries - 1 or not (
-                    "connection pool" in str(e).lower() or "timeout" in str(e).lower()
-                ):
-                    raise
-
-        # If loop completes without success (should only happen if pool/timeout errors persist)
-        return False
+        return result
 
     except Exception as e:
-        # Catch potential errors during data prep or final re-raise from loop
-        logger.error(f"Error storing embedding {embedding_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error in store_embeddings for {embedding_id}: {e}", exc_info=True
+        )
         return False
 
 
@@ -618,42 +639,111 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
             logger.warning(f"No embeddings found with ID: {embedding_id}")
             return np.array([])
 
-        # Convert bytes back to numpy array
+        # Convert bytes back to numpy array or original bytes
         try:
             buffer = io.BytesIO(data_bytes)
             with np.load(buffer, allow_pickle=True) as loaded:
+                # Load metadata (saved as a 0-d array)
                 metadata = loaded["metadata"].item()
-                data = loaded["data"]
+                raw_data = loaded["data"]
 
-                if metadata.get("is_structured", False):
-                    # Reconstruct structured array
-                    dtype_dict = metadata["dtype"]
-                    dtype = np.dtype(
-                        {"names": dtype_dict["names"], "formats": dtype_dict["formats"]}
-                    )
-                    embeddings = np.frombuffer(data, dtype=dtype)
-                    if len(metadata["shape"]) > 1:
-                        embeddings = embeddings.reshape(metadata["shape"])
-                else:
-                    # Handle regular arrays
-                    if metadata.get("quantized", False):
-                        scale = metadata["scale"]
-                        embeddings = data.astype(np.float32) * scale
+                # --- Restore based on metadata ---
+                if metadata.get("is_numpy", False):
+                    shape = metadata.get("shape")
+                    dtype_str = metadata.get("dtype")
+
+                    if metadata.get("is_structured", False):
+                        # Reconstruct structured array
+                        names = metadata.get("dtype_names")
+                        formats = metadata.get("dtype_formats")
+                        if names and formats:
+                            dtype = np.dtype({"names": names, "formats": formats})
+                            # Data was saved as raw bytes for structured array
+                            restored_data = np.frombuffer(raw_data, dtype=dtype)
+                            if shape and len(shape) > 1:
+                                restored_data = restored_data.reshape(shape)
+                        else:
+                            raise ValueError(
+                                "Missing names/formats for structured array"
+                            )
+                    elif metadata.get("quantized", False):
+                        # Dequantize regular array
+                        scale = metadata.get("scale", 1.0)
+                        restored_data = raw_data.astype(np.float32) * scale
                     else:
-                        embeddings = data
+                        # Restore other numpy array types
+                        restored_data = raw_data  # Data was saved directly
+                        # We might need dtype conversion if loaded dtype differs, but np.load usually handles it
+                        # If specific dtype needed: restored_data = raw_data.astype(np.dtype(dtype_str))
+
+                elif metadata.get("original_type") == "bytes":
+                    # Data was originally bytes (e.g., JSON stats)
+                    # Extract the bytes object from the 0-d numpy array wrapper
+                    restored_data = raw_data.item()
+                else:
+                    raise ValueError(
+                        f"Unknown data type in fetched archive for {embedding_id}"
+                    )
+                # --- End restoration ---
 
             buffer.close()
-            logger.info(
-                f"Embeddings loaded in {time.time() - start_time:.2f}s, shape: {embeddings.shape}"
-            )
-            return embeddings
+
+            # Log appropriately
+            log_fetch = f"Data fetched for {embedding_id}"
+            if isinstance(restored_data, np.ndarray):
+                log_fetch += f", type: NumPy array, shape: {restored_data.shape}, dtype: {restored_data.dtype}"
+            elif isinstance(restored_data, bytes):
+                log_fetch += f", type: bytes, size: {len(restored_data)} bytes"
+            logger.info(log_fetch)
+
+            return restored_data  # Return the NumPy array or original bytes
         except Exception as e:
-            logger.error(f"Error loading numpy array from bytes: {e}")
-            return np.array([])
+            logger.error(
+                f"Error loading/processing data from bytes for {embedding_id}: {e}",
+                exc_info=True,
+            )
+            return None  # Return None on loading error
 
     except Exception as e:
         logger.error(f"Error fetching embeddings: {e}")
-        return np.array([])
+        return None  # Return None on general fetch error
+
+
+def store_category_stats(stats_dict: dict, stats_id: str, user_id: str) -> bool:
+    """Serialize category stats dictionary to JSON and store it."""
+    try:
+        # Serialize the dictionary to a JSON string, then encode to bytes
+        json_string = json.dumps(stats_dict)
+        data_bytes = json_string.encode("utf-8")
+
+        # Reuse the existing store_embedding function which handles bytes
+        return store_embeddings(data_bytes, stats_id, user_id)
+    except TypeError as e:
+        logger.error(f"Error serializing category stats to JSON for {stats_id}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Error storing category stats {stats_id}: {e}")
+        return False
+
+
+def fetch_category_stats(stats_id: str) -> Optional[dict]:
+    """Fetch category stats data and deserialize from JSON."""
+    try:
+        # Reuse the existing fetch_embedding function which returns bytes
+        data_bytes = fetch_embeddings(stats_id)
+        if data_bytes is None:
+            return None
+
+        # Decode bytes to string, then parse JSON string to dictionary
+        json_string = data_bytes.decode("utf-8")
+        stats_dict = json.loads(json_string)
+        return stats_dict
+    except json.JSONDecodeError as e:
+        logger.error(f"Error decoding category stats JSON for {stats_id}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching category stats {stats_id}: {e}")
+        return None
 
 
 def require_api_key(f):
@@ -781,8 +871,7 @@ def train_model():
 
         # Extract validated data
         transactions = validated_data.transactions
-        # Use user_id as the main identifier
-        sheet_id = validated_data.expenseSheetId or f"user_{request.user_id}"
+
         user_id = request.user_id
         logger.info(
             f"Training request received - User: {user_id}, Items: {len(transactions)}"
@@ -818,8 +907,35 @@ def train_model():
         transactions_data = [t.model_dump() for t in transactions]
         df = pd.DataFrame(transactions_data)
 
+        # Handle potentially missing optional columns
+        if "amount" not in df.columns:
+            df["amount"] = None
+        if "timestamp" not in df.columns:
+            df["timestamp"] = None
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        else:
+            # Ensure correct datetime conversion if column exists
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
+        if "money_in" not in df.columns:
+            logger.warning(
+                "'money_in' field missing in training data. Defaulting to False (expense)."
+            )
+            df["money_in"] = False  # Default missing to False
+        else:
+            # Handle potential None values if column exists but has missing entries
+            missing_money_in_count = df["money_in"].isnull().sum()
+            if missing_money_in_count > 0:
+                logger.warning(
+                    f"{missing_money_in_count} transactions have missing 'money_in' flag. Defaulting them to False (expense)."
+                )
+                df["money_in"].fillna(False, inplace=True)
+            # Ensure the column is boolean type after potential fillna
+            df["money_in"] = df["money_in"].astype(bool)
+
         # Clean descriptions
         df["description"] = df["description"].apply(clean_text)
+        # Drop duplicates AFTER cleaning and handling missing data
         df = df.drop_duplicates(subset=["description"])
 
         # Store training data index with proper dtype
@@ -831,26 +947,115 @@ def train_model():
             f"Training with {len(df)} transactions across {len(unique_categories)} categories"
         )
 
-        # Create structured array for index data
+        # --- Calculate Aggregate Statistics per Category ---
+        category_stats = {}
+        if "amount" in df.columns and "timestamp" in df.columns:
+            df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+            df["day_of_week"] = df["timestamp"].dt.dayofweek  # Monday=0, Sunday=6
+            df["hour_of_day"] = df["timestamp"].dt.hour
+
+            # Fill NA for calculations where possible
+            df_stats = df.dropna(subset=["Category", "money_in"])
+
+            grouped = df_stats.groupby(["Category", "money_in"])
+
+            for name, group in grouped:
+                category, money_in = name
+                cat_key = f"{category}_{'income' if money_in else 'expense'}"
+                stats = {}
+
+                # Amount Stats (only if amount data exists for group)
+                valid_amounts = group["amount"].dropna()
+                if not valid_amounts.empty:
+                    stats["median_amount"] = float(valid_amounts.median())
+                    # Add percentile stats for range understanding
+                    stats["amount_10th_percentile"] = float(
+                        valid_amounts.quantile(0.10)
+                    )
+                    stats["amount_90th_percentile"] = float(
+                        valid_amounts.quantile(0.90)
+                    )
+
+                # Time Stats (only if time data exists for group)
+                valid_times = group.dropna(subset=["day_of_week", "hour_of_day"])
+                if not valid_times.empty:
+                    # Calculate frequency distribution (normalized)
+                    stats["day_freq"] = (
+                        valid_times["day_of_week"].value_counts(normalize=True)
+                    ).to_dict()
+                    stats["hour_freq"] = (
+                        valid_times["hour_of_day"].value_counts(normalize=True)
+                    ).to_dict()
+
+                if stats:  # Only add if we calculated something
+                    category_stats[cat_key] = stats
+
+            logger.info(
+                f"Calculated aggregate statistics for {len(category_stats)} category/direction groups."
+            )
+        else:
+            logger.warning(
+                "Skipping aggregate statistics calculation: 'amount' or 'timestamp' column missing."
+            )
+
+        # --- End Aggregate Statistics Calculation ---
+
+        # Create structured array for index data - includes money_in
         index_data = np.array(
             [
-                (i, desc, cat)
-                for i, (desc, cat) in enumerate(
-                    zip(df["description"].values, df["Category"].values)
+                (i, desc, cat, m_in)
+                for i, (desc, cat, m_in) in enumerate(
+                    zip(
+                        df["description"].values,
+                        df["Category"].values,
+                        df["money_in"].values,  # Now guaranteed to exist and be boolean
+                    )
                 )
             ],
             dtype=[
                 ("item_id", np.int32),
                 ("description", "U256"),
                 ("category", "U128"),
+                ("money_in", np.bool_),  # Boolean field for direction
             ],
         )
+
+        # --- Debug: Log sample of index_data before saving ---
+        try:
+            sample_size = min(5, len(index_data))  # Log up to 5 samples
+            logger.debug(f"Sample of index_data before storing (first {sample_size}):")
+            for i in range(sample_size):
+                item = index_data[i]
+                logger.debug(
+                    f"  Index {i}: Desc='{item['description'][:50]}...', Cat='{item['category']}', MoneyIn={item['money_in']}"
+                )
+            if len(index_data) > sample_size:
+                item = index_data[-1]  # Log last item too
+                logger.debug(
+                    f"  Index {len(index_data)-1}: Desc='{item['description'][:50]}...', Cat='{item['category']}', MoneyIn={item['money_in']}"
+                )
+        except Exception as log_ex:
+            logger.warning(f"Could not log index_data sample: {log_ex}")
+        # --- End Debug ---
 
         # Store index data
         store_embeddings(index_data, f"{user_id}_index", user_id)
         logger.info(f"Stored index data with {len(index_data)} entries")
 
-        # Create a placeholder for the embeddings
+        # --- Store Aggregate Statistics ---
+        if category_stats:
+            stats_id = f"{user_id}_category_stats"
+            if store_category_stats(category_stats, stats_id, user_id):
+                logger.info(
+                    f"Successfully stored category statistics with ID: {stats_id}"
+                )
+            else:
+                logger.error(f"Failed to store category statistics with ID: {stats_id}")
+                # Decide if this should be a fatal error for the training process
+                # For now, we log the error and continue
+        # --- End Store Aggregate Statistics ---
+
+        # Create a placeholder for the embeddings (Original embeddings)
         placeholder = np.array([[0.0] * EMBEDDING_DIMENSION])
         store_embeddings(placeholder, f"{user_id}", user_id)
 
@@ -1112,8 +1317,11 @@ def classify_transactions_async():
                         initial_results = _apply_initial_categorization(
                             transactions_input_for_context, embeddings, user_id
                         )
+                        # >>> ADDED RE-RANKING STEP HERE <<<
+                        reranked_results = _contextual_reranking(initial_results)
+
                         results_after_refunds = _detect_refunds(
-                            initial_results, embeddings, user_id
+                            reranked_results, embeddings, user_id
                         )
                         final_results = _detect_transfers(results_after_refunds)
 
@@ -1476,21 +1684,27 @@ def get_classification_or_training_status(prediction_id):
                         f"Failed to store classification embeddings {embeddings_id}"
                     )
 
-                # Run the local categorization pipeline
+                # Run the initial categorization + direction filtering
                 initial_results = _apply_initial_categorization(
                     transactions_input, embeddings, user_id
                 )
+
+                # >>> ADDED RE-RANKING STEP HERE <<<
+                reranked_results = _contextual_reranking(initial_results)
+
                 if any(
                     "Error:" in res.get("predicted_category", "")
-                    for res in initial_results
+                    for res in reranked_results  # Check reranked results for errors
                 ):
                     logger.error(
-                        f"Categorization pipeline failed for {prediction_id} (likely missing training data)."
+                        f"Categorization pipeline failed for {prediction_id} (likely missing training data or error during reranking)."
                     )
-                    raise Exception("Categorization failed (model/index missing?)")
+                    raise Exception(
+                        "Categorization failed (model/index missing or processing error?)"
+                    )
 
                 results_after_refunds = _detect_refunds(
-                    initial_results, embeddings, user_id
+                    reranked_results, embeddings, user_id
                 )
                 final_results_raw = _detect_transfers(results_after_refunds)
 
@@ -1934,92 +2148,224 @@ def cleanup_old_webhook_results():
 def _apply_initial_categorization(
     transactions_input: List[Dict[str, Any]], input_embeddings: np.ndarray, user_id: str
 ) -> List[Dict[str, Any]]:
-    """Performs initial categorization based on similarity and money_in flag."""
+    """Performs initial categorization based on similarity, filters by direction.
+
+    Args:
+        transactions_input: List of input transactions (dicts with 'description', 'money_in', etc.).
+        input_embeddings: NumPy array of embeddings for the input transactions.
+        user_id: The ID of the user.
+
+    Returns:
+        List of results dictionaries, each containing narrative, initial predicted category,
+        similarity score, money_in, amount, and potentially adjustment info.
+    """
     results = []
+    TOP_N_CANDIDATES = 5  # Number of candidates to consider before context filtering
+
     try:
+        # Fetch all necessary data first
         trained_embeddings = fetch_embeddings(f"{user_id}")
-        trained_data = fetch_embeddings(f"{user_id}_index")
+        trained_data = fetch_embeddings(f"{user_id}_index")  # Now includes money_in
+        category_stats = fetch_category_stats(
+            f"{user_id}_category_stats"
+        )  # Fetch stats
 
         if trained_embeddings.size == 0 or trained_data.size == 0:
             logger.error(
                 f"No training data/index found for user {user_id} during categorization"
             )
+            # Return error state for all transactions
             return [
                 {
                     "narrative": tx["description"],
                     "predicted_category": "Error: Model/Index not found",
                     "similarity_score": 0.0,
                     "money_in": tx.get("money_in"),
-                    "amount": tx.get("amount"),  # Store amount if available
+                    "amount": tx.get("amount"),
+                    "timestamp": tx.get("timestamp"),  # Pass timestamp through
                     "adjustment_info": {"reason": "Training data or index missing"},
+                    "candidates": [],  # Add candidates field
                 }
                 for tx in transactions_input
             ]
 
-        if not trained_data.dtype.names or "category" not in trained_data.dtype.names:
+        # Validate trained_data structure (ensure money_in exists)
+        if "money_in" not in trained_data.dtype.names:
             logger.error(
-                f"Trained index data for user {user_id} missing 'category' field."
+                f"Trained index data for user {user_id} is missing 'money_in' field."
             )
+            # Return error state
             return [
                 {
                     "narrative": tx["description"],
-                    "predicted_category": "Error: Invalid Index",
+                    "predicted_category": "Error: Invalid Index (Missing Direction)",
                     "similarity_score": 0.0,
                     "money_in": tx.get("money_in"),
-                    "amount": tx.get("amount"),  # Store amount if available
+                    "amount": tx.get("amount"),
+                    "timestamp": tx.get("timestamp"),
+                    "adjustment_info": {
+                        "reason": "Training index is outdated or corrupted"
+                    },
+                    "candidates": [],
                 }
                 for tx in transactions_input
             ]
 
+        # Calculate all similarities at once
         similarities = cosine_similarity(input_embeddings, trained_embeddings)
 
-        for i, tx in enumerate(transactions_input):
-            money_in = tx.get("money_in")  # Could be True, False, or None
-            # Removed is_expense calculation as it's no longer used for compatibility check
+        for i, tx_input in enumerate(transactions_input):
+            input_money_in = tx_input.get(
+                "money_in"
+            )  # Direction of the transaction to classify
+            # We ensured this is not None during input validation/handling, but check just in case
+            if input_money_in is None:
+                logger.warning(
+                    f"Input transaction index {i} missing 'money_in' flag, defaulting to False for filtering."
+                )
+                input_money_in = False
 
             current_similarities = similarities[i]
-            sorted_indices = np.argsort(-current_similarities)
+            # Get indices of top N candidates sorted by similarity (highest first)
+            candidate_indices = np.argsort(-current_similarities)[:TOP_N_CANDIDATES]
 
-            best_match_idx = -1
-            best_category = "Unknown"
-            best_score = 0.0
-            # Removed original_best_category and adjustment_reason initialization related to compatibility
-
-            # Simplified logic: Find the top match directly
-            if len(sorted_indices) > 0:
-                try:
-                    best_match_idx = sorted_indices[0]
-                    if best_match_idx < len(trained_data):
-                        best_category = str(trained_data[best_match_idx]["category"])
-                        best_score = float(current_similarities[best_match_idx])
-                    else:
-                        logger.warning(
-                            f"Best match index {best_match_idx} out of bounds for trained_data (len {len(trained_data)})"
+            # --- Debugging: Log input flag and candidate flags ---
+            logger.debug(
+                f"Input {i} (\"{tx_input['description'][:30]}...\"): input_money_in={input_money_in}"
+            )
+            debug_candidate_flags_log = []
+            try:
+                for r, temp_idx in enumerate(candidate_indices):
+                    if temp_idx < len(trained_data):
+                        debug_candidate_flags_log.append(
+                            f"(Rank {r}: Idx {temp_idx}, Flag {bool(trained_data[temp_idx]['money_in'])}: '{str(trained_data[temp_idx]['category'])}')"
                         )
+                    else:
+                        debug_candidate_flags_log.append(
+                            f"(Rank {r}: Idx {temp_idx} OOB)"
+                        )
+                logger.debug(
+                    f"Input {i}: Top {TOP_N_CANDIDATES} Candidate Flags [Rank, Idx, money_in: Category]: {', '.join(debug_candidate_flags_log)}"
+                )
+            except Exception as debug_e:
+                logger.error(f"Error during debug logging for input {i}: {debug_e}")
+            # --- End Debugging ---
+
+            # --- Direction Filtering ---
+            filtered_candidates = []
+            original_top_candidate = None  # Store the absolute best match for fallback
+
+            for rank, idx in enumerate(candidate_indices):
+                if idx >= len(trained_data):
+                    logger.warning(
+                        f"Candidate index {idx} out of bounds for trained_data (len {len(trained_data)}) for input {i}"
+                    )
+                    continue
+
+                try:
+                    candidate_info = trained_data[idx]
+                    candidate_category = str(candidate_info["category"])
+                    candidate_money_in = bool(candidate_info["money_in"])
+                    candidate_similarity = float(current_similarities[idx])
+
+                    candidate_dict = {
+                        "category": candidate_category,
+                        "similarity": candidate_similarity,
+                        "index": int(idx),  # Store original index if needed later
+                        "matches_direction": (candidate_money_in == input_money_in),
+                    }
+
+                    if rank == 0:
+                        original_top_candidate = (
+                            candidate_dict  # Save the very best match
+                        )
+
+                    # Keep only candidates that match the input transaction's direction
+                    if candidate_dict["matches_direction"]:
+                        filtered_candidates.append(candidate_dict)
+
                 except IndexError:
                     logger.error(
-                        f"IndexError accessing trained_data at index {best_match_idx}"
+                        f"IndexError accessing trained_data at index {idx} for input {i}"
                     )
                 except Exception as e:
                     logger.error(
-                        f"Error processing best match index {best_match_idx}: {e}"
+                        f"Error processing candidate index {idx} for input {i}: {e}"
                     )
 
-            # Always use the best match found by similarity
+            # --- Select Initial Category based on Filtering ---
+            best_category = "Unknown"
+            best_score = 0.0
+            adjustment_info = {}
+            final_candidates_for_reranking = []
+
+            if filtered_candidates:
+                # If we have direction-matched candidates, pick the best among them
+                best_direction_match = max(
+                    filtered_candidates, key=lambda c: c["similarity"]
+                )
+                best_category = best_direction_match["category"]
+                best_score = best_direction_match["similarity"]
+                final_candidates_for_reranking = filtered_candidates
+                logger.debug(
+                    f"Input {i}: Found {len(filtered_candidates)} direction matches. Best: {best_category} ({best_score:.2f})"
+                )
+            elif original_top_candidate:
+                # Fallback: No direction match found, use the original top-1 candidate
+                best_category = original_top_candidate["category"]
+                best_score = original_top_candidate["similarity"]
+                # Pass the original top candidate for potential re-ranking, mark it didn't match direction
+                final_candidates_for_reranking = [original_top_candidate]
+                adjustment_info["direction_fallback"] = True
+                adjustment_info["reason"] = (
+                    "No training examples matched transaction direction. Used best overall match."
+                )
+                logger.warning(
+                    f"Input {i}: No direction match found. Falling back to best overall: {best_category} ({best_score:.2f})"
+                )
+            else:
+                # Should not happen if original_top_candidate was set, but handle defensively
+                logger.error(f"Input {i}: Could not determine any candidate.")
+                final_candidates_for_reranking = []
+
+            # Store the result for this transaction
+            # We will perform re-ranking *after* this initial step
             results.append(
                 {
-                    "narrative": tx["description"],
+                    "narrative": tx_input["description"],
                     "predicted_category": best_category,
                     "similarity_score": best_score,
-                    "money_in": money_in,
-                    "amount": tx.get("amount"),  # Store amount if available
-                    # Removed adjustment_info as compatibility adjustments are gone
+                    "money_in": input_money_in,
+                    "amount": tx_input.get("amount"),
+                    "timestamp": tx_input.get("timestamp"),
+                    "adjustment_info": adjustment_info,
+                    # Pass candidates and stats for the next step (re-ranking)
+                    "candidates": final_candidates_for_reranking,
+                    "category_stats": category_stats,
                 }
             )
 
     except Exception as e:
-        logger.error(f"Error during initial categorization: {e}", exc_info=True)
+        logger.error(
+            f"Error during initial categorization/filtering: {e}", exc_info=True
+        )
+        # Return error state for all transactions if a major error occurs
+        return [
+            {
+                "narrative": tx["description"],
+                "predicted_category": "Error: Categorization Failed",
+                "similarity_score": 0.0,
+                "money_in": tx.get("money_in"),
+                "amount": tx.get("amount"),
+                "timestamp": tx.get("timestamp"),
+                "adjustment_info": {"reason": f"Internal error: {str(e)}"},
+                "candidates": [],
+            }
+            for tx in transactions_input
+        ]
 
+    # Return results after initial categorization and direction filtering
+    # The next step will be contextual re-ranking based on these results
     return results
 
 
@@ -2184,6 +2530,210 @@ def _detect_transfers(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         logger.error(f"Error during transfer detection: {e}", exc_info=True)
 
     return results
+
+
+def _calculate_context_scores(
+    tx_input: Dict[str, Any], candidate: Dict[str, Any], category_stats: Dict[str, Any]
+) -> Dict[str, float]:
+    """Calculate amount and time context scores for a candidate category."""
+    scores = {"amount_score": 0.0, "time_score": 0.0, "context_score": 0.0}
+
+    input_amount = tx_input.get("amount")
+    input_timestamp = tx_input.get("timestamp")
+    input_money_in = tx_input.get("money_in", False)  # Default to expense if missing
+    candidate_category = candidate["category"]
+
+    # Construct the key to look up stats (e.g., "Groceries_expense")
+    stats_key = f"{candidate_category}_{'income' if input_money_in else 'expense'}"
+    cat_stats = category_stats.get(stats_key, {})
+
+    # --- Amount Score ---
+    if input_amount is not None and "median_amount" in cat_stats:
+        median = cat_stats["median_amount"]
+        p10 = cat_stats.get(
+            "amount_10th_percentile", median
+        )  # Default to median if missing
+        p90 = cat_stats.get(
+            "amount_90th_percentile", median
+        )  # Default to median if missing
+
+        # Ensure p10 <= p90
+        if p10 > p90:
+            p10, p90 = p90, p10
+
+        # Simple scoring: highest score if within 10th-90th percentile range
+        if p10 <= input_amount <= p90:
+            scores["amount_score"] = 1.0
+        else:
+            # Score based on normalized distance from median if outside range
+            # Avoid division by zero if median is 0
+            denominator = abs(median) if median != 0 else 1.0
+            distance = abs(input_amount - median) / denominator
+            scores["amount_score"] = max(
+                0.0, 1.0 - distance * 0.5
+            )  # Penalize less sharply than 1/x
+
+    # --- Time Score ---
+    if input_timestamp is not None and isinstance(input_timestamp, datetime):
+        day_score = 0.0
+        hour_score = 0.0
+        input_day = input_timestamp.weekday()  # Monday=0 .. Sunday=6
+        input_hour = input_timestamp.hour
+
+        day_freq_dict = cat_stats.get("day_freq", {})
+        hour_freq_dict = cat_stats.get("hour_freq", {})
+
+        # Scores are the normalized frequencies from stats
+        # Convert keys from string back to int if needed (JSON loads them as string)
+        day_score = day_freq_dict.get(str(input_day), 0.0)
+        hour_score = hour_freq_dict.get(str(input_hour), 0.0)
+
+        # Combine day and hour scores (simple average)
+        scores["time_score"] = (day_score + hour_score) / 2.0
+
+    # --- Combined Context Score ---
+    # Average amount and time scores. If only one is available, use that one.
+    num_scores = (scores["amount_score"] > 0) + (scores["time_score"] > 0)
+    if num_scores > 0:
+        scores["context_score"] = (
+            scores["amount_score"] + scores["time_score"]
+        ) / num_scores
+
+    return scores
+
+
+def _contextual_reranking(
+    initial_results: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Re-ranks candidates based on context (amount, time) and updates predictions."""
+    final_results = []
+
+    for result in initial_results:
+        candidates = result.get("candidates", [])
+        category_stats = result.get("category_stats", {})
+        tx_input = result  # Pass the whole input dict for context
+
+        reranked_candidates = []
+        if not candidates or not category_stats:
+            # If no candidates or stats, pass the result through mostly unchanged
+            final_results.append(result)
+            continue
+
+        best_candidate = None
+        highest_final_score = -1.0
+
+        for candidate in candidates:
+            context_scores = _calculate_context_scores(
+                tx_input, candidate, category_stats
+            )
+            description_similarity = candidate["similarity"]
+            context_score = context_scores["context_score"]
+
+            # Calculate final weighted score
+            final_score = (DESC_SIM_WEIGHT * description_similarity) + (
+                CONTEXT_SCORE_WEIGHT * context_score
+            )
+
+            # Store scores for potential logging/debugging
+            candidate["context_score"] = context_score
+            candidate["final_score"] = final_score
+            candidate["context_details"] = context_scores  # Store breakdown
+            reranked_candidates.append(candidate)
+
+            if final_score > highest_final_score:
+                highest_final_score = final_score
+                best_candidate = candidate
+
+        # Update the result based on the best candidate after re-ranking
+        updated_result = result.copy()
+        if best_candidate:
+            original_category = updated_result["predicted_category"]
+            original_score = updated_result["similarity_score"]
+            new_category = best_candidate["category"]
+
+            if new_category != original_category:
+                updated_result["predicted_category"] = new_category
+                # Update score to reflect the winning candidate's similarity or final score?
+                # Let's store both for clarity.
+                updated_result["similarity_score"] = best_candidate[
+                    "similarity"
+                ]  # Original text match score
+                updated_result["context_score"] = best_candidate["context_score"]
+                updated_result["final_score"] = best_candidate["final_score"]
+
+                if "adjustment_info" not in updated_result:
+                    updated_result["adjustment_info"] = {}
+                updated_result["adjustment_info"]["context_adjusted"] = True
+                updated_result["adjustment_info"][
+                    "original_prediction"
+                ] = original_category
+                updated_result["adjustment_info"][
+                    "original_similarity"
+                ] = original_score
+                updated_result["adjustment_info"][
+                    "reranking_reason"
+                ] = f"Context score favored '{new_category}' (final: {best_candidate['final_score']:.2f})"
+                updated_result["adjustment_info"]["adjusted"] = True  # General flag
+                logger.info(
+                    f"Context re-ranking changed '{original_category}' -> '{new_category}' for '{updated_result['narrative']}'"
+                )
+            else:
+                # Even if category didn't change, store the scores
+                updated_result["context_score"] = best_candidate.get("context_score")
+                updated_result["final_score"] = best_candidate.get("final_score")
+
+        # Add reranked candidate list for debugging? Optional.
+        # updated_result['reranked_candidates'] = sorted(reranked_candidates, key=lambda c: c['final_score'], reverse=True)
+
+        # Clean up temporary keys before final return
+        updated_result.pop("candidates", None)
+        updated_result.pop("category_stats", None)
+
+        final_results.append(updated_result)
+
+    return final_results
+
+
+# --- Integration Points ---
+
+# Modify the call site(s) in get_classification_or_training_status:
+#             try:
+#                 # ... (fetch context) ...
+#                 embeddings = np.array(prediction.output, dtype=np.float32)
+#                 # ... (store embeddings) ...
+
+#                 # Run the initial categorization + direction filtering
+#                 initial_results = _apply_initial_categorization(
+#                     transactions_input, embeddings, user_id
+#                 )
+
+#                 # >>> ADDED RE-RANKING STEP HERE <<<
+#                 reranked_results = _contextual_reranking(initial_results)
+
+#                 # Then proceed with refund/transfer detection on reranked_results
+#                 results_after_refunds = _detect_refunds(
+#                     reranked_results, embeddings, user_id
+#                 )
+#                 final_results_raw = _detect_transfers(results_after_refunds)
+#                 # ... rest of the status update logic ...
+
+# Also modify the synchronous path in /classify:
+#                     try:
+#                         embeddings = np.array(current_prediction.output, dtype=np.float32)
+#                         # ... (store embeddings) ...
+
+#                         # Run categorization pipeline
+#                         initial_results = _apply_initial_categorization(
+#                             transactions_input_for_context, embeddings, user_id
+#                         )
+#                         # >>> ADDED RE-RANKING STEP HERE <<<
+#                         reranked_results = _contextual_reranking(initial_results)
+
+#                         results_after_refunds = _detect_refunds(
+#                             reranked_results, embeddings, user_id
+#                         )
+#                         final_results = _detect_transfers(results_after_refunds)
+#                         # ... rest of the sync response logic ...
 
 
 if __name__ == "__main__":

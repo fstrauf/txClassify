@@ -515,7 +515,11 @@ class PrismaClient:
 
     # Embedding methods
     def store_embedding(self, embedding_id, data_bytes, user_id):
-        """Store embedding data in the database, including the userId."""
+        """Store embedding data (as bytes) in the database, including the userId.
+        This method can store arbitrary byte data (e.g., serialized NumPy arrays
+        or JSON strings encoded to bytes). The caller is responsible for
+        correct serialization before calling and deserialization after fetching.
+        """
         try:
             self.connect()
 
@@ -566,7 +570,11 @@ class PrismaClient:
             return False
 
     def fetch_embedding(self, embedding_id):
-        """Fetch embedding data from the database."""
+        """Fetch embedding data (as bytes) from the database.
+        Returns the raw bytes stored. The caller is responsible for decoding
+        and deserializing the data based on the expected original format
+        (e.g., decoding base64, then loading NumPy array or JSON).
+        """
         try:
             self.connect()
 
