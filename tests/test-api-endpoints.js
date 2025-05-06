@@ -945,67 +945,86 @@ const categoriseTransactions = async (config) => {
       if (results && Array.isArray(results)) {
         logInfo(`Found ${results.length} results.`);
 
-        // Add narratives from original transactions (if needed - check if API returns them)
-        // Assuming results contain narrative, category, score, money_in, amount
-        if (results.length > 0) {
-          logInfo("Displaying results...");
+        // Log the results for debugging
+        logInfo("Displaying results...");
+        console.log("\n===== CATEGORISATION RESULTS =====");
+        logInfo(`Total transactions categorised: ${results.length}`);
 
-          // Print results in a nice format
-          console.log("\n===== CATEGORISATION RESULTS =====");
-          console.log(`Total transactions categorised: ${results.length}`);
+        results.forEach((result, index) => {
+          const narrative = result.narrative || "N/A";
+          const category = result.predicted_category || "Error";
+          const score = result.similarity_score;
+          const scorePercent = score ? (score * 100).toFixed(2) : "N/A";
+          const secondCategory = result.second_predicted_category || "N/A";
+          const secondScore = result.second_similarity_score;
+          const secondScorePercent = secondScore ? (secondScore * 100).toFixed(2) : "N/A";
 
-          results.forEach((result, index) => {
-            const narrative = result.narrative || "N/A"; // Handle missing narrative
-            const predicted_category = result.predicted_category || "Unknown";
-            const confidence = result.similarity_score ? `${(result.similarity_score * 100).toFixed(2)}%` : "N/A";
-            const second_predicted_category = result.second_predicted_category || "N/A";
-            const second_confidence = result.second_similarity_score
-              ? `${(result.second_similarity_score * 100).toFixed(2)}%`
-              : "N/A";
+          let logLine = `${index + 1}. \"${narrative}\"`;
 
-            // Add money_in/money_out display
-            const direction =
-              result.money_in === true ? "MONEY_IN" : result.money_in === false ? "MONEY_OUT" : "UNKNOWN_DIR";
+          // Show cleaned narrative if different from original
+          const cleaned_narrative = result.cleaned_narrative || null;
+          if (cleaned_narrative && cleaned_narrative !== narrative) {
+            logLine += `\n     Cleaned: \"${cleaned_narrative}\"`;
+          }
+          logLine += ` → ${category}`;
 
-            // Display amount if available
-            const amountStr =
-              result.amount !== null && result.amount !== undefined ? `$${Math.abs(result.amount).toFixed(2)}` : "";
+          // If Unknown, show the rejected category and the top score
+          if (category === "Unknown" && result.debug_info?.rejected_best_category) {
+            logLine += ` (Rejected: ${result.debug_info.rejected_best_category} at ${scorePercent}%)`;
+          } else {
+            // Otherwise, show the score for the accepted category
+            logLine += ` (${scorePercent}%)`;
+          }
 
-            // Determine reason if Unknown
-            let unknownReason = "";
-            if (predicted_category === "Unknown") {
-              const score = result.similarity_score;
-              const secondScore = result.second_similarity_score;
-              // Define thresholds here (matching Python)
-              const MIN_ABSOLUTE_CONFIDENCE = 0.85;
-              const MIN_RELATIVE_CONFIDENCE_DIFF = 0.05;
+          // Add second match info
+          logLine += `\n     2nd Match: ${secondCategory} (${secondScorePercent}%)`;
 
-              if (score === null || score === undefined || score < MIN_ABSOLUTE_CONFIDENCE) {
-                unknownReason = "(Low Absolute Confidence)";
-              } else if (
-                secondScore !== null &&
-                secondScore !== undefined &&
-                score - secondScore < MIN_RELATIVE_CONFIDENCE_DIFF
-              ) {
-                unknownReason = "(Low Relative Confidence)";
-              } else {
-                unknownReason = "(Conflicting Neighbors)"; // Inferred reason
+          // Add money direction
+          if (result.money_in === true) {
+            logLine += " | MONEY_IN";
+          } else if (result.money_in === false) {
+            logLine += " | MONEY_OUT";
+          }
+
+          // --- NEW: Add Debug Info Reason ---
+          // Display the debug reason if the category is Unknown
+          if (category === "Unknown" && result.debug_info) {
+            const debug = result.debug_info;
+            let debugReason = debug.reason_code || "Unknown reason";
+            let details = "";
+
+            if (debug.reason_code === "LOW_ABS_CONF") {
+              details = `Score: ${debug.best_score?.toFixed(2)} < Threshold: ${debug.threshold?.toFixed(2)}`;
+            } else if (debug.reason_code === "LOW_REL_CONF") {
+              details = `Diff: ${debug.difference?.toFixed(2)} < Threshold: ${debug.threshold?.toFixed(2)} (Top: '${
+                debug.best_category
+              }'/${debug.best_score?.toFixed(2)}, 2nd: '${
+                debug.second_best_category
+              }'/${debug.second_best_score?.toFixed(2)})`;
+            } else if (debug.reason_code === "CONFLICTING_NEIGHBORS") {
+              const neighbors = debug.unique_neighbor_categories || [];
+              details = `Neighbors: [${neighbors.join(", ")}]`;
+              // Optionally add neighbor scores if available
+              if (debug.neighbor_scores && debug.neighbor_categories) {
+                const neighborDetails = debug.neighbor_categories
+                  .map((cat, idx) => `${cat}: ${debug.neighbor_scores[idx]?.toFixed(2)}`)
+                  .join(", ");
+                details += ` (Scores: ${neighborDetails})`;
               }
+            } else if (debug.reason_code === "DEFAULT") {
+              details = `Score: ${debug.best_score?.toFixed(2)} - Defaulted to Unknown`;
             }
 
-            console.log(
-              `${
-                index + 1
-              }. \"${narrative}\" → ${predicted_category} (${confidence}) ${unknownReason}\n     2nd Match: ${second_predicted_category} (${second_confidence}) | ${direction} ${amountStr}`
-            );
-          });
+            logLine += `\n     DEBUG: Reason: ${debugReason} | ${details}`;
+          } else if (category === "Unknown" && result.adjustment_info?.unknown_reason) {
+            // Fallback to original reason if debug_info is missing but reason exists
+            logLine += ` (${result.adjustment_info.unknown_reason})`;
+          }
+          // --- End Debug Info ---
 
-          console.log("=====================================\n");
-        } else {
-          console.log("\n===== CATEGORISATION RESULTS =====");
-          console.log("No results were returned by the API, although status was 'completed'.");
-          console.log("=====================================\n");
-        }
+          console.log(logLine);
+        });
+        console.log("=====================================\n");
       } else {
         console.log("\n===== CATEGORISATION RESULTS =====");
         console.log("Results format invalid or results array missing in the final response.");

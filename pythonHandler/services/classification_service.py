@@ -2,9 +2,10 @@
 
 import logging
 import re
+import os  # Import os
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import time
 import replicate
 from datetime import datetime
@@ -15,6 +16,7 @@ from utils.prisma_client import prisma_client
 from utils.replicate_utils import run_prediction
 from utils.request_utils import create_error_response
 from config import EMBEDDING_DIMENSION
+from utils.text_utils import clean_text  # Import clean_text
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,9 @@ def process_classification_request(validated_data, user_id, sync_timeout):
 
         # 1. Prepare Input Data from validated request
         transactions_input_for_context = []
-        descriptions_to_embed = []
+        original_descriptions = []  # Store original descriptions
+        # descriptions_to_embed = [] # This will now be cleaned descriptions
+
         for tx_input_item in validated_data.transactions:
             if isinstance(tx_input_item, str):
                 desc = tx_input_item
@@ -35,17 +39,13 @@ def process_classification_request(validated_data, user_id, sync_timeout):
             else:  # It's a TransactionInput object
                 desc = tx_input_item.description
                 money_in = tx_input_item.money_in
-                # Extract amount if your model includes it, otherwise keep None
-                # amount = tx_input_item.amount # Example if amount was in TransactionInput
-                amount = None  # Assuming amount isn't part of TransactionInput for now
+                amount = (
+                    tx_input_item.amount if hasattr(tx_input_item, "amount") else None
+                )
 
-            transactions_input_for_context.append(
-                {"description": desc, "money_in": money_in, "amount": amount}
-            )
-            descriptions_to_embed.append(desc)
+            original_descriptions.append(desc)  # Store original
 
-        if not descriptions_to_embed:
-            # This case should ideally be caught by Pydantic validation, but double-check
+        if not original_descriptions:
             logger.error(
                 f"No valid descriptions found in classification request for user {user_id}"
             )
@@ -53,13 +53,59 @@ def process_classification_request(validated_data, user_id, sync_timeout):
                 "No valid transaction descriptions provided", 400
             )
 
+        # --- Clean Descriptions ---
+        try:
+            # Use the imported clean_text function
+            cleaned_descriptions = clean_text(original_descriptions)
+            if len(cleaned_descriptions) != len(original_descriptions):
+                logger.error(
+                    f"Mismatch in length after cleaning: {len(original_descriptions)} vs {len(cleaned_descriptions)}"
+                )
+                # Handle error appropriately - maybe raise exception or return error response
+                raise ValueError("Cleaning resulted in description count mismatch.")
+            logger.info(
+                f"Cleaned {len(original_descriptions)} descriptions for user {user_id}"
+            )
+
+            # Prepare context data with both original and cleaned descriptions
+            for i, original_desc in enumerate(original_descriptions):
+                tx_input = validated_data.transactions[
+                    i
+                ]  # Get original input item again
+                money_in = None
+                amount = None
+                if not isinstance(tx_input, str):
+                    money_in = tx_input.money_in
+                    amount = tx_input.amount if hasattr(tx_input, "amount") else None
+
+                transactions_input_for_context.append(
+                    {
+                        "original_description": original_desc,
+                        "cleaned_description": cleaned_descriptions[i],
+                        "money_in": money_in,
+                        "amount": amount,
+                    }
+                )
+
+        except Exception as clean_error:
+            logger.error(
+                f"Error cleaning descriptions for user {user_id}: {clean_error}",
+                exc_info=True,
+            )
+            return create_error_response(
+                f"Failed during text cleaning: {str(clean_error)}", 500
+            )
+        # --- End Cleaning ---
+
         logger.info(
             f"Processing classification for {len(transactions_input_for_context)} txns, user {user_id}"
         )
 
-        # 2. Start Replicate Prediction
+        # 2. Start Replicate Prediction using CLEANED descriptions
         try:
-            prediction = run_prediction(descriptions_to_embed)
+            prediction = run_prediction(
+                cleaned_descriptions
+            )  # Use cleaned descriptions
             prediction_id = prediction.id
         except Exception as e:
             logger.error(
@@ -122,13 +168,16 @@ def process_classification_request(validated_data, user_id, sync_timeout):
 
                         # Store embeddings (optional for sync, but good practice)
                         embeddings_id = f"{prediction_id}_embeddings"
+                        # Store with cleaned descriptions as context if needed? Or just user_id?
+                        # Let's assume store_embeddings only needs user_id for now.
                         if not store_embeddings(embeddings, embeddings_id, user_id):
                             logger.warning(
                                 f"Failed to store embeddings {embeddings_id} synchronously."
                             )
                             # Don't necessarily fail the request, but log it.
 
-                        # --- Run Categorization Pipeline --- (Moved functions are now local)
+                        # --- Run Categorization Pipeline ---
+                        # Pass the context list which now contains original & cleaned descriptions
                         initial_results = _apply_initial_categorization(
                             transactions_input_for_context, embeddings, user_id
                         )
@@ -270,14 +319,22 @@ def process_classification_request(validated_data, user_id, sync_timeout):
 
 
 def _apply_initial_categorization(
-    transactions_input: List[Dict[str, Any]], input_embeddings: np.ndarray, user_id: str
+    transactions_input: List[
+        Dict[str, Any]
+    ],  # Now contains original_description, cleaned_description, etc.
+    input_embeddings: np.ndarray,
+    user_id: str,
 ) -> List[Dict[str, Any]]:
     """Performs initial categorization based on similarity and returns top 2 matches."""
     results = []
     # Define confidence thresholds
-    MIN_ABSOLUTE_CONFIDENCE = 0.85  # Minimum score for the best match
-    MIN_RELATIVE_CONFIDENCE_DIFF = 0.03  # Minimum difference between top 2 scores
-    NEIGHBOR_COUNT = 3  # Number of top neighbors to check for category consistency
+    MIN_ABSOLUTE_CONFIDENCE = 0.85
+    MIN_RELATIVE_CONFIDENCE_DIFF = 0.03
+    NEIGHBOR_COUNT = 3
+
+    # --- Check for Debug Mode ---
+    is_debug = os.getenv("TX_CLASSIFY_DEBUG") == "true"
+    logger.debug(f"Classification debug mode: {is_debug}")
 
     try:
         trained_embeddings = fetch_embeddings(f"{user_id}")
@@ -290,12 +347,17 @@ def _apply_initial_categorization(
             # Return error marker in results
             return [
                 {
-                    "narrative": tx["description"],
+                    # Use original_description for the final output narrative
+                    "narrative": tx["original_description"],
+                    "cleaned_narrative": tx[
+                        "cleaned_description"
+                    ],  # Add cleaned for debugging
                     "predicted_category": "Error: Model/Index not found",
                     "similarity_score": 0.0,
                     "money_in": tx.get("money_in"),
                     "amount": tx.get("amount"),
                     "adjustment_info": {"reason": "Training data or index missing"},
+                    "debug_info": None,  # Ensure field exists
                 }
                 for tx in transactions_input
             ]
@@ -306,11 +368,16 @@ def _apply_initial_categorization(
             )
             return [
                 {
-                    "narrative": tx["description"],
+                    # Use original_description for the final output narrative
+                    "narrative": tx["original_description"],
+                    "cleaned_narrative": tx[
+                        "cleaned_description"
+                    ],  # Add cleaned for debugging
                     "predicted_category": "Error: Invalid Index",
                     "similarity_score": 0.0,
                     "money_in": tx.get("money_in"),
                     "amount": tx.get("amount"),
+                    "debug_info": None,  # Ensure field exists
                 }
                 for tx in transactions_input
             ]
@@ -347,32 +414,40 @@ def _apply_initial_categorization(
         similarities = cosine_similarity(input_embeddings, trained_embeddings)
 
         for i, tx in enumerate(transactions_input):
-            money_in = tx.get("money_in")  # Could be True, False, or None
-            amount = tx.get("amount")  # Get amount for potential use
+            money_in = tx.get("money_in")
+            amount = tx.get("amount")
+            cleaned_desc = tx[
+                "cleaned_description"
+            ]  # Use cleaned description for logging/comparison if needed
+            original_desc = tx[
+                "original_description"
+            ]  # Use original for final output narrative
 
             current_similarities = similarities[i]
-            # Ensure we don't try to access beyond the number of trained samples
             num_trained_samples = similarities.shape[1]
             if num_trained_samples == 0:
                 logger.warning(
-                    f"No trained samples to compare against for narrative: {tx['description']}"
+                    f"No trained samples to compare against for narrative: {cleaned_desc}"  # Log cleaned desc
                 )
                 results.append(
                     {
-                        "narrative": tx["description"],
+                        "narrative": original_desc,  # Return original desc
+                        "cleaned_narrative": cleaned_desc,  # Add cleaned for debugging
                         "predicted_category": "Unknown",
                         "similarity_score": 0.0,
                         "second_predicted_category": "Unknown",
                         "second_similarity_score": 0.0,
                         "money_in": money_in,
                         "amount": amount,
+                        "adjustment_info": {"unknown_reason": "No trained samples"},
+                        "debug_info": None,  # Ensure field exists
                     }
                 )
                 continue
 
             sorted_indices = np.argsort(-current_similarities)[
                 : min(num_trained_samples, NEIGHBOR_COUNT + 5)
-            ]  # Get more indices initially
+            ]
 
             best_match_idx = -1
             best_category = "Unknown"
@@ -380,12 +455,13 @@ def _apply_initial_categorization(
             second_best_category = "Unknown"
             second_best_score = 0.0
             neighbor_categories = []
+            neighbor_scores = []  # Store neighbor scores for debug
 
             # Find top N valid neighbors and their categories/scores
             valid_neighbors_found = 0
             processed_neighbor_indices = []
             for k_idx in sorted_indices:
-                if k_idx < len(trained_data):  # Bounds check
+                if k_idx < len(trained_data):
                     try:
                         neighbor_category = str(trained_data[k_idx]["category"])
                         neighbor_score = float(current_similarities[k_idx])
@@ -401,11 +477,10 @@ def _apply_initial_categorization(
 
                         if valid_neighbors_found < NEIGHBOR_COUNT:
                             neighbor_categories.append(neighbor_category)
+                            neighbor_scores.append(neighbor_score)  # Store score
 
                         valid_neighbors_found += 1
-                        if (
-                            valid_neighbors_found >= NEIGHBOR_COUNT + 2
-                        ):  # Found enough for top 2 and neighbors
+                        if valid_neighbors_found >= NEIGHBOR_COUNT + 2:
                             break
 
                     except IndexError as e:
@@ -420,36 +495,96 @@ def _apply_initial_categorization(
                     )
 
             # Determine final category based on thresholds and neighbor consistency
-            unique_neighbor_categories = set(
-                neighbor_categories
-            )  # Use only the first NEIGHBOR_COUNT
+            unique_neighbor_categories = set(neighbor_categories)
             has_conflicting_neighbors = len(unique_neighbor_categories) > 1
             final_category = "Unknown"
             reason = ""
+            debug_details: Optional[Dict[str, Any]] = None  # Initialize debug info
 
-            if (
-                best_score >= MIN_ABSOLUTE_CONFIDENCE
-                and (best_score - second_best_score) >= MIN_RELATIVE_CONFIDENCE_DIFF
-                and not has_conflicting_neighbors
-            ):
-                final_category = best_category
-            else:
-                # Log detailed reason
-                if best_score < MIN_ABSOLUTE_CONFIDENCE:
+            # --- Refined Decision Logic ---
+            meets_absolute_confidence = best_score >= MIN_ABSOLUTE_CONFIDENCE
+            meets_relative_confidence = (
+                best_score - second_best_score
+            ) >= MIN_RELATIVE_CONFIDENCE_DIFF
+            neighbors_are_consistent = not has_conflicting_neighbors
+
+            if meets_absolute_confidence:
+                if meets_relative_confidence:
+                    # Standout case: High absolute confidence AND clear winner over the second match. Ignore neighbors.
+                    final_category = best_category
+                elif neighbors_are_consistent:
+                    # Not a clear winner, but absolute confidence met AND neighbors agree.
+                    final_category = best_category
+                    reason = f"Accepted due to neighbor consistency despite low relative confidence (Diff: {best_score - second_best_score:.2f})"
+                    if is_debug:
+                        debug_details = {
+                            "reason_code": "ACCEPTED_BY_NEIGHBORS",
+                            "best_score": best_score,
+                            "second_best_score": second_best_score,
+                            "difference": best_score - second_best_score,
+                            "threshold": MIN_RELATIVE_CONFIDENCE_DIFF,
+                            "best_category": best_category,
+                            "neighbor_categories": neighbor_categories,
+                        }
+                # else: final_category remains "Unknown" because absolute confidence met, but relative confidence is low AND neighbors conflict.
+
+            # --- Logging for "Unknown" Cases ---
+            if final_category == "Unknown":
+                # Determine the primary reason for being "Unknown"
+                if not meets_absolute_confidence:
                     reason = f"Low absolute confidence ({best_score:.2f} < {MIN_ABSOLUTE_CONFIDENCE})"
-                elif (best_score - second_best_score) < MIN_RELATIVE_CONFIDENCE_DIFF:
-                    reason = f"Low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}, Top: '{best_category}'/{best_score:.2f}, Second: '{second_best_category}'/{second_best_score:.2f})"
-                elif has_conflicting_neighbors:
-                    reason = f"Conflicting neighbor categories: {list(unique_neighbor_categories)}"
-                else:  # Should not happen unless best_score was 0 initially
-                    reason = "Defaulted to Unknown"
+                    if is_debug:
+                        debug_details = {
+                            "reason_code": "LOW_ABS_CONF",
+                            "best_score": best_score,
+                            "threshold": MIN_ABSOLUTE_CONFIDENCE,
+                            "rejected_best_category": best_category,
+                        }
+                elif not meets_relative_confidence and not neighbors_are_consistent:
+                    reason = f"Low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}) AND Conflicting neighbors: {list(unique_neighbor_categories)}"
+                    if is_debug:
+                        debug_details = {
+                            "reason_code": "LOW_REL_CONF_AND_CONFLICTING_NEIGHBORS",
+                            "best_score": best_score,
+                            "second_best_score": second_best_score,
+                            "difference": best_score - second_best_score,
+                            "rel_threshold": MIN_RELATIVE_CONFIDENCE_DIFF,
+                            "neighbor_categories": neighbor_categories,
+                            "unique_neighbor_categories": list(
+                                unique_neighbor_categories
+                            ),
+                            "rejected_best_category": best_category,
+                            "second_best_category": second_best_category,
+                        }
+                # This case should theoretically not be hit if the logic above is correct,
+                # but included for completeness.
+                elif (
+                    not meets_relative_confidence
+                ):  # Implies neighbors_are_consistent was false
+                    reason = f"Low relative confidence, neighbors conflicted (Diff: {best_score - second_best_score:.2f})"
+                    if is_debug:
+                        debug_details = {
+                            "reason_code": "LOW_REL_CONF_NEIGHBORS_CONFLICTED",  # Should be covered above
+                            "best_score": best_score,
+                            "second_best_score": second_best_score,
+                            "rejected_best_category": best_category,
+                        }
+                else:  # Should not happen
+                    reason = "Defaulted to Unknown (Unexpected state)"
+                    if is_debug:
+                        debug_details = {
+                            "reason_code": "UNKNOWN_DEFAULT",
+                            "rejected_best_category": best_category,
+                        }
+
                 logger.info(
-                    f"Narrative '{tx['description']}' classified as Unknown: {reason}"
+                    f"Narrative '{cleaned_desc}' (Original: '{original_desc}') classified as Unknown: {reason}"  # Log both
                 )
 
             results.append(
                 {
-                    "narrative": tx["description"],
+                    "narrative": original_desc,  # Return original
+                    "cleaned_narrative": cleaned_desc,  # Add cleaned for debugging
                     "predicted_category": final_category,
                     "similarity_score": best_score,
                     "second_predicted_category": second_best_category,
@@ -460,7 +595,8 @@ def _apply_initial_categorization(
                         {"unknown_reason": reason}
                         if final_category == "Unknown"
                         else None
-                    ),  # Add reason if Unknown
+                    ),
+                    "debug_info": debug_details,  # Add debug info here
                 }
             )
 
@@ -469,11 +605,13 @@ def _apply_initial_categorization(
         # Return error for all transactions if a fundamental error like shape mismatch occurs
         return [
             {
-                "narrative": tx["description"],
+                "narrative": tx["original_description"],  # Return original
+                "cleaned_narrative": tx["cleaned_description"],  # Add cleaned
                 "predicted_category": f"Error: {str(ve)}",
                 "similarity_score": 0.0,
                 "money_in": tx.get("money_in"),
                 "amount": tx.get("amount"),
+                "debug_info": None,  # Ensure field exists
             }
             for tx in transactions_input
         ]
@@ -484,11 +622,13 @@ def _apply_initial_categorization(
         # Generic error for unexpected issues
         return [
             {
-                "narrative": tx["description"],
+                "narrative": tx["original_description"],  # Return original
+                "cleaned_narrative": tx["cleaned_description"],  # Add cleaned
                 "predicted_category": "Error: Categorization Failed",
                 "similarity_score": 0.0,
                 "money_in": tx.get("money_in"),
                 "amount": tx.get("amount"),
+                "debug_info": None,  # Ensure field exists
             }
             for tx in transactions_input
         ]
@@ -517,10 +657,16 @@ def _detect_refunds(
 def _detect_transfers(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Detects potential transfers by matching income/expense descriptions and amounts."""
     try:
+        # Note: results contains 'narrative' (original) and 'cleaned_narrative'
+        # We should match transfers based on the CLEANED narrative for robustness
         description_map = {}
 
         # Clean descriptions slightly differently for transfer matching: lowercase, normalize spaces
         def normalize_transfer_desc(desc):
+            # Use the already cleaned description if available, otherwise clean the original
+            # Assuming the input `desc` here is the *original* narrative from the results list
+            # If we use cleaned_narrative directly, no need for this function?
+            # Let's assume we still need some normalization *specific* to transfer matching
             norm = re.sub(r"\s+", " ", str(desc).lower().strip())
             # Optionally remove frequent but irrelevant details like dates/times if they interfere
             # norm = re.sub(r"\b\d{1,2}[-/.]\d{1,2}(?:[-/.]\d{2,4})?\b", "", norm) # Simple date removal
@@ -531,21 +677,26 @@ def _detect_transfers(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             return norm
 
         for i, res in enumerate(results):
-            norm_desc = normalize_transfer_desc(res["narrative"])
+            # Use the cleaned narrative for matching
+            cleaned_desc = res.get("cleaned_narrative", "")  # Use cleaned narrative
+            if not cleaned_desc:
+                # Fallback to cleaning the original narrative if cleaned one is missing
+                cleaned_desc = normalize_transfer_desc(res.get("narrative", ""))
+
             amount = res.get("amount")
             money_in = res.get("money_in")  # True, False, or None
 
-            if not norm_desc or amount is None or money_in is None:
+            if not cleaned_desc or amount is None or money_in is None:
                 continue  # Skip entries without description, amount, or direction
 
-            if norm_desc not in description_map:
-                description_map[norm_desc] = {"income": [], "expense": []}
+            if cleaned_desc not in description_map:
+                description_map[cleaned_desc] = {"income": [], "expense": []}
 
             # Store index, amount, and original category
             entry = (i, amount, res["predicted_category"])
 
             if money_in is False:
-                description_map[norm_desc]["expense"].append(entry)
+                description_map[cleaned_desc]["expense"].append(entry)
             elif money_in is True:
                 # Add income candidate unless it was already marked as a refund (if refund logic existed)
                 # or already classified as Transfer in
@@ -554,10 +705,10 @@ def _detect_transfers(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 )
                 is_already_transfer = res["predicted_category"] == "Transfer in"
                 if not is_refund and not is_already_transfer:
-                    description_map[norm_desc]["income"].append(entry)
+                    description_map[cleaned_desc]["income"].append(entry)
 
         matched_indices = set()
-        for norm_desc, groups in description_map.items():
+        for cleaned_desc_key, groups in description_map.items():
             # Try to find exact amount matches first
             expense_indices_processed = set()
             income_indices_processed = set()
@@ -604,6 +755,14 @@ def _detect_transfers(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                         results[exp_idx]["adjustment_info"][
                             "original_category"
                         ] = exp_cat  # Store original
+
+                        # Optionally add the matched cleaned description to adjustment_info
+                        results[inc_idx]["adjustment_info"][
+                            "matched_transfer_key"
+                        ] = cleaned_desc_key
+                        results[exp_idx]["adjustment_info"][
+                            "matched_transfer_key"
+                        ] = cleaned_desc_key
 
                         matched_indices.add(inc_idx)
                         matched_indices.add(exp_idx)
