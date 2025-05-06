@@ -3,12 +3,39 @@
 import re
 import logging
 import spacy
+import os
 from spacy.language import Language
 from spacy.matcher import Matcher
 from spacy.tokens import Token, Doc
 from typing import List, Union
 
 logger = logging.getLogger(__name__)
+
+# --- Determine Model Path for en_core_web_lg ---
+MODEL_BASE_DIR = (
+    "./spacy_models"  # Relative to pythonHandler, where Gunicorn runs main.py
+)
+MODEL_NAME_PREFIX = "en_core_web_lg-"
+NLP_MODEL_PATH = None
+
+if os.path.exists(MODEL_BASE_DIR) and os.path.isdir(MODEL_BASE_DIR):
+    for item in os.listdir(MODEL_BASE_DIR):
+        item_path = os.path.join(MODEL_BASE_DIR, item)
+        if os.path.isdir(item_path) and item.startswith(MODEL_NAME_PREFIX):
+            NLP_MODEL_PATH = item_path
+            logger.info(
+                f"Found spaCy model for 'en_core_web_lg' at path: {NLP_MODEL_PATH}"
+            )
+            break
+    if not NLP_MODEL_PATH:
+        logger.warning(
+            f"Could not find a model directory starting with '{MODEL_NAME_PREFIX}' in '{MODEL_BASE_DIR}'. Will attempt default load."
+        )
+else:
+    logger.warning(
+        f"Model base directory '{MODEL_BASE_DIR}' not found or not a directory. Will attempt default load."
+    )
+
 
 # --- Define Noise Patterns for Matcher (More Generic) ---
 # Expanded based on Pilot-NER rule-based repo
@@ -117,7 +144,19 @@ def transaction_noise_matcher_component(doc: Doc) -> Doc:
 nlp = None
 try:
     # Load the base model
-    nlp = spacy.load("en_core_web_lg")
+    if NLP_MODEL_PATH:
+        logger.info(
+            f"Attempting to load spaCy model from specific path: {NLP_MODEL_PATH}"
+        )
+        nlp = spacy.load(NLP_MODEL_PATH)
+        logger.info(f"Successfully loaded spaCy model from {NLP_MODEL_PATH}")
+    else:
+        logger.info(
+            "NLP_MODEL_PATH not found. Attempting to load spaCy model 'en_core_web_lg' by default name."
+        )
+        nlp = spacy.load("en_core_web_lg")
+        logger.info("Successfully loaded spaCy model 'en_core_web_lg' by default name.")
+
     # Add the custom component after the 'ner' component
     if "ner" in nlp.pipe_names:
         nlp.add_pipe("transaction_noise_matcher", after="ner")
@@ -134,8 +173,12 @@ try:
     logger.info(f"Pipeline components: {nlp.pipe_names}")
 
 except OSError as e:
-    logger.error(f"spaCy model 'en_core_web_lg' not found or other OS error: {e}")
-    logger.error("Please run: python -m spacy download en_core_web_lg")
+    logger.error(
+        f"spaCy model 'en_core_web_lg' could not be loaded from '{NLP_MODEL_PATH if NLP_MODEL_PATH else 'default name'}'. OSError: {e}"
+    )
+    logger.error(
+        "Please ensure the model is downloaded correctly during the build (check render.yaml) and the path is correct if using a specific path."
+    )
     # Fallback: nlp remains None
 except Exception as e:
     logger.error(f"Error adding custom component to spaCy pipeline: {e}")
