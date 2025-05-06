@@ -7,7 +7,9 @@ services:
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt  # Path is now relative to 'pythonHandler'
-      python -m spacy download en_core_web_lg
+      mkdir -p spacy_models # Create directory for models
+      # Download the model specifically into that directory
+      python -m spacy download en_core_web_lg --direct --output-path ./spacy_models
     startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --timeout 120 # Path is now relative to 'pythonHandler'
     envVars:
       - key: PYTHON_VERSION
