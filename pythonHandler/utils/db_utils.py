@@ -1,7 +1,10 @@
+"""Utility functions for database interactions."""
+
 import os
 import logging
 import psycopg2
 from psycopg2 import pool
+from utils.prisma_client import prisma_client
 
 logger = logging.getLogger(__name__)
 
@@ -110,3 +113,65 @@ def execute_query(query, params=None, fetch=True):
             cursor.close()
         if conn:
             release_connection(conn)
+
+
+def validate_api_key(api_key: str, track_usage: bool = True) -> str:
+    """Validate API key and return user ID if valid.
+
+    Args:
+        api_key: API key to validate
+        track_usage: Whether to track API usage for this validation
+
+    Returns:
+        str: User ID if valid, empty string if invalid
+    """
+    if not api_key:
+        logger.error("Empty API key provided")
+        return ""
+
+    try:
+        # Clean the API key
+        api_key = api_key.strip()
+
+        # Use Prisma client to find user by API key
+        user = prisma_client.get_user_by_api_key(api_key)
+
+        if not user:
+            logger.error("Invalid API key provided")
+            return ""
+
+        # Log the found user data (excluding sensitive info)
+        logger.info(f"API key validated for userId: {str(user['id'])}")
+
+        if not user["id"]:
+            logger.error("User data found but missing id")
+            return ""
+
+        # Track API usage on successful validation if requested
+        if track_usage:
+            try:
+                prisma_client.track_api_usage(api_key)
+            except Exception as tracking_error:
+                # Don't fail the validation if tracking fails
+                logger.warning(f"Error tracking API usage: {tracking_error}")
+
+        return user["id"]
+
+    except Exception as e:
+        logger.error(f"Error validating API key: {str(e)}")
+        return ""
+
+
+def update_process_status(status_text: str, mode: str, user_id: str) -> None:
+    """Log process status without database updates."""
+    # NOTE: This function currently only logs. If DB updates are needed,
+    # they should be added here using prisma_client.
+    try:
+        logger.info(
+            f"Process status update - mode: {mode}, user: {user_id}, status: {status_text}"
+        )
+    except Exception as e:
+        logger.error(f"Error logging process status: {e}")
+        logger.error(
+            f"Status update attempted - mode: {mode}, user: {user_id}, status: {status_text}"
+        )
