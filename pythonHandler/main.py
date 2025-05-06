@@ -40,7 +40,7 @@ from services.status_service import get_and_process_status
 logging.basicConfig(
     stream=sys.stdout,  # Log to stdout for Docker/Gunicorn to capture
     format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.DEBUG,
 )
 logger = logging.getLogger(__name__)
 

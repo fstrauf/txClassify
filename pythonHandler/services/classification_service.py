@@ -15,8 +15,14 @@ from utils.embedding_utils import fetch_embeddings, store_embeddings
 from utils.prisma_client import prisma_client
 from utils.replicate_utils import run_prediction
 from utils.request_utils import create_error_response
-from config import EMBEDDING_DIMENSION
+from config import (
+    EMBEDDING_DIMENSION,
+    MIN_ABSOLUTE_CONFIDENCE,
+    MIN_RELATIVE_CONFIDENCE_DIFF,
+    NEIGHBOR_COUNT,
+)  # Import constants
 from utils.text_utils import clean_text  # Import clean_text
+from utils.local_embedding_utils import generate_embeddings  # Import local utils
 
 logger = logging.getLogger(__name__)
 
@@ -101,210 +107,86 @@ def process_classification_request(validated_data, user_id, sync_timeout):
             f"Processing classification for {len(transactions_input_for_context)} txns, user {user_id}"
         )
 
-        # 2. Start Replicate Prediction using CLEANED descriptions
+        # 2. Generate Embeddings Locally (Synchronous)
         try:
-            prediction = run_prediction(
-                cleaned_descriptions
-            )  # Use cleaned descriptions
-            prediction_id = prediction.id
-        except Exception as e:
+            embeddings = generate_embeddings(cleaned_descriptions)
+
+            if embeddings is None:
+                logger.error(
+                    f"Failed to generate embeddings locally during classification for user {user_id}"
+                )
+                return create_error_response(
+                    "Failed to generate classification embeddings", 500
+                )
+
+            # Validate dimensions
+            if embeddings.shape[0] != len(transactions_input_for_context):
+                logger.error(
+                    f"Embedding count mismatch after local generation: {embeddings.shape[0]} vs {len(transactions_input_for_context)}"
+                )
+                return create_error_response(
+                    "Embedding count mismatch during classification", 500
+                )
+
+            # Assuming EMBEDDING_DIMENSION is still relevant or can be inferred
+            if embeddings.shape[1] != EMBEDDING_DIMENSION:
+                logger.warning(
+                    f"Local embedding dimension ({embeddings.shape[1]}) differs from config ({EMBEDDING_DIMENSION}). Using local dimension."
+                )
+                # Proceeding, but ensure comparison logic handles potential dimension differences
+
+            # --- Run Categorization Pipeline (Now directly after local embedding) ---
+            initial_results = _apply_initial_categorization(
+                transactions_input_for_context, embeddings, user_id
+            )
+
+            # Check for errors from categorization itself
+            if any(
+                "Error:" in res.get("predicted_category", "") for res in initial_results
+            ):
+                logger.error(
+                    f"Categorization pipeline failed locally for user {user_id}. Check previous logs."
+                )
+                first_error = next(
+                    (
+                        res["predicted_category"]
+                        for res in initial_results
+                        if "Error:" in res.get("predicted_category", "")
+                    ),
+                    "Categorization failed",
+                )
+                # Return error immediately if categorization part fails
+                return create_error_response(
+                    f"Categorization failed: {first_error}", 500
+                )
+
+            results_after_refunds = _detect_refunds(
+                initial_results, embeddings, user_id
+            )
+            final_results = _detect_transfers(results_after_refunds)
+            # --- End Pipeline ---
+
+            # Return synchronous success response
+            return (
+                jsonify(
+                    {
+                        "status": "completed",
+                        "message": "Classification completed successfully (local embeddings)",
+                        "results": final_results,
+                    }
+                ),
+                200,
+            )
+
+        except Exception as process_error:
             logger.error(
-                f"Failed to start Replicate prediction for classification: {e}",
+                f"Error processing classification results locally for user {user_id}: {process_error}",
                 exc_info=True,
             )
-            # Use create_error_response format
+            # Return an error to the user
             return create_error_response(
-                f"Failed to start embedding prediction: {str(e)}", 502
+                f"Failed to process classification results: {str(process_error)}", 500
             )
-
-        # 3. Store Initial Context
-        context = {
-            "user_id": user_id,
-            "status": "processing",
-            "type": "classification",
-            "transactions_input": transactions_input_for_context,  # Store prepared input
-            "created_at": datetime.now().isoformat(),
-        }
-        try:
-            prisma_client.insert_webhook_result(prediction_id, context)
-            logger.info(
-                f"Stored initial classification context for prediction {prediction_id}"
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to store context for classification prediction {prediction_id}: {e}"
-            )
-            return create_error_response(f"Failed to store job context: {str(e)}", 500)
-
-        # 4. Try Synchronous Completion
-        sync_end_time = time.time() + sync_timeout
-        poll_interval = 0.5
-
-        while time.time() < sync_end_time:
-            try:
-                current_prediction = replicate.predictions.get(prediction_id)
-                replicate_status = current_prediction.status
-
-                if replicate_status == "succeeded":
-                    logger.info(
-                        f"Classification prediction {prediction_id} completed synchronously."
-                    )
-                    try:
-                        embeddings = np.array(
-                            current_prediction.output, dtype=np.float32
-                        )
-
-                        # Validate embedding dimension
-                        if embeddings.shape[1] != EMBEDDING_DIMENSION:
-                            logger.error(
-                                f"Incorrect embedding dimension received: {embeddings.shape[1]}, expected {EMBEDDING_DIMENSION}"
-                            )
-                            raise ValueError("Incorrect embedding dimension")
-                        if embeddings.shape[0] != len(transactions_input_for_context):
-                            logger.error(
-                                f"Embedding count mismatch: {embeddings.shape[0]} vs {len(transactions_input_for_context)}"
-                            )
-                            raise ValueError("Embedding count mismatch")
-
-                        # Store embeddings (optional for sync, but good practice)
-                        embeddings_id = f"{prediction_id}_embeddings"
-                        # Store with cleaned descriptions as context if needed? Or just user_id?
-                        # Let's assume store_embeddings only needs user_id for now.
-                        if not store_embeddings(embeddings, embeddings_id, user_id):
-                            logger.warning(
-                                f"Failed to store embeddings {embeddings_id} synchronously."
-                            )
-                            # Don't necessarily fail the request, but log it.
-
-                        # --- Run Categorization Pipeline ---
-                        # Pass the context list which now contains original & cleaned descriptions
-                        initial_results = _apply_initial_categorization(
-                            transactions_input_for_context, embeddings, user_id
-                        )
-                        # Check for errors from categorization itself
-                        if any(
-                            "Error:" in res.get("predicted_category", "")
-                            for res in initial_results
-                        ):
-                            logger.error(
-                                f"Categorization pipeline failed synchronously for {prediction_id}. Check previous logs."
-                            )
-                            # Find the first error message
-                            first_error = next(
-                                (
-                                    res["predicted_category"]
-                                    for res in initial_results
-                                    if "Error:" in res.get("predicted_category", "")
-                                ),
-                                "Categorization failed",
-                            )
-                            raise Exception(first_error)
-
-                        results_after_refunds = _detect_refunds(
-                            initial_results,
-                            embeddings,
-                            user_id,  # Pass embeddings if needed by future logic
-                        )
-                        final_results = _detect_transfers(results_after_refunds)
-                        # --- End Pipeline ---
-
-                        # Update status in DB
-                        completion_record = {
-                            "status": "completed",
-                            "message": "Classification completed successfully (synchronous)",
-                            "type": "classification",
-                            "user_id": user_id,
-                            "transaction_count": len(final_results),
-                            "embeddings_id": embeddings_id,
-                            "completed_at": datetime.now().isoformat(),
-                        }
-                        prisma_client.insert_webhook_result(
-                            prediction_id, completion_record
-                        )
-
-                        # Return synchronous response with results
-                        return (
-                            jsonify(
-                                {
-                                    "status": "completed",
-                                    "message": "Classification completed successfully",
-                                    "results": final_results,
-                                    "prediction_id": prediction_id,
-                                }
-                            ),
-                            200,
-                        )
-
-                    except Exception as process_error:
-                        logger.error(
-                            f"Error processing classification results synchronously for {prediction_id}: {process_error}",
-                            exc_info=True,
-                        )
-                        # Update DB to reflect processing failure
-                        prisma_client.insert_webhook_result(
-                            prediction_id,
-                            {
-                                "status": "failed",
-                                "error": f"Failed to process results synchronously: {str(process_error)}",
-                                "user_id": user_id,
-                                "type": "classification",
-                            },
-                        )
-                        # Return an error to the user
-                        return create_error_response(
-                            f"Failed to process classification results: {str(process_error)}",
-                            500,
-                        )
-
-                elif replicate_status == "failed":
-                    error_msg = (
-                        current_prediction.error
-                        or "Unknown Replicate error during classification"
-                    )
-                    logger.error(
-                        f"Classification prediction {prediction_id} failed synchronously: {error_msg}"
-                    )
-                    # Update DB status
-                    prisma_client.insert_webhook_result(
-                        prediction_id,
-                        {
-                            "status": "failed",
-                            "error": f"Classification failed during prediction: {str(error_msg)}",
-                            "user_id": user_id,
-                            "type": "classification",
-                        },
-                    )
-                    return create_error_response(
-                        f"Classification failed on provider: {error_msg}", 502
-                    )
-
-                # If still processing, wait
-                logger.debug(
-                    f"Polling classification status for {prediction_id}, current: {replicate_status}"
-                )
-                time.sleep(poll_interval)
-
-            except Exception as poll_error:
-                logger.warning(
-                    f"Error during synchronous polling for classification {prediction_id}: {poll_error}"
-                )
-                # Break the loop on error and return async response
-                break
-
-        # 5. Fallback to Asynchronous Response
-        logger.info(
-            f"Classification {prediction_id} did not complete within {sync_timeout}s, returning async response."
-        )
-        return (
-            jsonify(
-                {
-                    "status": "processing",
-                    "prediction_id": prediction_id,
-                    "message": "Classification in progress. Check status endpoint for results.",
-                }
-            ),
-            202,  # HTTP 202 Accepted
-        )
 
     except Exception as e:
         logger.error(
@@ -327,10 +209,12 @@ def _apply_initial_categorization(
 ) -> List[Dict[str, Any]]:
     """Performs initial categorization based on similarity and returns top 2 matches."""
     results = []
-    # Define confidence thresholds
-    MIN_ABSOLUTE_CONFIDENCE = 0.85
-    MIN_RELATIVE_CONFIDENCE_DIFF = 0.03
-    NEIGHBOR_COUNT = 3
+    # Define confidence thresholds - MOVED TO config.py
+    # MIN_ABSOLUTE_CONFIDENCE = 0.70  # Minimum similarity score to consider a match valid
+    # MIN_RELATIVE_CONFIDENCE_DIFF = (
+    #     0.03  # Minimum difference between best and second best score
+    # )
+    # NEIGHBOR_COUNT = 3  # Number of neighbors to consider for consistency check
 
     # --- Check for Debug Mode ---
     is_debug = os.getenv("TX_CLASSIFY_DEBUG") == "true"
