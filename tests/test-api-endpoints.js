@@ -3,31 +3,6 @@ const path = require("path");
 // Load environment variables from .env file with explicit path
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
-// Verify critical environment variables are loaded
-console.log("Checking environment variables...");
-const criticalEnvVars = ["DATABASE_URL", "REPLICATE_API_TOKEN", "TEST_API_KEY", "TEST_USER_ID"];
-const missingVars = criticalEnvVars.filter((varName) => !process.env[varName]);
-if (missingVars.length > 0) {
-  console.error(`❌ Missing required environment variables: ${missingVars.join(", ")}`);
-  console.error("Please check that your .env file is in the project root and contains these variables.");
-  process.exit(1);
-}
-console.log("✅ Environment variables loaded successfully");
-
-const fs = require("fs");
-const { spawn } = require("child_process");
-const http = require("http");
-const csv = require("csv-parser");
-
-// Configuration
-const API_PORT = process.env.API_PORT || 3005;
-const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
-const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
-
-// Global variables
-let webhookServer;
-let flaskProcess;
-
 // Set up logging with verbosity levels
 const LOG_LEVELS = {
   ERROR: 0, // Only errors
@@ -48,13 +23,6 @@ if (process.argv.includes("--verbose")) {
 } else if (process.argv.includes("--trace")) {
   CURRENT_LOG_LEVEL = LOG_LEVELS.TRACE;
 }
-
-// Check for test mode flags
-const RUN_TRAINING = !process.argv.includes("--cat-only");
-const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
-const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
-const USE_DEV_API = process.argv.includes("--use-dev-api");
-const DEV_API_URL = "https://txclassify-dev.onrender.com";
 
 const log = (message, level = LOG_LEVELS.INFO) => {
   // Only log messages at or below the current log level
@@ -77,6 +45,38 @@ const logError = (message) => log(message, LOG_LEVELS.ERROR);
 const logInfo = (message) => log(message, LOG_LEVELS.INFO);
 const logDebug = (message) => log(message, LOG_LEVELS.DEBUG);
 const logTrace = (message) => log(message, LOG_LEVELS.TRACE);
+
+// Verify critical environment variables are loaded
+logInfo("Checking environment variables...");
+const criticalEnvVars = ["DATABASE_URL", "REPLICATE_API_TOKEN", "TEST_API_KEY", "TEST_USER_ID"];
+const missingVars = criticalEnvVars.filter((varName) => !process.env[varName]);
+if (missingVars.length > 0) {
+  logError(`❌ Missing required environment variables: ${missingVars.join(", ")}`);
+  logError("Please check that your .env file is in the project root and contains these variables.");
+  process.exit(1);
+}
+logInfo("✅ Environment variables loaded successfully");
+
+const fs = require("fs");
+const { spawn } = require("child_process");
+const http = require("http");
+const csv = require("csv-parser");
+
+// Configuration
+const API_PORT = process.env.API_PORT || 3005;
+const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
+const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
+
+// Global variables
+let webhookServer;
+let flaskProcess;
+
+// Check for test mode flags
+const RUN_TRAINING = !process.argv.includes("--cat-only");
+const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
+const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
+const USE_DEV_API = process.argv.includes("--use-dev-api");
+const DEV_API_URL = "https://txclassify-dev.onrender.com";
 
 // Log the actual values being used
 logInfo(`Using TEST_USER_ID: ${TEST_USER_ID}`);
@@ -101,7 +101,7 @@ const findFreePort = async (startPort) => {
 
 // Start Flask server
 const startFlaskServer = async (port) => {
-  console.log(`Starting Flask server on port ${port}...`);
+  logInfo(`Starting Flask server on port ${port}...`);
 
   // Start the Flask server
   const env = {
@@ -142,19 +142,19 @@ const startFlaskServer = async (port) => {
       }
 
       const pythonCommand = pythonCommands[commandIndex];
-      console.log(`Trying to start Flask with: ${pythonCommand}`);
+      logDebug(`Trying to start Flask with: ${pythonCommand}`);
 
       flaskProcess = spawn(pythonCommand, ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
 
       flaskProcess.stdout.on("data", (data) => {
         const output = data.toString().trim();
-        console.log(`Flask: ${output}`);
+        logDebug(`Flask: ${output}`);
 
         // Only look for the port in the "Running on" message
         const match = output.match(/Running on http:\/\/[^:]+:(\d+)/);
         if (match) {
           detectedPort = parseInt(match[1]);
-          console.log(`\n✅ Flask server started on port ${detectedPort}`);
+          logInfo(`\n✅ Flask server started on port ${detectedPort}`);
           clearTimeout(startTimeout);
           resolve(detectedPort);
         }
@@ -162,11 +162,11 @@ const startFlaskServer = async (port) => {
 
       flaskProcess.stderr.on("data", (data) => {
         const error = data.toString().trim();
-        console.error(`Flask error: ${error}`);
+        logError(`Flask error: ${error}`);
 
         // If port is in use, kill process and try next port
         if (error.includes("Address already in use")) {
-          console.log(`\n⚠️ Port ${port} is in use, trying port ${port + 1}`);
+          logInfo(`\n⚠️ Port ${port} is in use, trying port ${port + 1}`);
           flaskProcess.kill();
           clearTimeout(startTimeout);
           startFlaskServer(port + 1)
@@ -176,7 +176,7 @@ const startFlaskServer = async (port) => {
       });
 
       flaskProcess.on("error", (error) => {
-        console.error(`Failed to start Flask with ${pythonCommand}: ${error.message}`);
+        logError(`Failed to start Flask with ${pythonCommand}: ${error.message}`);
         // Try the next Python command
         flaskProcess.kill();
         tryStartFlask(commandIndex + 1);
@@ -185,7 +185,7 @@ const startFlaskServer = async (port) => {
       flaskProcess.on("close", (code) => {
         // Only handle unexpected exits
         if (code !== 0 && !detectedPort) {
-          console.error(`Flask server exited with code ${code}`);
+          logError(`Flask server exited with code ${code}`);
           // Try the next Python command
           tryStartFlask(commandIndex + 1);
         }
@@ -441,7 +441,7 @@ const loadCategorizationData = (file_name) => {
 const trainModel = async (config) => {
   try {
     logInfo("Starting training...");
-    console.log("Training model...");
+    logInfo("Training model...");
 
     // Validate config object
     if (!config) {
@@ -478,7 +478,7 @@ const trainModel = async (config) => {
       try {
         // Add retry attempt to status
         if (retryCount > 0) {
-          console.log(`Retrying training request (attempt ${retryCount + 1}/${maxRetries})...`);
+          logInfo(`Retrying training request (attempt ${retryCount + 1}/${maxRetries})...`);
           // Simple delay for retries
           await new Promise((resolve) => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
         }
@@ -515,7 +515,7 @@ const trainModel = async (config) => {
 
           if (result.status === "completed") {
             // Synchronous Success!
-            console.log("Training completed synchronously.");
+            logInfo("Training completed synchronously.");
             // Return a success object immediately, mimicking pollForTrainingCompletion result
             return {
               status: "completed",
@@ -525,7 +525,7 @@ const trainModel = async (config) => {
             };
           } else if (result.status === "processing" && result.prediction_id) {
             // Asynchronous start indicated by 200 status + processing status in body
-            console.log("Training started asynchronously (indicated by 200 response).");
+            logInfo("Training started asynchronously (indicated by 200 response).");
             predictionId = result.prediction_id;
             break; // Exit retry loop, proceed to polling
           } else {
@@ -538,7 +538,7 @@ const trainModel = async (config) => {
           logTrace(`Response body (status 202): ${responseText}`);
           const result = JSON.parse(responseText);
           if (result.prediction_id) {
-            console.log("Training started asynchronously (indicated by 202 response).");
+            logInfo("Training started asynchronously (indicated by 202 response).");
             predictionId = result.prediction_id;
             break; // Exit retry loop, proceed to polling
           } else {
@@ -582,7 +582,7 @@ const trainModel = async (config) => {
     // Check if we got a prediction ID
     if (predictionId) {
       logInfo(`Training requires polling with prediction ID: ${predictionId}`);
-      console.log("Training in progress, please wait...");
+      logInfo("Training in progress, please wait...");
 
       // Store start time for polling
       const startTime = new Date().getTime();
@@ -765,16 +765,16 @@ const categoriseTransactions = async (config) => {
     const serviceUrl = config.serviceUrl;
     const serverPort = new URL(serviceUrl).port;
 
-    console.log("==== API Key Debug Info ====");
-    console.log(`config.apiKey is ${config.apiKey ? "defined" : "undefined"}`);
-    console.log(`TEST_API_KEY is ${TEST_API_KEY ? "defined" : "undefined"}`);
-    console.log(
+    logDebug("==== API Key Debug Info ====");
+    logDebug(`config.apiKey is ${config.apiKey ? "defined" : "undefined"}`);
+    logDebug(`TEST_API_KEY is ${TEST_API_KEY ? "defined" : "undefined"}`);
+    logDebug(
       `Using API key: ${(config.apiKey || TEST_API_KEY)?.substring(0, 3)}...${(
         config.apiKey || TEST_API_KEY
       )?.substring((config.apiKey || TEST_API_KEY)?.length - 3)}`
     );
-    console.log(`Server URL: ${serviceUrl} (port: ${serverPort})`);
-    console.log("==========================");
+    logDebug(`Server URL: ${serviceUrl} (port: ${serverPort})`);
+    logDebug("==========================");
 
     // Send request to classify endpoint
     logInfo(`Sending categorisation request to ${serviceUrl}/classify`);
@@ -807,12 +807,12 @@ const categoriseTransactions = async (config) => {
         // --- Handle different response statuses ---
         if (response_fetch.status === 200) {
           // Synchronous success!
-          console.log("Received synchronous classification results.");
+          logInfo("Received synchronous classification results.");
           response = { data: await response_fetch.json(), status: 200 };
           break; // Exit the loop, we have results
         } else if (response_fetch.status === 202) {
           // Asynchronous processing started
-          console.log("Classification started asynchronously. Polling required.");
+          logInfo("Classification started asynchronously. Polling required.");
           response = { data: await response_fetch.json(), status: 202 };
           predictionId = response.data.prediction_id;
           if (!predictionId) {
@@ -833,7 +833,7 @@ const categoriseTransactions = async (config) => {
         if (attempt === maxAttempts) {
           throw error; // Rethrow on last attempt
         }
-        console.log(`Retrying categorisation request (attempt ${attempt + 1}/${maxAttempts})...`);
+        logInfo(`Retrying categorisation request (attempt ${attempt + 1}/${maxAttempts})...`);
         await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Wait before retry
         attempt++;
       }
@@ -853,16 +853,16 @@ const categoriseTransactions = async (config) => {
       if (response.data && response.data.results && response.data.status === "completed") {
         results = response.data.results;
         finalStatus = "completed";
-        console.log(`Synchronous classification completed successfully! Found ${results.length} results.`);
+        logInfo(`Synchronous classification completed successfully! Found ${results.length} results.`);
       } else {
-        console.error("Synchronous response received, but results are missing or status is not 'completed'.");
-        console.error("Response data:", JSON.stringify(response.data, null, 2));
+        logError("Synchronous response received, but results are missing or status is not 'completed'.");
+        logError("Response data:", JSON.stringify(response.data, null, 2));
         throw new Error("Invalid synchronous response format.");
       }
     } else if (response.status === 202 && predictionId) {
       // --- Start Polling for Asynchronous Results ---
-      console.log(`Categorisation in progress with prediction ID: ${predictionId}`);
-      console.log("Polling for results...");
+      logInfo(`Categorisation in progress with prediction ID: ${predictionId}`);
+      logInfo("Polling for results...");
       process.stdout.write("Categorization progress: ");
 
       const maxPollingAttempts = 60;
@@ -897,15 +897,15 @@ const categoriseTransactions = async (config) => {
           const elapsedMinutes = Math.floor(pollingAttempt / 12); // Assuming 5-second intervals (12 polls per minute)
 
           if (status === "completed") {
-            console.log("\n");
-            console.log(`Categorisation completed successfully via polling!`);
+            process.stdout.write("\n");
+            logInfo(`Categorisation completed successfully via polling!`);
             results = statusResponse.data.results || [];
             finalStatus = "completed";
             break; // Exit polling loop
           } else if (status === "failed") {
-            console.log("\n");
+            process.stdout.write("\n");
             const errorMessage = statusResponse.data.error || "Unknown error during processing";
-            console.log(`Categorisation failed: ${errorMessage}`);
+            logError(`Categorisation failed: ${errorMessage}`);
             return { status: "failed", error: errorMessage }; // Exit function on failure
           } else if (status === "processing") {
             // Log progress occasionally
@@ -927,8 +927,8 @@ const categoriseTransactions = async (config) => {
       } // End polling loop
 
       if (pollingAttempt >= maxPollingAttempts) {
-        console.log("\n");
-        console.log(`Reached maximum number of polling attempts (${maxPollingAttempts}). Assuming failure.`);
+        process.stdout.write("\n");
+        logWarning(`Reached maximum number of polling attempts (${maxPollingAttempts}). Assuming failure.`);
         return { status: "timeout", error: "Polling timed out" };
       }
       // --- End Polling ---
@@ -939,7 +939,6 @@ const categoriseTransactions = async (config) => {
 
     // --- Process Results (Common for both Sync and Async) ---
     if (finalStatus === "completed") {
-      console.log("Processing final categorisation results...");
       logInfo(`Status response data: ${JSON.stringify(response.data)}`); // Log the data source (sync or last poll)
 
       if (results && Array.isArray(results)) {
@@ -947,7 +946,7 @@ const categoriseTransactions = async (config) => {
 
         // Log the results for debugging
         logInfo("Displaying results...");
-        console.log("\n===== CATEGORISATION RESULTS =====");
+        logInfo("\n===== CATEGORISATION RESULTS ======");
         logInfo(`Total transactions categorised: ${results.length}`);
 
         results.forEach((result, index) => {
@@ -959,12 +958,12 @@ const categoriseTransactions = async (config) => {
           const secondScore = result.second_similarity_score;
           const secondScorePercent = secondScore ? (secondScore * 100).toFixed(2) : "N/A";
 
-          let logLine = `${index + 1}. \"${narrative}\"`;
+          let logLine = `${index + 1}. "${narrative}"`;
 
           // Show cleaned narrative if different from original
           const cleaned_narrative = result.cleaned_narrative || null;
           if (cleaned_narrative && cleaned_narrative !== narrative) {
-            logLine += `\n     Cleaned: \"${cleaned_narrative}\"`;
+            logLine += `\n     Cleaned: "${cleaned_narrative}"`;
           }
           logLine += ` → ${category}`;
 
@@ -1286,11 +1285,11 @@ const main = async () => {
 
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
-    const trainingData = await loadTrainingData("training_test.csv");
-    // const trainingData = await loadTrainingData("training_data.csv");
+    // const trainingData = await loadTrainingData("training_test.csv");
+    const trainingData = await loadTrainingData("full_train.csv");
     // const trainingData = await loadTrainingData("training_data_num_cat.csv");
+    const categorizationData = await loadCategorizationData("categorise_full.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
-    const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
 

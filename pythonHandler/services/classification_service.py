@@ -7,13 +7,12 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import List, Dict, Any, Optional
 import time
-import replicate
-from datetime import datetime
 from flask import jsonify
 
 from utils.embedding_utils import fetch_embeddings, store_embeddings
-from utils.prisma_client import prisma_client
-from utils.replicate_utils import run_prediction
+
+# from utils.prisma_client import prisma_client
+# from utils.replicate_utils import run_prediction
 from utils.request_utils import create_error_response
 from config import (
     EMBEDDING_DIMENSION,
@@ -27,7 +26,7 @@ from utils.local_embedding_utils import generate_embeddings  # Import local util
 logger = logging.getLogger(__name__)
 
 
-def process_classification_request(validated_data, user_id, sync_timeout):
+def process_classification_request(validated_data, user_id):
     """Processes the validated classification request data."""
     try:
         start_time = time.time()

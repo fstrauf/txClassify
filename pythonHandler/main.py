@@ -353,7 +353,6 @@ def classify_transactions_async():
     """Attempts synchronous classification first, falls back to async if needed."""
     try:
         user_id = request.user_id
-        SYNC_TIMEOUT = 10
 
         data = request.get_json()
         if not data:
@@ -363,9 +362,7 @@ def classify_transactions_async():
             return error_response
 
         # Call the service function
-        response, status_code = process_classification_request(
-            validated_data, user_id, SYNC_TIMEOUT
-        )
+        response, status_code = process_classification_request(validated_data, user_id)
         return response, status_code
 
     except Exception as e:
