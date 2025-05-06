@@ -406,12 +406,6 @@ def clean_text(texts: Union[str, List[str]]) -> Union[str, List[str]]:
             return texts
 
         return cleaned_texts
-    else:
-        # Input is neither string nor list, raise error or return as is
-        logger.warning(
-            f"clean_text received unexpected input type: {type(texts)}. Returning as is."
-        )
-        return texts
 
 
 # === Old Regex-based clean_text (for reference, can be removed later) ===

@@ -64,9 +64,17 @@ def get_and_process_status(prediction_id, requesting_user_id):
                     logger.info(
                         f"No final status found internally for {prediction_id} after Replicate fetch error."
                     )
-                    return create_error_response(
-                        "Prediction provider error or job not found.", 502
-                    )  # 502 Bad Gateway
+                    # Return a 200 indicating local/synchronous completion
+                    return (
+                        jsonify(
+                            {
+                                "status": "completed",
+                                "message": "Local jobs complete synchronously. This status endpoint is primarily for asynchronous Replicate jobs.",
+                                "prediction_id": prediction_id,
+                            }
+                        ),
+                        200,
+                    )
             except Exception as db_err:
                 logger.error(
                     f"Error checking internal DB for {prediction_id} status after Replicate error: {db_err}"
