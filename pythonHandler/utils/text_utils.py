@@ -196,137 +196,153 @@ def extract_nlp_features(text: str) -> str:
     }
 
     for i, token in enumerate(doc):
+        # Skip punctuation unless it's part of a number/currency or hyphenated word
+        # Let's keep hyphens if they connect alphanumeric chars, otherwise discard.
+        is_hyphen_ok = (
+            token.text == "-"
+            and i > 0
+            and i < len(doc) - 1
+            and doc[i - 1].is_alpha
+            and doc[i + 1].is_alpha
+        )
+        if token.is_punct and not is_hyphen_ok:
+            logger.debug(f"Removing '{token.text}' (POS: {token.pos_}) - Punctuation")
+            continue
+
+        # Skip stop words unless part of an ORG/PRODUCT entity
+        # (Entities like "Bank of America" should keep "of")
+        is_entity_part = token.ent_iob_ != "O" and token.ent_type_ in {
+            "ORG",
+            "PRODUCT",
+        }
+        if token.is_stop and not is_entity_part:
+            logger.debug(f"Removing '{token.text}' (Stop word, not in ORG/PRODUCT)")
+            continue
+
+        # Check noise flags
         is_loc_match = i in location_noise_indices
         is_txn_noise = i in transaction_noise_indices  # Check the set
-        has_keep_pos = token.pos_ in KEEP_POS
+        is_noise = is_loc_match or is_txn_noise
 
-        is_noise = is_loc_match or is_txn_noise  # Combine noise flags
-
-        # Keep token ONLY if it's NOT noise AND has a useful POS tag
-        # We remove the direct ORG check here to allow noise removal within ORGs
-        if not is_noise and has_keep_pos:
+        # Keep token if it's not noise
+        if not is_noise:
             initial_filtered_tokens.append(token)
-        # Log removals for debugging (simplified logging)
         else:
-            # Log removal reason
-            if is_loc_match:
-                logger.debug(f"Removing '{token.text}' (Location Matcher)")
-            elif is_txn_noise:
-                logger.debug(f"Removing '{token.text}' (Transaction Matcher)")
-            elif not has_keep_pos:
-                logger.debug(f"Removing '{token.text}' (POS: {token.pos_})")
+            noise_type = "Location Matcher" if is_loc_match else "Transaction Matcher"
+            logger.debug(f"Removing '{token.text}' ({noise_type})")
 
-    initial_filtered_text = " ".join([t.text for t in initial_filtered_tokens])
-    logger.debug(f"Text after POS/Matcher filtering: '{initial_filtered_text}'")
+    # --- Step 3.5: Refine Tokens - Discard GPE if ORG/PRODUCT appears first ---
+    refined_filtered_tokens = []
+    min_org_prod_token_idx = None
+    min_gpe_token_idx = None
 
-    # --- Step 4: Contextual Post-Filtering (Numbers Only - applied to initial_filtered_tokens) ---
-    final_tokens = []  # List of Token objects
-    num_initial_tokens = len(initial_filtered_tokens)
-
+    # Find the first occurrence index *within initial_filtered_tokens*
     for idx, token in enumerate(initial_filtered_tokens):
-        keep_token = True
-        # Check for number removal: Remove if IS_DIGIT, length >= 5, and not adjacent to ORG in the *initial filtered* list
-        if token.is_digit and len(token.text) >= 5:
-            is_part_of_org = token.i in org_indices  # Check original ORG status
-            prev_is_org = idx > 0 and initial_filtered_tokens[idx - 1].i in org_indices
-            next_is_org = (
-                idx < num_initial_tokens - 1
-                and initial_filtered_tokens[idx + 1].i in org_indices
-            )
+        if token.ent_type_ in {"ORG", "PRODUCT"} and min_org_prod_token_idx is None:
+            min_org_prod_token_idx = idx
+        if token.ent_type_ == "GPE" and min_gpe_token_idx is None:
+            min_gpe_token_idx = idx
+        # Optimization: stop if both found
+        if min_org_prod_token_idx is not None and min_gpe_token_idx is not None:
+            break
 
-            if not (is_part_of_org or prev_is_org or next_is_org):
-                keep_token = False
-                logger.debug(
-                    f"Contextual removal: Removing digits '{token.text}' (len>=5, not near ORG)"
-                )
+    discard_gpe = False
+    if (
+        min_org_prod_token_idx is not None
+        and min_gpe_token_idx is not None
+        and min_org_prod_token_idx < min_gpe_token_idx
+    ):
+        discard_gpe = True
+        logger.debug(
+            f"Primary entity (ORG/PRODUCT at index {min_org_prod_token_idx}) found before location (GPE at index {min_gpe_token_idx}). Discarding GPE tokens."
+        )
 
-        if keep_token:
-            final_tokens.append(token)
-
-    # --- Step 5: Final Assembly & Heuristics ---
-    if not final_tokens:
-        # Fallback logic 1: Use if filtering removed everything
-        org_entities = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
-        if org_entities:
-            extracted_name = " ".join(org_entities)
-            logger.debug(
-                f"Filtering removed all; falling back to ORG: '{extracted_name}'"
-            )
-        else:
-            noun_chunks = [chunk.text for chunk in doc.noun_chunks]
-            if noun_chunks:
-                extracted_name = noun_chunks[0]
-                logger.debug(
-                    f"Filtering removed all; falling back to first Noun Chunk: '{extracted_name}'"
-                )
-            else:
-                logger.debug(
-                    f"Could not extract meaningful name from: '{text}'. Returning original (pre-regex)."
-                )
-                return text  # Return original text after initial regex pre-cleaning
+    if discard_gpe:
+        for token in initial_filtered_tokens:
+            if token.ent_type_ == "GPE":
+                logger.debug(f"Discarding '{token.text}' (GPE after primary entity)")
+                continue
+            refined_filtered_tokens.append(token)
     else:
-        # Build name from final tokens
-        final_tokens_text = [t.text for t in final_tokens]
+        # If not discarding GPE, use the initial list
+        refined_filtered_tokens = initial_filtered_tokens
 
-        # Heuristic: Re-attach company suffix (apply before final length check)
-        if len(final_tokens) >= 1 and len(initial_filtered_tokens) > len(final_tokens):
-            last_kept_token_idx = final_tokens[-1].i
-            if last_kept_token_idx + 1 < len(doc):
-                next_token_original = doc[last_kept_token_idx + 1]
-                if next_token_original.lower_ in company_suffixes:
-                    is_next_token_kept = any(
-                        kept_token.i == next_token_original.i
-                        for kept_token in final_tokens
-                    )
-                    if not is_next_token_kept:
-                        logger.debug(
-                            f"Re-attaching company suffix: {next_token_original.text}"
-                        )
-                        final_tokens_text.append(next_token_original.text)
+    # If all tokens were filtered out, return original text after basic regex
+    if not refined_filtered_tokens:
+        logger.warning(
+            f"All tokens filtered out for '{text}'. Returning basic cleaned: '{text}'"
+        )
+        return text
 
-        extracted_name = " ".join(final_tokens_text)
-        extracted_name = re.sub(r"\s+", " ", extracted_name).strip()
+    # --- Step 4: Build Contiguous Text Spans from Refined Tokens ---
+    contiguous_token_texts = []
+    current_span = []
+    if refined_filtered_tokens:
+        last_token_index = refined_filtered_tokens[0].i - 1
+        for token in refined_filtered_tokens:
+            # If current token does not follow the last one, start a new span
+            if token.i != last_token_index + 1 and current_span:
+                contiguous_token_texts.append(" ".join(current_span))
+                current_span = []
+            current_span.append(token.text)
+            last_token_index = token.i
+        # Add the last span
+        if current_span:
+            contiguous_token_texts.append(" ".join(current_span))
 
-        # Heuristic: Check for very short results (<= 2 chars) AFTER suffix attachment
-        # Change threshold to <= 2, improve fallback logic
-        if (
-            len(extracted_name) <= 2 and len(text) > 10
-        ):  # Use original text length as context
-            logger.warning(
-                f"Result '{extracted_name}' seems too short after filtering '{text}'. Attempting fallback."
-            )
-            # Fallback logic 2: Try ORG -> Noun Chunk -> initial_filtered_text -> original
-            org_entities = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
-            if org_entities:
-                extracted_name = " ".join(org_entities)
-                logger.debug(f"Short result fallback to ORG: '{extracted_name}'")
-            else:
-                noun_chunks = [chunk.text for chunk in doc.noun_chunks]
-                if noun_chunks:
-                    extracted_name = noun_chunks[0]
-                    logger.debug(
-                        f"Short result fallback to Noun Chunk: '{extracted_name}'"
-                    )
-                else:
-                    # Revert to before contextual filtering as last resort before original
-                    extracted_name = re.sub(r"\s+", " ", initial_filtered_text).strip()
-                    logger.debug(
-                        f"Short result fallback to pre-contextual filter: '{extracted_name}'"
-                    )
-                    if not extracted_name:
-                        logger.warning(
-                            f"Short result fallback failed, returning original text: '{text}'"
-                        )
-                        return text  # Return original text pre-regex
+    if not contiguous_token_texts:
+        logger.warning(
+            f"No contiguous text spans formed for '{text}'. Returning basic cleaned: '{text}'"
+        )
+        return text
 
-    # Remove Step 6 (Final Regex Cleanup) as we rely on spaCy components now
+    # --- Step 5: Select Best Text Span (longest is usually best) ---
+    # We primarily care about the main entity description
+    final_tokens_text = max(contiguous_token_texts, key=len)
+    logger.debug(f"Text after POS/Matcher/GPE filtering: '{final_tokens_text}'")
+
+    # --- Step 6: Final Cleanup on Selected Span ---
+    cleaned_span = final_tokens_text
+
+    # 6a. Remove standalone 3 or 4 digit numbers (potential store/branch codes)
+    # This regex looks for 3-4 digits that are preceded by start-of-string or a space,
+    # and followed by a space or end-of-string.
+    # Example: "MY STORE 1234" -> "MY STORE ", "1234 MY STORE" -> " MY STORE"
+    # The number itself is removed. Extra spaces are handled by later normalization.
+    number_removal_regex = r"(?:(?<=^)|(?<=\s))\d{3,4}(?=\s|$)"
+    cleaned_span = re.sub(number_removal_regex, "", cleaned_span)
     logger.debug(
-        f"Final extracted features (before final cleanup): '{extracted_name}' from '{text}'"
+        f"Step 6a - After store number removal (regex: {number_removal_regex}): '{cleaned_span}'"
     )
 
-    # Apply minimal final cleanup (whitespace)
-    final_name = re.sub(r"\s+", " ", extracted_name).strip()
-    return final_name
+    # 6b. Remove leading/trailing hyphens and cleanup hyphens that might have become standalone
+    # Strip leading/trailing whitespace and hyphens iteratively.
+    # Handles cases like " - ", "word -", "- word"
+    temp_cleaned_span = cleaned_span.strip()
+    while temp_cleaned_span.startswith("-") or temp_cleaned_span.endswith("-"):
+        temp_cleaned_span = temp_cleaned_span.strip(
+            "-"
+        ).strip()  # Strip hyphens then whitespace
+    cleaned_span = temp_cleaned_span
+    logger.debug(f"Step 6b - After hyphen cleanup: '{cleaned_span}'")
+
+    # Normalize whitespace again (collapse multiple spaces, strip again)
+    final_cleaned_text = re.sub(r"\\s+", " ", cleaned_span).strip()
+    logger.debug(
+        f"Step 6c - After final whitespace normalization: '{final_cleaned_text}'"
+    )
+    # Original log for context, can be removed if new logs are sufficient
+    logger.debug(
+        f"Final extracted features (after step 6): '{final_cleaned_text}' from original span '{final_tokens_text}' from doc '{text}'"
+    )
+
+    if not final_cleaned_text:
+        logger.warning(
+            f"Final cleaning resulted in empty string for original: '{text}'. Returning basic cleaned: '{text}'"
+        )
+        return text
+
+    return final_cleaned_text
 
 
 def clean_text(texts: Union[str, List[str]]) -> Union[str, List[str]]:
@@ -336,9 +352,19 @@ def clean_text(texts: Union[str, List[str]]) -> Union[str, List[str]]:
         return texts
 
     # --- Define the core cleaning logic for a single string ---
-    def _clean_single_text(original_text: str) -> str:
+    def _clean_single_text(
+        original_text: any,
+    ) -> str:  # Changed type hint for flexibility
+        if not isinstance(original_text, str):
+            logger.debug(
+                f"Input to _clean_single_text is not a string ({type(original_text)}): '{original_text}'. Will be processed as empty string."
+            )
+            original_text = (
+                ""  # Convert non-string to empty string for robust processing
+            )
+
         # Basic pre-cleaning (still useful before NLP feature extraction)
-        pre_cleaned_text = re.sub(r"https?://\S+", "", original_text)
+        pre_cleaned_text = re.sub(r"https?://\\S+", "", original_text)
         pre_cleaned_text = re.sub(
             r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "", pre_cleaned_text
         )
