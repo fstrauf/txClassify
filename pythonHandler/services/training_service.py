@@ -12,8 +12,9 @@ from flask import jsonify
 from utils.prisma_client import prisma_client
 from utils.text_utils import clean_text
 from utils.embedding_utils import store_embeddings
-from utils.replicate_utils import run_prediction
+from utils.local_embedding_utils import generate_embeddings, load_spacy_pipeline
 from config import EMBEDDING_DIMENSION
+from utils.request_utils import create_error_response
 
 logger = logging.getLogger(__name__)
 
@@ -152,147 +153,72 @@ def process_training_request(validated_data, user_id, api_key):
         # Get descriptions for embedding
         descriptions_to_embed = df["cleaned_description"].tolist()
 
-        # Create prediction using the run_prediction function
-        prediction = run_prediction(descriptions_to_embed)
-        prediction_id = prediction.id
-
-        # Store initial configuration for status endpoint
-        context = {
-            "user_id": user_id,
-            "status": "processing",
-            "type": "training",
-            "transaction_count": len(
-                transactions
-            ),  # Original count before deduplication
-            "unique_description_count": len(df),  # Count after deduplication
-            "category_count": len(unique_categories),
-            "created_at": datetime.now().isoformat(),
-            "embedding_id": embedding_id,  # ID for the main embeddings
-            "index_id": index_id,  # ID for the index data
-        }
-
         try:
-            prisma_client.insert_webhook_result(prediction_id, context)
+            # === Generate Embeddings Locally ===
+            embeddings = generate_embeddings(descriptions_to_embed)
+
+            if embeddings is None:
+                logger.error(
+                    f"Failed to generate embeddings locally for user {user_id}"
+                )
+                return create_error_response(
+                    "Failed to generate training embeddings", 500
+                )
+
+            # Validate embedding dimension (assuming generate_embeddings returns non-empty on success)
+            if embeddings.shape[0] != len(descriptions_to_embed):
+                logger.error(
+                    f"Embedding count mismatch after local generation: {embeddings.shape[0]} vs {len(descriptions_to_embed)}"
+                )
+                return create_error_response(
+                    "Embedding count mismatch during training", 500
+                )
+
+            # Assuming EMBEDDING_DIMENSION is still relevant or can be inferred
+            # If the local model dimension differs, update EMBEDDING_DIMENSION in config.py or handle dynamically
+            if embeddings.shape[1] != EMBEDDING_DIMENSION:
+                logger.warning(
+                    f"Local embedding dimension ({embeddings.shape[1]}) differs from config ({EMBEDDING_DIMENSION}). Using local dimension."
+                )
+                # Potentially update config or handle dimension mismatch? For now, proceed.
+
+            # Store the locally generated embeddings
+            store_result = store_embeddings(embeddings, embedding_id, user_id)
+            if not store_result:
+                logger.error(
+                    f"Failed to store locally generated training embeddings {embedding_id}"
+                )
+                return create_error_response("Failed to store training embeddings", 500)
+
             logger.info(
-                f"Stored initial training context for prediction {prediction_id}"
+                f"Stored locally generated training embeddings {embedding_id} successfully."
             )
-        except Exception as e:
-            logger.error(
-                f"Failed to store initial context for training prediction {prediction_id}: {e}",
-                exc_info=True,
-            )
-            # Decide if this is fatal. For now, return error as status check depends on it.
+
+            # Since generation is synchronous, training is complete here.
+            # We can optionally log the completion status to the database if needed
+            # (e.g., using a generic ID or timestamp if no prediction_id exists)
+            # For simplicity, we'll just return success directly.
+
             return (
                 jsonify(
-                    {"status": "error", "error": "Failed to store training job context"}
+                    {
+                        "status": "completed",
+                        "message": "Training completed successfully (local embeddings).",
+                        "unique_description_count": len(df),
+                        "category_count": len(unique_categories),
+                    }
                 ),
-                500,
+                200,
             )
 
-        # === Try Synchronous Completion (Poll for 10 seconds) ===
-        SYNC_TIMEOUT = 10  # seconds (can be adjusted)
-        sync_end_time = time.time() + SYNC_TIMEOUT
-        poll_interval = 0.5  # seconds
-
-        while time.time() < sync_end_time:
-            try:
-                # Check Replicate prediction status
-                current_prediction = replicate.predictions.get(prediction_id)
-                replicate_status = current_prediction.status
-
-                if replicate_status == "succeeded":
-                    logger.info(
-                        f"Training prediction {prediction_id} completed synchronously."
-                    )
-                    # Process successful completion immediately
-                    embeddings = np.array(current_prediction.output, dtype=np.float32)
-
-                    # Validate embedding dimension
-                    if embeddings.shape[1] != EMBEDDING_DIMENSION:
-                        logger.error(
-                            f"Incorrect embedding dimension received: {embeddings.shape[1]}, expected {EMBEDDING_DIMENSION}"
-                        )
-                        raise ValueError("Incorrect embedding dimension")
-
-                    store_result = store_embeddings(embeddings, embedding_id, user_id)
-                    if not store_result:
-                        # Log error, but maybe don't raise exception here, let status endpoint handle retry?
-                        # For synchronous, it might be better to fail hard.
-                        logger.error(
-                            f"Failed to store training embeddings {embedding_id} synchronously."
-                        )
-                        raise Exception(
-                            "Failed to store training embeddings synchronously."
-                        )
-                    logger.info(
-                        f"Stored final training embeddings {embedding_id} synchronously."
-                    )
-
-                    # Update DB status
-                    final_db_record = {
-                        "status": "completed",
-                        "message": "Training completed successfully (synchronous)",
-                        "user_id": user_id,
-                        "type": "training",
-                        "completed_at": datetime.now().isoformat(),
-                        # Include counts from context for consistency
-                        "transaction_count": context["transaction_count"],
-                        "unique_description_count": context["unique_description_count"],
-                        "category_count": context["category_count"],
-                    }
-                    prisma_client.insert_webhook_result(prediction_id, final_db_record)
-
-                    # Return synchronous success response
-                    return jsonify(final_db_record), 200
-
-                elif replicate_status == "failed":
-                    error_msg = (
-                        current_prediction.error
-                        or "Unknown Replicate error during training"
-                    )
-                    logger.error(
-                        f"Training prediction {prediction_id} failed synchronously: {error_msg}"
-                    )
-                    # Update DB status
-                    final_db_record = {
-                        "status": "failed",
-                        "error": f"Training failed during prediction: {str(error_msg)}",
-                        "user_id": user_id,
-                        "type": "training",
-                    }
-                    prisma_client.insert_webhook_result(prediction_id, final_db_record)
-                    # Return error response
-                    return jsonify(final_db_record), 500
-
-                # If still processing, wait and poll again
-                logger.debug(
-                    f"Polling training status for {prediction_id}, current: {replicate_status}"
-                )
-                time.sleep(poll_interval)
-
-            except Exception as poll_error:
-                logger.warning(
-                    f"Error during synchronous polling for {prediction_id}: {poll_error}"
-                )
-                # If polling fails significantly, break and return async response
-                # (Could add more sophisticated error handling here)
-                break  # Exit loop on poll error
-
-        # --- Fallback to Asynchronous Response ---
-        # If the loop finished without success/failure (i.e., timed out or poll error)
-        logger.info(
-            f"Training {prediction_id} did not complete within {SYNC_TIMEOUT}s, returning async response."
-        )
-        return (
-            jsonify(
-                {
-                    "status": "processing",
-                    "prediction_id": prediction_id,
-                    "message": "Training started. Check status endpoint for updates.",
-                }
-            ),
-            202,  # Use 202 Accepted for async processing
-        )
+        except Exception as local_gen_error:
+            logger.error(
+                f"Error during local embedding generation/storage for user {user_id}: {local_gen_error}",
+                exc_info=True,
+            )
+            return create_error_response(
+                f"Error during training process: {str(local_gen_error)}", 500
+            )
 
     except Exception as e:
         logger.error(f"Error processing training request: {e}", exc_info=True)
