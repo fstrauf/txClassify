@@ -63,15 +63,52 @@ def process_training_request(validated_data, user_id, api_key):
         transactions_data = [t.model_dump() for t in transactions]
         df = pd.DataFrame(transactions_data)
 
-        # Clean descriptions
-        df["description"] = df["description"].apply(clean_text)
-        df = df.drop_duplicates(subset=["description"])
+        # --- Clean Descriptions (Corrected Method) ---
+        if "description" not in df.columns or df["description"].isnull().all():
+            # Handle cases with missing or all-null description column
+            logger.error(
+                f"Training data for user {user_id} is missing 'description' column or all values are null."
+            )
+            return create_error_response(
+                "Training data must contain valid descriptions.", 400
+            )
+
+        original_descriptions = df["description"].astype(str).tolist()  # Ensure strings
+        try:
+            cleaned_descriptions = clean_text(original_descriptions)
+            if len(cleaned_descriptions) != len(original_descriptions):
+                logger.error(
+                    f"Training Clean Error: Length mismatch for user {user_id}. Input {len(original_descriptions)}, Output {len(cleaned_descriptions)}"
+                )
+                raise ValueError("Cleaning produced incorrect number of descriptions.")
+            df["cleaned_description"] = cleaned_descriptions
+        except Exception as clean_error:
+            logger.error(
+                f"Error during description cleaning in training for user {user_id}: {clean_error}",
+                exc_info=True,
+            )
+            return create_error_response(
+                f"Failed during text cleaning: {str(clean_error)}", 500
+            )
+
+        # Drop duplicates based on the *cleaned* description
+        df = df.drop_duplicates(subset=["cleaned_description"])
+        # --- End Cleaning ---
 
         # Store training data index with proper dtype
         df["item_id"] = range(len(df))
 
         # Log the categories we're training with
-        unique_categories = df["Category"].unique().tolist()
+        # Ensure 'Category' column exists
+        if "Category" not in df.columns:
+            logger.error(
+                f"Training data for user {user_id} is missing 'Category' column."
+            )
+            return create_error_response(
+                "Training data must contain a 'Category' column.", 400
+            )
+
+        unique_categories = df["Category"].dropna().unique().tolist()
         logger.info(
             f"Training with {len(df)} unique descriptions across {len(unique_categories)} categories for user {user_id}"
         )
@@ -81,12 +118,12 @@ def process_training_request(validated_data, user_id, api_key):
             [
                 (i, desc, cat)
                 for i, (desc, cat) in enumerate(
-                    zip(df["description"].values, df["Category"].values)
+                    zip(df["cleaned_description"].values, df["Category"].values)
                 )
             ],
             dtype=[
                 ("item_id", np.int32),
-                ("description", "U256"),  # Match length used in categorization
+                ("description", "U256"),  # Storing the CLEANED description
                 ("category", "U128"),  # Match length used in categorization
             ],
         )
@@ -113,10 +150,10 @@ def process_training_request(validated_data, user_id, api_key):
         logger.info(f"Stored/updated placeholder embedding record {embedding_id}")
 
         # Get descriptions for embedding
-        descriptions = df["description"].tolist()
+        descriptions_to_embed = df["cleaned_description"].tolist()
 
         # Create prediction using the run_prediction function
-        prediction = run_prediction(descriptions)
+        prediction = run_prediction(descriptions_to_embed)
         prediction_id = prediction.id
 
         # Store initial configuration for status endpoint
