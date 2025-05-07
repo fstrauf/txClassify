@@ -11,48 +11,7 @@ from typing import List, Union
 
 logger = logging.getLogger(__name__)
 
-# --- Determine Model Path for en_core_web_lg ---
-MODEL_BASE_DIR = (
-    "./spacy_models"  # Relative to pythonHandler, where Gunicorn runs main.py
-)
-MODEL_NAME_PREFIX = "en_core_web_lg-"
-NLP_MODEL_PATH = None
-
-if os.path.exists(MODEL_BASE_DIR) and os.path.isdir(MODEL_BASE_DIR):
-    for item in os.listdir(MODEL_BASE_DIR):
-        item_path = os.path.join(MODEL_BASE_DIR, item)
-        if os.path.isdir(item_path) and item.startswith(MODEL_NAME_PREFIX):
-            NLP_MODEL_PATH = item_path
-            logger.info(
-                f"Found spaCy model for 'en_core_web_lg' at path: {NLP_MODEL_PATH}"
-            )
-            break
-    if not NLP_MODEL_PATH:
-        logger.warning(
-            f"Could not find a model directory starting with '{MODEL_NAME_PREFIX}' in '{MODEL_BASE_DIR}'. Will attempt default load."
-        )
-else:
-    logger.warning(
-        f"Model base directory '{MODEL_BASE_DIR}' not found or not a directory. Will attempt default load."
-    )
-
-
-# --- Define Noise Patterns for Matcher (More Generic) ---
-# Expanded based on Pilot-NER rule-based repo
-company_suffixes = {
-    "inc",
-    "ltd",
-    "llc",
-    "pty",
-    "corp",
-    "gmbh",
-    "ag",
-    "bv",
-    "co",
-    "limited",
-    "corporation",
-    # ".com", ".net" # Excluded as likely part of name/URL
-}
+# --- Define Noise Patterns and Custom Component FIRST ---
 
 # Patterns for the component added to the main pipeline (transaction noise)
 transaction_noise_patterns = [
@@ -106,83 +65,89 @@ location_noise_patterns = [
     [{"LOWER": "act"}],
     [{"LOWER": "nt"}],
     # --- NEW --- Specific common cities/suburbs often appearing as noise
-    # Add specific noise words if consistently problematic and not caught otherwise
     [{"LOWER": "dee"}],  # For "DEE WHY"
     [{"LOWER": "ns"}],  # Common noise observed
-    # [{"LOWER": "sydney"}], # Keep commented unless needed with lg model
-    # [{"LOWER": "manly"}],
 ]
-
 
 # --- Custom spaCy Component (Handles Transaction Noise) ---
 if not Token.has_extension("is_transaction_noise"):
     Token.set_extension("is_transaction_noise", default=False)
 
 
-@Language.component("transaction_noise_matcher")
-def transaction_noise_matcher_component(doc: Doc) -> Doc:
+@Language.component("transaction_noise_filter")  # Component name matches add_pipe
+def transaction_noise_filter_component(doc: Doc) -> Doc:
     """
-    Marks transaction-specific noise patterns, avoiding ORG overlaps.
+    Marks transaction-specific noise patterns.
     Sets token._.is_transaction_noise = True
     """
+    # Matcher is instantiated here, specific to this component call
     matcher = Matcher(doc.vocab)
     matcher.add("TRANSACTION_NOISE", transaction_noise_patterns)
     matches = matcher(doc)
 
     for match_id, start, end in matches:
-        # Remove the ORG check - mark noise regardless of NER label
         pattern_name = doc.vocab.strings[match_id]
         span = doc[start:end]
         logger.debug(f"Transaction Noise Matcher: '{span.text}' ({pattern_name})")
         for i in range(start, end):
-            # Mark all tokens in the matched span as noise
             doc[i]._.is_transaction_noise = True
     return doc
 
 
-# --- Load spaCy Model and Add Custom Component ---
+# --- Load spaCy Model and Add Custom Component (AFTER component definition) ---
 nlp = None
-try:
-    # Load the base model
-    if NLP_MODEL_PATH:
-        logger.info(
-            f"Attempting to load spaCy model from specific path: {NLP_MODEL_PATH}"
-        )
-        nlp = spacy.load(NLP_MODEL_PATH)
-        logger.info(f"Successfully loaded spaCy model from {NLP_MODEL_PATH}")
-    else:
-        logger.info(
-            "NLP_MODEL_PATH not found. Attempting to load spaCy model 'en_core_web_lg' by default name."
-        )
-        nlp = spacy.load("en_core_web_lg")
-        logger.info("Successfully loaded spaCy model 'en_core_web_lg' by default name.")
+SPA_MODEL_NAME = "en_core_web_lg"
 
-    # Add the custom component after the 'ner' component
+try:
+    logger.info(f"Attempting to load spaCy model by name: {SPA_MODEL_NAME}")
+    nlp = spacy.load(SPA_MODEL_NAME)
+    logger.info(f"Successfully loaded spaCy model: {SPA_MODEL_NAME}")
+
+    COMPONENT_NAME = "transaction_noise_filter"
     if "ner" in nlp.pipe_names:
-        nlp.add_pipe("transaction_noise_matcher", after="ner")
-        logger.info(
-            "spaCy model 'en_core_web_lg' loaded and transaction_noise_matcher added after ner."
-        )
+        if not nlp.has_pipe(COMPONENT_NAME):
+            nlp.add_pipe(COMPONENT_NAME, after="ner")
+            logger.info(
+                f"spaCy model '{SPA_MODEL_NAME}' loaded and '{COMPONENT_NAME}' added after ner."
+            )
+        else:
+            logger.info(f"'{COMPONENT_NAME}' already in spaCy pipeline (after ner).")
     else:
-        # Add it last if ner is not present (shouldn't happen with en_core_web_lg)
-        nlp.add_pipe("transaction_noise_matcher", last=True)
-        logger.warning(
-            "spaCy 'ner' component not found. Added transaction_noise_matcher last."
-        )
+        if not nlp.has_pipe(COMPONENT_NAME):
+            nlp.add_pipe(COMPONENT_NAME, last=True)
+            logger.warning(
+                f"spaCy 'ner' component not found. Added '{COMPONENT_NAME}' last."
+            )
+        else:
+            logger.warning(f"'{COMPONENT_NAME}' already in spaCy pipeline (last).")
 
     logger.info(f"Pipeline components: {nlp.pipe_names}")
 
 except OSError as e:
+    logger.error(f"OSError loading spaCy model '{SPA_MODEL_NAME}' by name. Error: {e}")
     logger.error(
-        f"spaCy model 'en_core_web_lg' could not be loaded from '{NLP_MODEL_PATH if NLP_MODEL_PATH else 'default name'}'. OSError: {e}"
+        f"Ensure '{SPA_MODEL_NAME}' was downloaded and installed correctly in the Dockerfile."
     )
-    logger.error(
-        "Please ensure the model is downloaded correctly during the build (check render.yaml) and the path is correct if using a specific path."
-    )
-    # Fallback: nlp remains None
+    raise
 except Exception as e:
     logger.error(f"Error adding custom component to spaCy pipeline: {e}")
-    # Fallback: nlp remains None
+    # nlp remains None, functions below will handle this
+
+
+# --- Define Other Global Variables (e.g., company_suffixes) ---
+company_suffixes = {
+    "inc",
+    "ltd",
+    "llc",
+    "pty",
+    "corp",
+    "gmbh",
+    "ag",
+    "bv",
+    "co",
+    "limited",
+    "corporation",
+}
 
 
 # --- Feature Extraction and Cleaning Functions ---

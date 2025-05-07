@@ -1,0 +1,31 @@
+version: '3.8' # Specifies the Docker Compose file format version
+
+services:
+  backend:
+    build:
+      context: ./pythonHandler # Path to the directory containing the Dockerfile
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000" # Map port 8000 on the host to port 8000 in the container (where Gunicorn listens by default from Dockerfile CMD)
+    env_file:
+      - ./.env # Load environment variables from .env file at the project root
+    volumes:
+      # If you want live reloading of code changes during local development (optional):
+      # This mounts your local pythonHandler directory into the container at /app.
+      # For production builds or testing the actual image, you might comment this out.
+      - ./pythonHandler:/app
+    # healthcheck: # Optional: Define a health check if your app has a /health endpoint
+    #   test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 30s # Give it time for Gunicorn and spaCy to load
+
+# Note on .env file:
+# Ensure your .env file (at the project root) contains necessary variables like:
+# DATABASE_URL=your_local_or_dev_db_connection_string
+# DIRECT_URL=your_local_or_dev_db_direct_connection_string
+# REPLICATE_API_TOKEN=your_token (even if not used, your app might expect it)
+# TEST_USER_ID=your_test_user_id
+# TEST_API_KEY=your_test_api_key
+# PORT=8000 # This will be used by the Dockerfile CMD if $PORT is not set otherwise 

@@ -1181,7 +1181,7 @@ const testCleanText = async (apiUrl) => {
 // Cleanup function
 const cleanup = async () => {
   // Stop Flask server only if it was started locally
-  if (flaskProcess && !USE_DEV_API) {
+  if (flaskProcess && !USE_DEV_API && !process.env.TEST_TARGET_API_URL) {
     log("Stopping Flask server...");
     flaskProcess.kill();
 
@@ -1237,7 +1237,12 @@ const main = async () => {
 
     let apiUrl;
 
-    if (USE_DEV_API) {
+    if (process.env.TEST_TARGET_API_URL) {
+      console.log("1. Using Target API URL from environment variable...");
+      apiUrl = process.env.TEST_TARGET_API_URL;
+      console.log(`   API URL: ${apiUrl}\n`);
+      // Skip starting local Flask server if TEST_TARGET_API_URL is set
+    } else if (USE_DEV_API) {
       console.log("1. Using Development API...");
       apiUrl = DEV_API_URL;
       console.log(`   API URL: ${apiUrl}\n`);
@@ -1330,8 +1335,8 @@ const main = async () => {
 
     // 8. Cleanup
     console.log("8. Cleaning up...");
-    // Only stop flask process if it was started locally
-    if (flaskProcess && !USE_DEV_API) {
+    // Only stop flask process if it was started locally AND not using TEST_TARGET_API_URL
+    if (flaskProcess && !USE_DEV_API && !process.env.TEST_TARGET_API_URL) {
       flaskProcess.kill();
       console.log("   Flask server stopped");
     }
@@ -1342,7 +1347,7 @@ const main = async () => {
     console.error(`\n❌ ERROR: ${error.message}`);
 
     // Ensure cleanup on error
-    if (flaskProcess && !USE_DEV_API) {
+    if (flaskProcess && !USE_DEV_API && !process.env.TEST_TARGET_API_URL) {
       flaskProcess.kill();
       console.log("   Flask server stopped");
     }
