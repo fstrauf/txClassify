@@ -4,6 +4,7 @@ import os
 import logging
 import psycopg2
 from psycopg2 import pool
+from urllib.parse import urlparse
 from utils.prisma_client import prisma_client
 
 logger = logging.getLogger(__name__)
@@ -15,50 +16,60 @@ connection_pool = None
 def init_connection_pool():
     """Initialize the connection pool"""
     global connection_pool
+    database_url = None  # Ensure database_url is defined for the except block
 
     try:
         database_url = os.environ.get("DATABASE_URL")
         if not database_url:
+            logger.critical(
+                "DATABASE_URL environment variable not found. Cannot initialize connection pool."
+            )
             raise ValueError("DATABASE_URL environment variable not found")
 
-        # Parse connection parameters from URL
-        conn_params = {}
+        conn_params = {"dsn": database_url}
 
-        # Simple URL parser for postgres://user:pass@host:port/dbname
-        if database_url.startswith("postgres://"):
-            # Remove postgres://
-            url = database_url[11:]
+        log_dsn = "DSN (details in env)"  # Default safe log
+        if database_url:
+            try:
+                parsed = urlparse(database_url)
+                if parsed.password:
+                    # Construct the safe DSN carefully, avoiding complex f-string internals
+                    scheme = parsed.scheme if parsed.scheme else "postgres"
+                    user = parsed.username if parsed.username else "user"
+                    host = parsed.hostname if parsed.hostname else "host"
+                    port_str = f":{parsed.port}" if parsed.port else ""
+                    path = parsed.path if parsed.path else "/dbname"
+                    query = f"?{parsed.query}" if parsed.query else ""
+                    log_dsn = (
+                        f"{scheme}://{user}:********@{host}{port_str}{path}{query}"
+                    )
+                else:
+                    log_dsn = database_url  # No password, log as is
+            except Exception:
+                log_dsn = "DSN (error redacting, original in env)"  # Fallback on parsing error
 
-            # Split user:pass@host:port/dbname
-            userpass_host_port_dbname = url.split("@")
+        logger.info(f"Initializing connection pool with DSN: {log_dsn}...")
 
-            if len(userpass_host_port_dbname) > 1:
-                userpass = userpass_host_port_dbname[0].split(":")
-                hostport_dbname = userpass_host_port_dbname[1].split("/")
-
-                # Set connection parameters
-                conn_params["user"] = userpass[0]
-                if len(userpass) > 1:
-                    conn_params["password"] = userpass[1]
-
-                hostport = hostport_dbname[0].split(":")
-                conn_params["host"] = hostport[0]
-                if len(hostport) > 1:
-                    conn_params["port"] = hostport[1]
-
-                if len(hostport_dbname) > 1:
-                    conn_params["dbname"] = hostport_dbname[1]
-        else:
-            # Just use the URL directly
-            conn_params["dsn"] = database_url
-
-        # Create connection pool with 5 connections
-        connection_pool = psycopg2.pool.ThreadedConnectionPool(1, 5, **conn_params)
-        logger.info("Database connection pool initialized")
+        connection_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=5, **conn_params
+        )
+        logger.info("Database connection pool initialized successfully using DSN.")
 
         return connection_pool
+    except ValueError as ve:
+        # This will be caught if DATABASE_URL is None
+        logger.critical(str(ve))  # Log the original ValueError
+        raise ve
     except Exception as e:
-        logger.error(f"Error initializing connection pool: {str(e)}")
+        log_dsn_err = "DSN not available or error before DSN logging (DATABASE_URL might be missing)"
+        if database_url:  # Check if database_url was fetched before the error
+            log_dsn_err = "DSN (details in env, error during init)"  # Generic message if URL was present
+            # Avoid complex parsing here to prevent further syntax errors in error path
+            # The original error 'e' is more important.
+
+        logger.error(
+            f"Error initializing connection pool. DSN used (potentially unsafe if error was in redaction): '{database_url if database_url else 'NOT_SET'}'. Error: {str(e)}"
+        )
         raise
 
 
