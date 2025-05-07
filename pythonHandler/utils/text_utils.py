@@ -96,7 +96,7 @@ def transaction_noise_filter_component(doc: Doc) -> Doc:
 
 # --- Load spaCy Model and Add Custom Component (AFTER component definition) ---
 nlp = None
-SPA_MODEL_NAME = "en_core_web_lg"
+SPA_MODEL_NAME = "en_core_web_sm"
 
 try:
     logger.info(f"Attempting to load spaCy model by name: {SPA_MODEL_NAME}")

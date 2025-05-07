@@ -24,9 +24,9 @@ RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 7. Download spaCy models
-RUN python -m spacy download en_core_web_lg
+RUN python -m spacy download en_core_web_sm
 # Add other models here if needed, e.g.:
-# RUN python -m spacy download en_core_web_sm
+# RUN python -m spacy download en_core_web_md
 
 # 8. Copy the rest of the application code from the build context (pythonHandler/) into /app
 # This comes after installing dependencies and models for better layer caching.
