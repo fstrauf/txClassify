@@ -38,4 +38,5 @@ EXPOSE 8000
 # 10. Define the command to run your application.
 # Uses shell form for $PORT substitution.
 # --preload ensures the app is loaded once in the master before forking workers.
-CMD gunicorn --preload main:app --bind "0.0.0.0:${PORT:-8000}" --timeout 120 --workers 2 --threads 4 --worker-class gthread
+# Forcing a single synchronous worker for memory testing.
+CMD gunicorn --preload main:app --bind "0.0.0.0:${PORT:-8000}" --timeout 120 --workers 1 --worker-class sync
