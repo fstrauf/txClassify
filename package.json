@@ -16,7 +16,8 @@
     "debug-test": "NODE_OPTIONS='--inspect' node tests/test-api-endpoints.js --verbose",
     "install:python": "cd pythonHandler && pip install -r requirements.txt",
     "start:api": "cd pythonHandler && source venv/bin/activate && export FLASK_APP=main && export FLASK_ENV=development && python -m flask run --host=0.0.0.0 --port=5003",
-    "start": "docker-compose up"
+    "start": "docker-compose up",
+    "prod:logs": "./scripts/follow_logs.sh"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
