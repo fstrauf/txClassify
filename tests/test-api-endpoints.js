@@ -77,7 +77,7 @@ const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
 const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
 const USE_DEV_API = process.argv.includes("--use-dev-api");
 // const DEV_API_URL = "https://txclassify-dev.onrender.com";
-const DEV_API_URL = "https://txclassify-docker.onrender.com";
+const DEV_API_URL = "http://146.190.163.238:8000";
 
 // Log the actual values being used
 logInfo(`Using TEST_USER_ID: ${TEST_USER_ID}`);
