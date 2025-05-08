@@ -1,25 +1,58 @@
-version: '3.8' # Specifies the Docker Compose file format version
+# version: '3.8' # This line is obsolete and can be removed
 
 services:
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile # Mount local Caddyfile from project root
+      - caddy_data:/data                 # Persists Caddy's state including certificates
+      - caddy_config:/config             # Persists Caddy's configuration state
+    depends_on: # Optional but good: wait for backend to be healthy if healthcheck is defined
+      - backend
+
   backend:
     build:
-      context: ./pythonHandler # Path to the directory containing the Dockerfile
+      context: ./pythonHandler
       dockerfile: Dockerfile
-    ports:
-      - "8000:8000" # Map port 8000 on the host to port 8000 in the container (where Gunicorn listens by default from Dockerfile CMD)
+    # ports: - "8000:8000" # REMOVED - Caddy handles external ports
     env_file:
-      - ./.env # Load environment variables from .env file at the project root
-    volumes:
-      # If you want live reloading of code changes during local development (optional):
-      # This mounts your local pythonHandler directory into the container at /app.
-      # For production builds or testing the actual image, you might comment this out.
-      - ./pythonHandler:/app
+      - ./.env
+    # volumes: # Commenting out direct code mount for production deployment
+    #   - ./pythonHandler:/app
+    restart: unless-stopped
     # healthcheck: # Optional: Define a health check if your app has a /health endpoint
-    #   test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+    #   test: ["CMD", "curl", "--fail", "http://localhost:8000/health"] # Test inside container
     #   interval: 30s
     #   timeout: 10s
     #   retries: 3
     #   start_period: 30s # Give it time for Gunicorn and spaCy to load
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+# Note on .env file:
+# Ensure your .env file (at the project root) contains necessary variables like:
+# DATABASE_URL=your_production_db_connection_string
+# DIRECT_URL=your_production_db_direct_connection_string
+# REPLICATE_API_TOKEN=your_token
+# PORT=8000
+
+# You will need to create a file named 'Caddyfile' in the project root with the following content:
+# api.expensesorted.com {
+#     # Use your real email address for Let's Encrypt notices
+#     email your_email@example.com
+#     reverse_proxy backend:8000
+# }
+# --- End Revised docker-compose.yml content ---
+
+# Ensure the original content below this line is replaced by the structure above.
+# Keep the original notes if desired.
 
 # Note on .env file:
 # Ensure your .env file (at the project root) contains necessary variables like:

@@ -1,0 +1,11 @@
+api.expensesorted.com {
+    # Use your real email address here for Let's Encrypt notices
+    email your_email@example.com 
+    
+    # Enable gzip and zstd compression
+    encode gzip zstd
+    
+    # Reverse proxy requests to the backend service (named 'backend' in docker-compose.yml) 
+    # running on port 8000 (its internal port)
+    reverse_proxy backend:8000
+} 
