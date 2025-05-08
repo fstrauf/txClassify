@@ -380,106 +380,120 @@ def _apply_initial_categorization(
             # Determine final category based on thresholds and neighbor consistency
             unique_neighbor_categories = set(neighbor_categories)
             has_conflicting_neighbors = len(unique_neighbor_categories) > 1
-            final_category = "Unknown"
-            reason = ""
+            final_category = best_category  # Default to the best match found
             debug_details: Optional[Dict[str, Any]] = None  # Initialize debug info
+            is_low_confidence = False  # NEW flag
+            human_readable_reason = ""  # NEW variable for user-facing reason
 
-            # --- Refined Decision Logic ---
+            # --- Refined Decision Logic (Calculate Reason Only) ---
             meets_absolute_confidence = best_score >= MIN_ABSOLUTE_CONFIDENCE
             meets_relative_confidence = (
                 best_score - second_best_score
             ) >= MIN_RELATIVE_CONFIDENCE_DIFF
             neighbors_are_consistent = not has_conflicting_neighbors
 
-            if meets_absolute_confidence:
-                if meets_relative_confidence:
-                    # Standout case: High absolute confidence AND clear winner over the second match. Ignore neighbors.
-                    final_category = best_category
-                elif neighbors_are_consistent:
-                    # Not a clear winner, but absolute confidence met AND neighbors agree.
-                    final_category = best_category
-                    reason = f"Accepted due to neighbor consistency despite low relative confidence (Diff: {best_score - second_best_score:.2f})"
-                    if is_debug:
-                        debug_details = {
-                            "reason_code": "ACCEPTED_BY_NEIGHBORS",
-                            "best_score": best_score,
-                            "second_best_score": second_best_score,
-                            "difference": best_score - second_best_score,
-                            "threshold": MIN_RELATIVE_CONFIDENCE_DIFF,
-                            "best_category": best_category,
-                            "neighbor_categories": neighbor_categories,
-                        }
-                # else: final_category remains "Unknown" because absolute confidence met, but relative confidence is low AND neighbors conflict.
-
-            # --- Logging for "Unknown" Cases ---
-            if final_category == "Unknown":
-                # Determine the primary reason for being "Unknown"
-                if not meets_absolute_confidence:
-                    reason = f"Low absolute confidence ({best_score:.2f} < {MIN_ABSOLUTE_CONFIDENCE})"
-                    if is_debug:
-                        debug_details = {
-                            "reason_code": "LOW_ABS_CONF",
-                            "best_score": best_score,
-                            "threshold": MIN_ABSOLUTE_CONFIDENCE,
-                            "rejected_best_category": best_category,
-                        }
-                elif not meets_relative_confidence and not neighbors_are_consistent:
-                    reason = f"Low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}) AND Conflicting neighbors: {list(unique_neighbor_categories)}"
-                    if is_debug:
-                        debug_details = {
-                            "reason_code": "LOW_REL_CONF_AND_CONFLICTING_NEIGHBORS",
-                            "best_score": best_score,
-                            "second_best_score": second_best_score,
-                            "difference": best_score - second_best_score,
-                            "rel_threshold": MIN_RELATIVE_CONFIDENCE_DIFF,
-                            "neighbor_categories": neighbor_categories,
-                            "unique_neighbor_categories": list(
-                                unique_neighbor_categories
-                            ),
-                            "rejected_best_category": best_category,
-                            "second_best_category": second_best_category,
-                        }
-                # This case should theoretically not be hit if the logic above is correct,
-                # but included for completeness.
-                elif (
-                    not meets_relative_confidence
-                ):  # Implies neighbors_are_consistent was false
-                    reason = f"Low relative confidence, neighbors conflicted (Diff: {best_score - second_best_score:.2f})"
-                    if is_debug:
-                        debug_details = {
-                            "reason_code": "LOW_REL_CONF_NEIGHBORS_CONFLICTED",  # Should be covered above
-                            "best_score": best_score,
-                            "second_best_score": second_best_score,
-                            "rejected_best_category": best_category,
-                        }
-                else:  # Should not happen
-                    reason = "Defaulted to Unknown (Unexpected state)"
-                    if is_debug:
-                        debug_details = {
-                            "reason_code": "UNKNOWN_DEFAULT",
-                            "rejected_best_category": best_category,
-                        }
-
-                logger.info(
-                    f"Narrative '{cleaned_desc}' (Original: '{original_desc}') classified as Unknown: {reason}"  # Log both
+            # Original logic preserved here to determine the *reason* for potential low confidence
+            # but we no longer change final_category based on this.
+            if not meets_absolute_confidence:
+                # adjustment_needed = True # No longer needed
+                is_low_confidence = True
+                human_readable_reason = (
+                    "Match score was below the confidence threshold."
                 )
+                # reason = f"Low absolute confidence ({best_score:.2f} < {MIN_ABSOLUTE_CONFIDENCE})" # Original reason for debug
+                if is_debug:
+                    # ... (debug_details remains the same)
+                    debug_details = {
+                        "reason_code": "LOW_ABS_CONF",
+                        "best_score": best_score,
+                        "threshold": MIN_ABSOLUTE_CONFIDENCE,
+                        "evaluated_category": best_category,  # Note: this category *was* returned
+                        "neighbor_categories": neighbor_categories[:NEIGHBOR_COUNT],
+                        "neighbor_cleaned_descs": cleaned_descs[:NEIGHBOR_COUNT],
+                        "neighbor_original_descs": original_descs[:NEIGHBOR_COUNT],
+                        "neighbor_scores": neighbor_scores[:NEIGHBOR_COUNT],
+                    }
+            # --- Check relative confidence ONLY if best != second best ---
+            elif best_category != second_best_category:
+                if not meets_relative_confidence:  # Low relative difference
+                    is_low_confidence = True  # Flag it
+                    if not neighbors_are_consistent:
+                        # adjustment_needed = True # No longer needed
+                        human_readable_reason = "Top two matches were very similar and had conflicting neighbor categories."
+                        # reason = f"Low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}) AND Conflicting neighbors: {list(unique_neighbor_categories)}" # Original reason
+                        if is_debug:
+                            # ... (debug_details remains the same)
+                            debug_details = {
+                                "reason_code": "LOW_REL_CONF_AND_CONFLICTING_NEIGHBORS",
+                                "best_score": best_score,
+                                "second_best_score": second_best_score,
+                                "difference": best_score - second_best_score,
+                                "rel_threshold": MIN_RELATIVE_CONFIDENCE_DIFF,
+                                "neighbor_categories": neighbor_categories[
+                                    :NEIGHBOR_COUNT
+                                ],
+                                "unique_neighbor_categories": list(
+                                    unique_neighbor_categories
+                                ),
+                                "neighbor_cleaned_descs": cleaned_descs[
+                                    :NEIGHBOR_COUNT
+                                ],
+                                "neighbor_original_descs": original_descs[
+                                    :NEIGHBOR_COUNT
+                                ],
+                                "neighbor_scores": neighbor_scores[:NEIGHBOR_COUNT],
+                                "evaluated_category": best_category,
+                                "second_best_category": second_best_category,
+                            }
+                    else:  # Neighbors are consistent
+                        # adjustment_needed = True # No longer needed
+                        human_readable_reason = "Top two matches were very similar, but neighbors agreed with the top match."
+                        # reason = f"Neighbor consistency override: Low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}) but neighbors consistent." # Original reason
+                        if is_debug:
+                            # ... (debug_details remains the same)
+                            debug_details = {
+                                "reason_code": "ACCEPTED_BY_NEIGHBORS_LOW_REL_CONF",
+                                "best_score": best_score,
+                                "second_best_score": second_best_score,
+                                "difference": best_score - second_best_score,
+                                "threshold": MIN_RELATIVE_CONFIDENCE_DIFF,
+                                "evaluated_category": best_category,
+                                "neighbor_categories": neighbor_categories[
+                                    :NEIGHBOR_COUNT
+                                ],
+                                "neighbor_cleaned_descs": cleaned_descs[
+                                    :NEIGHBOR_COUNT
+                                ],
+                                "neighbor_original_descs": original_descs[
+                                    :NEIGHBOR_COUNT
+                                ],
+                                "neighbor_scores": neighbor_scores[:NEIGHBOR_COUNT],
+                            }
+            # No need for the complex "Unknown" logging section anymore, as we always return best_category
+
+            # --- Append Result ---
+            adjustment_info_final = None
+            if is_low_confidence:
+                adjustment_info_final = {
+                    "is_low_confidence": True,
+                    "reason": human_readable_reason,  # Use the new human-readable reason
+                }
+            # Note: If refund logic is added later, merge `is_refund_candidate` here.
+            # Example merge: if adjustment_info_final and refund_info: adjustment_info_final.update(refund_info)
+            # Currently refund is bypassed, so we just use the confidence info if present.
 
             results.append(
                 {
                     "narrative": original_desc,  # Return original
                     "cleaned_narrative": cleaned_desc,  # Add cleaned for debugging
-                    "predicted_category": final_category,
+                    "predicted_category": final_category,  # Always best_category now
                     "similarity_score": best_score,
                     "second_predicted_category": second_best_category,
                     "second_similarity_score": second_best_score,
                     "money_in": money_in,
                     "amount": amount,
-                    "adjustment_info": (
-                        {"unknown_reason": reason}
-                        if final_category == "Unknown"
-                        else None
-                    ),
-                    "debug_info": debug_details,  # Add debug info here
+                    "adjustment_info": adjustment_info_final,  # Use the potentially populated dict
+                    "debug_info": debug_details,  # Add debug info here if generated
                 }
             )
 

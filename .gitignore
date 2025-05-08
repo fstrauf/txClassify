@@ -64,4 +64,7 @@ pythonHandler/venv/
 # Google Apps Script
 sheetAddon/.clasp.json
 
-Caddyfile
+Caddyfile.local
+
+# Docker Compose override file for local development
+docker-compose.override.yml

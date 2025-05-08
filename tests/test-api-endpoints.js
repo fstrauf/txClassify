@@ -77,8 +77,8 @@ const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
 const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
 const USE_DEV_API = process.argv.includes("--use-dev-api");
 // const DEV_API_URL = "https://txclassify-dev.onrender.com";
-const DEV_API_URL = "http://146.190.163.238:8000";
-
+// const DEV_API_URL = "http://146.190.163.238:8000";
+const DEV_API_URL = "http://localhost:8000";
 // Log the actual values being used
 logInfo(`Using TEST_USER_ID: ${TEST_USER_ID}`);
 logInfo(`Using TEST_API_KEY: ${TEST_API_KEY ? "***" + TEST_API_KEY.slice(-4) : "Not set"}`);
@@ -1292,9 +1292,9 @@ const main = async () => {
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
     // const trainingData = await loadTrainingData("training_test.csv");
-    const trainingData = await loadTrainingData("full_train.csv");
-    // const trainingData = await loadTrainingData("training_data_num_cat.csv");
-    const categorizationData = await loadCategorizationData("categorise_full.csv");
+    // const trainingData = await loadTrainingData("full_train.csv");
+    const trainingData = await loadTrainingData("train_woolies_test.csv");
+    const categorizationData = await loadCategorizationData("cat_woolies_test.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);

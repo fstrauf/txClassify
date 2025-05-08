@@ -37,6 +37,7 @@ def process_training_request(validated_data, user_id, api_key):
                 # Define default config structure, aligning with Prisma schema if possible
                 default_config = {
                     "userId": user_id,
+                    "type": "oauth",
                     "categorisationRange": "A:Z",  # Example default
                     "columnOrderCategorisation": {
                         "categoryColumn": "E",  # Example default
