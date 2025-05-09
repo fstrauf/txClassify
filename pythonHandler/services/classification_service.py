@@ -146,7 +146,7 @@ def process_classification_request(validated_data, user_id):
                 logger.error(
                     f"Categorization pipeline failed locally for user {user_id}. Check previous logs."
                 )
-                first_error = next(
+                first_error_message = next(
                     (
                         res["predicted_category"]
                         for res in initial_results
@@ -154,9 +154,22 @@ def process_classification_request(validated_data, user_id):
                     ),
                     "Categorization failed",
                 )
-                # Return error immediately if categorization part fails
+
+                logger.info(f"Extracted first_error_message: '{first_error_message}'")
+
+                # Check for specific "Embedding dimension mismatch" error
+                if "Embedding dimension mismatch" in first_error_message:
+                    logger.warning(
+                        f"Embedding dimension mismatch for user {user_id}. Instructing to re-train."
+                    )
+                    return create_error_response(
+                        "Model retraining required: The embedding model has been updated. Please re-train your model using the spreadsheet addon before classifying new transactions.",
+                        409,  # 409 Conflict is appropriate here
+                    )
+
+                # For other errors from categorization pipeline
                 return create_error_response(
-                    f"Categorization failed: {first_error}", 500
+                    f"Categorization failed: {first_error_message}", 500
                 )
 
             results_after_refunds = _detect_refunds(

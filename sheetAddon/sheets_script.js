@@ -1,5 +1,5 @@
 // const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
-const CLASSIFICATION_SERVICE_URL = "https://txclassify-dev.onrender.com";
+const CLASSIFICATION_SERVICE_URL = "https://api.expensesorted.com";
 
 // Add menu to the spreadsheet
 function onOpen(e) {
@@ -910,9 +910,15 @@ function categoriseTransactions(config) {
           error = `Server returned ${responseCode}`;
           retryCount++;
           continue;
+        } else if (responseCode === 409) {
+          // Handle 409 Conflict specifically
+          var errorText = response.getContentText();
+          var errorPayload = JSON.parse(errorText);
+          throw new Error(errorPayload.error || "Model configuration conflict. Please check logs or contact support.");
         } else {
           // Don't retry on other errors
-          throw new Error(`Server returned error code: ${responseCode}`);
+          var responseDetails = response.getContentText().substring(0, 200);
+          throw new Error(`Server returned error code: ${responseCode}. Details: ${responseDetails}`);
         }
       } catch (e) {
         error = e;
@@ -1404,9 +1410,16 @@ function trainModel(config) {
           Logger.log(apiError + ", retrying...");
           retryCount++;
           continue;
+        } else if (responseCode === 409) {
+          // Handle 409 Conflict specifically
+          var errorText = response.getContentText();
+          var errorPayload = JSON.parse(errorText);
+          apiError = errorPayload.error || "Model configuration conflict. Please re-train or contact support.";
+          Logger.log(`Training API call failed (409): ${apiError}`);
+          throw new Error(apiError); // Throw immediately
         } else {
           var errorText = response.getContentText();
-          apiError = `Server returned error code: ${responseCode} - ${errorText}`;
+          apiError = `Server returned error code: ${responseCode} - ${errorText.substring(0, 200)}`;
           Logger.log(`Training API call failed: ${apiError}`);
           throw new Error(apiError);
         }
