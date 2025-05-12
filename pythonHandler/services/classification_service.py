@@ -22,6 +22,9 @@ from config import (
 from utils.text_utils import clean_text  # Import clean_text
 from utils.local_embedding_utils import generate_embeddings  # Import local utils
 
+# Import the new OpenAI utility function
+from utils.openai_utils import categorize_with_openai, client as openai_client, DEFAULT_OPENAI_MODEL # Import client and model constant
+
 logger = logging.getLogger(__name__)
 
 
@@ -105,6 +108,14 @@ def process_classification_request(validated_data, user_id):
             f"Processing classification for {len(transactions_input_for_context)} txns, user {user_id}"
         )
 
+        # Extract user categories if provided in the request
+        user_categories_map: Optional[List[Dict[str, str]]] = None
+        if hasattr(validated_data, 'user_categories') and validated_data.user_categories:
+            user_categories_map = validated_data.user_categories
+            logger.info(f"Received {len(user_categories_map)} categories in the request for user {user_id}.")
+        else:
+            logger.warning(f"No user categories provided in the classification request for user {user_id}. OpenAI assist will be limited.")
+
         # 2. Generate Embeddings Locally (Synchronous)
         try:
             embeddings = generate_embeddings(cleaned_descriptions)
@@ -135,7 +146,7 @@ def process_classification_request(validated_data, user_id):
 
             # --- Run Categorization Pipeline (Now directly after local embedding) ---
             initial_results = _apply_initial_categorization(
-                transactions_input_for_context, embeddings, user_id
+                transactions_input_for_context, embeddings, user_id, user_categories_map
             )
 
             # Check for errors from categorization itself
@@ -219,15 +230,18 @@ def _apply_initial_categorization(
     ],  # Now contains original_description, cleaned_description, etc.
     input_embeddings: np.ndarray,
     user_id: str,
+    user_categories_map: Optional[List[Dict[str, str]]] = None
 ) -> List[Dict[str, Any]]:
     """Performs initial categorization based on similarity and returns top 2 matches."""
     results = []
-    # Define confidence thresholds - MOVED TO config.py
-    # MIN_ABSOLUTE_CONFIDENCE = 0.70  # Minimum similarity score to consider a match valid
-    # MIN_RELATIVE_CONFIDENCE_DIFF = (
-    #     0.03  # Minimum difference between best and second best score
-    # )
-    # NEIGHBOR_COUNT = 3  # Number of neighbors to consider for consistency check
+    low_confidence_indices: List[int] = [] # Keep track of indices needing OpenAI call
+    transactions_for_openai: List[Dict[str, Any]] = [] # Data for OpenAI
+    original_embedding_results: Dict[int, Dict[str, Any]] = {} # Store original results for low-confidence items
+
+    # Create ID <-> Name mapping from the passed categories for later use
+    category_id_to_name: Dict[str, str] = {cat['id']: cat['name'] for cat in user_categories_map} if user_categories_map else {}
+    category_name_to_id: Dict[str, str] = {cat['name']: cat['id'] for cat in user_categories_map} if user_categories_map else {}
+    user_category_names_list = list(category_name_to_id.keys())
 
     # --- Check for Debug Mode ---
     is_debug = os.getenv("TX_CLASSIFY_DEBUG") == "true"
@@ -409,12 +423,10 @@ def _apply_initial_categorization(
             # Original logic preserved here to determine the *reason* for potential low confidence
             # but we no longer change final_category based on this.
             if not meets_absolute_confidence:
-                # adjustment_needed = True # No longer needed
-                is_low_confidence = True
+                is_low_confidence = True # Flag for potential OpenAI check
                 human_readable_reason = (
                     "Match score was below the confidence threshold."
                 )
-                # reason = f"Low absolute confidence ({best_score:.2f} < {MIN_ABSOLUTE_CONFIDENCE})" # Original reason for debug
                 if is_debug:
                     # ... (debug_details remains the same)
                     debug_details = {
@@ -430,11 +442,9 @@ def _apply_initial_categorization(
             # --- Check relative confidence ONLY if best != second best ---
             elif best_category != second_best_category:
                 if not meets_relative_confidence:  # Low relative difference
-                    is_low_confidence = True  # Flag it
+                    is_low_confidence = True  # Flag for potential OpenAI check
                     if not neighbors_are_consistent:
-                        # adjustment_needed = True # No longer needed
                         human_readable_reason = "Top two matches were very similar and had conflicting neighbor categories."
-                        # reason = f"Low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}) AND Conflicting neighbors: {list(unique_neighbor_categories)}" # Original reason
                         if is_debug:
                             # ... (debug_details remains the same)
                             debug_details = {
@@ -460,9 +470,7 @@ def _apply_initial_categorization(
                                 "second_best_category": second_best_category,
                             }
                     else:  # Neighbors are consistent
-                        # adjustment_needed = True # No longer needed
                         human_readable_reason = "Top two matches were very similar, but neighbors agreed with the top match."
-                        # reason = f"Neighbor consistency override: Low relative confidence (Diff: {best_score - second_best_score:.2f} < {MIN_RELATIVE_CONFIDENCE_DIFF}) but neighbors consistent." # Original reason
                         if is_debug:
                             # ... (debug_details remains the same)
                             debug_details = {
@@ -483,33 +491,42 @@ def _apply_initial_categorization(
                                 ],
                                 "neighbor_scores": neighbor_scores[:NEIGHBOR_COUNT],
                             }
-            # No need for the complex "Unknown" logging section anymore, as we always return best_category
 
-            # --- Append Result ---
-            adjustment_info_final = None
-            if is_low_confidence:
-                adjustment_info_final = {
-                    "is_low_confidence": True,
-                    "reason": human_readable_reason,  # Use the new human-readable reason
-                }
-            # Note: If refund logic is added later, merge `is_refund_candidate` here.
-            # Example merge: if adjustment_info_final and refund_info: adjustment_info_final.update(refund_info)
-            # Currently refund is bypassed, so we just use the confidence info if present.
+            # --- Store Original Result and Prepare for OpenAI if needed --- 
+            # Store the result based on embedding FIRST
+            current_result = {
+                "narrative": original_desc,
+                "cleaned_narrative": cleaned_desc,
+                "predicted_category": final_category, # This is the initial embedding prediction
+                "similarity_score": best_score,
+                "second_predicted_category": second_best_category,
+                "second_similarity_score": second_best_score,
+                "money_in": money_in,
+                "amount": amount,
+                "adjustment_info": {
+                    # Start with low confidence info if applicable
+                    "is_low_confidence": is_low_confidence,
+                    "reason": human_readable_reason if is_low_confidence else None,
+                },
+                "debug_info": debug_details,
+            }
 
-            results.append(
-                {
-                    "narrative": original_desc,  # Return original
-                    "cleaned_narrative": cleaned_desc,  # Add cleaned for debugging
-                    "predicted_category": final_category,  # Always best_category now
-                    "similarity_score": best_score,
-                    "second_predicted_category": second_best_category,
-                    "second_similarity_score": second_best_score,
-                    "money_in": money_in,
+            if is_low_confidence and openai_client and user_category_names_list:
+                low_confidence_indices.append(i)
+                transactions_for_openai.append({
+                    "description": original_desc,
                     "amount": amount,
-                    "adjustment_info": adjustment_info_final,  # Use the potentially populated dict
-                    "debug_info": debug_details,  # Add debug info here if generated
+                    "money_in": money_in,
+                })
+                original_embedding_results[i] = {
+                    "category_id": final_category,
+                    "category_name": category_id_to_name.get(final_category, "Unknown"),
+                    "score": best_score
                 }
-            )
+            
+            # Append the current result (from embedding) to the main list temporarily
+            # We will update it later if OpenAI provides a better category
+            results.append(current_result)
 
     except ValueError as ve:
         logger.error(f"ValueError during initial categorization: {ve}")
@@ -543,6 +560,51 @@ def _apply_initial_categorization(
             }
             for tx in transactions_input
         ]
+
+    # --- OpenAI Categorization Step (if any low-confidence transactions found) ---
+    if low_confidence_indices and openai_client and user_category_names_list:
+        logger.info(f"Found {len(low_confidence_indices)} low-confidence transactions. Attempting OpenAI categorization.")
+        
+        # Use the extracted names list
+        openai_suggestions_list = categorize_with_openai(
+            transactions_for_openai,
+            user_category_names_list
+        )
+
+        # --- Update results with OpenAI suggestions ---
+        # Map suggestions back by description
+        openai_suggestions_map = {item['description']: item['suggested_category'] 
+                                  for item in openai_suggestions_list if item.get('description')}
+
+        for original_result_index in low_confidence_indices:
+            original_description = results[original_result_index].get('narrative')
+            if not original_description:
+                continue # Should not happen if narrative exists
+            
+            openai_category_name = openai_suggestions_map.get(original_description)
+
+            if openai_category_name: # Check if OpenAI returned a valid, non-None category name
+                suggested_category_id = category_name_to_id.get(openai_category_name)
+                
+                if suggested_category_id: # Check if the name mapped back to a known ID
+                    original_embedding_details = original_embedding_results[original_result_index]
+                    logger.info(f"OpenAI suggested category '{openai_category_name}' (ID: {suggested_category_id}) for transaction index {original_result_index} (Original: '{original_embedding_details['category_name']}' ID: {original_embedding_details['category_id']})")
+                    
+                    # Update the result in the main list
+                    results[original_result_index]["predicted_category"] = suggested_category_id # Update ID
+                    results[original_result_index]["predicted_category_name"] = openai_category_name # Update Name
+                    results[original_result_index]["adjustment_info"]["llm_assisted"] = True
+                    results[original_result_index]["adjustment_info"]["llm_model"] = DEFAULT_OPENAI_MODEL
+                    results[original_result_index]["adjustment_info"]["original_embedding_category"] = original_embedding_details['category_id'] # Store original ID
+                    results[original_result_index]["adjustment_info"]["original_embedding_category_name"] = original_embedding_details['category_name'] # Store original name
+                    results[original_result_index]["adjustment_info"]["original_similarity_score"] = original_embedding_details['score']
+                    results[original_result_index]["adjustment_info"]["reason"] = "Categorized by LLM assist."
+                else:
+                    logger.warning(f"OpenAI suggested category name '{openai_category_name}' for index {original_result_index} which does not map back to a known category ID. Keeping original embedding result.")
+            else:
+                 logger.info(f"OpenAI did not provide a valid category for transaction index {original_result_index}. Keeping original embedding result.")
+        # else: (Error case handled inside categorize_with_openai by returning None)
+            # logger.error("Mismatch between low confidence count and OpenAI results count. Skipping OpenAI updates.") # This check might be less reliable now
 
     return results
 
