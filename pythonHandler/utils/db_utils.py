@@ -5,7 +5,7 @@ import logging
 import psycopg2
 from psycopg2 import pool
 from urllib.parse import urlparse
-from utils.prisma_client import prisma_client
+from utils.prisma_client import db_client
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def validate_api_key(api_key: str, track_usage: bool = True) -> str:
         api_key = api_key.strip()
 
         # Use Prisma client to find user by API key
-        user = prisma_client.get_user_by_api_key(api_key)
+        user = db_client.get_user_by_api_key(api_key)
 
         if not user:
             logger.error("Invalid API key provided")
@@ -161,7 +161,7 @@ def validate_api_key(api_key: str, track_usage: bool = True) -> str:
         # Track API usage on successful validation if requested
         if track_usage:
             try:
-                prisma_client.track_api_usage(api_key)
+                db_client.track_api_usage(api_key)
             except Exception as tracking_error:
                 # Don't fail the validation if tracking fails
                 logger.warning(f"Error tracking API usage: {tracking_error}")

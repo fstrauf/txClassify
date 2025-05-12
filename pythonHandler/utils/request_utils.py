@@ -4,7 +4,7 @@ from functools import wraps
 from flask import request, jsonify
 from pydantic import ValidationError
 import logging
-from utils.prisma_client import prisma_client
+from utils.prisma_client import db_client
 from utils.db_utils import validate_api_key
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ def require_api_key(f):
 
         # Check subscription status
         try:
-            subscription_status = prisma_client.get_user_subscription_status(user_id)
+            subscription_status = db_client.get_user_subscription_status(user_id)
             # Allowed statuses based on schema.ts
             allowed_statuses = ["ACTIVE", "TRIALING"]
 

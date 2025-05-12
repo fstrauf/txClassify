@@ -5,18 +5,17 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import base64
 from datetime import datetime
-import io
-import numpy as np
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
 
-class PrismaClient:
+class DBClient:
     _instance = None
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(PrismaClient, cls).__new__(cls)
+            cls._instance = super(DBClient, cls).__new__(cls)
             cls._instance.conn = None
             cls._instance.initialize()
         return cls._instance
@@ -39,7 +38,6 @@ class PrismaClient:
                     cursor = self.conn.cursor()
                     cursor.execute("SELECT 1")
                     cursor.close()
-                    logger.info("Database connection is still alive")
                     return True
                 except Exception:
                     # Connection is dead, close it to be sure
@@ -585,6 +583,93 @@ class PrismaClient:
             logger.error(f"Error fetching embedding: {str(e)}")
             return None
 
+    # --- Async Job Methods --- 
+    def create_async_job(self, job_id: str, user_id: str, job_type: str, status: str = "PENDING") -> Optional[Dict[str, Any]]:
+        """Create a new job in the async_jobs table."""
+        try:
+            self.connect()
+            query = """
+                INSERT INTO async_jobs (id, "userId", job_type, status, "createdAt", "predictionId")
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING *
+            """
+            params = (
+                job_id,
+                user_id,
+                job_type,
+                status,
+                datetime.now(),
+                job_id # Assuming predictionId can be same as id or is used for other purposes
+            )
+            results = self.execute_query(query, params, fetch=True)
+            logger.info(f"Created async job: {job_id} for user {user_id} with type {job_type}")
+            return results[0] if results else None
+        except Exception as e:
+            logger.error(f"Error creating async job {job_id}: {str(e)}")
+            # raise # Decide if you want to raise or return None/False
+            return None
+
+    def update_async_job_status(
+        self, 
+        job_id: str, 
+        status: str, 
+        result_data: Optional[Dict[str, Any]] = None, 
+        error_message: Optional[str] = None
+    ) -> bool:
+        """Update the status, result_data, or error for an async job."""
+        try:
+            self.connect()
+            
+            set_clauses = ['status = %s', '"completedAt" = %s']
+            params = [status, datetime.now()]
+
+            if result_data is not None:
+                set_clauses.append('result_data = %s')
+                params.append(json.dumps(result_data)) # Serialize dict to JSON string
+            
+            if error_message is not None:
+                set_clauses.append('error = %s')
+                params.append(error_message)
+            
+            params.append(job_id) # For the WHERE clause
+
+            query = f"""
+                UPDATE async_jobs
+                SET {", ".join(set_clauses)}
+                WHERE id = %s
+            """
+            
+            self.execute_query(query, tuple(params), fetch=False)
+            logger.info(f"Updated async job {job_id} to status {status}")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating async job {job_id} to status {status}: {str(e)}")
+            return False
+
+    def get_async_job_by_id(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get an async job by its ID."""
+        try:
+            self.connect()
+            query = 'SELECT * FROM async_jobs WHERE id = %s'
+            results = self.execute_query(query, (job_id,))
+            if results:
+                logger.debug(f"Fetched async job: {job_id}")
+                # Ensure result_data is a dict if it was stored as JSON string
+                job_data = results[0]
+                if isinstance(job_data.get('result_data'), str):
+                    try:
+                        job_data['result_data'] = json.loads(job_data['result_data'])
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to parse result_data for job {job_id} in get_async_job_by_id")
+                        # Keep it as string or set to None/error indicator based on preference
+                return job_data
+            else:
+                logger.warning(f"Async job not found: {job_id}")
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching async job {job_id}: {str(e)}")
+            return None
+
 
 # Create a singleton instance
-prisma_client = PrismaClient()
+db_client = DBClient()
