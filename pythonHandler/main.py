@@ -10,7 +10,9 @@ import logging
 import sys
 import time
 from typing import List, Optional, Union, Dict, Any
-from utils.prisma_client import prisma_client
+from concurrent.futures import ThreadPoolExecutor
+import uuid
+from utils.prisma_client import db_client
 from dotenv import load_dotenv
 import io
 from flasgger import Swagger, swag_from
@@ -85,6 +87,13 @@ swagger_template = {
 
 swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
+# === ThreadPoolExecutor for background tasks ===
+# Adjust max_workers as needed based on server resources and expected load
+# For CPU-bound tasks like embedding generation, number of CPU cores is a good starting point.
+# For I/O-bound tasks (if any were dominant), could be higher.
+# Since our tasks are CPU-bound for ~10-15s, a small number is fine to prevent resource exhaustion.
+executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 2)
+
 # === Constants Moved to config.py ===
 # BACKEND_API is imported
 logger.info(f"Backend API URL: {BACKEND_API}")
@@ -104,7 +113,7 @@ retry_count = 0
 while not connected and retry_count < max_retries:
     try:
         logger.info(f"Connecting to database (attempt {retry_count + 1}/{max_retries})")
-        connected = prisma_client.connect()
+        connected = db_client.connect()
         logger.info("Successfully connected to database on startup")
     except Exception as e:
         retry_count += 1
@@ -125,7 +134,7 @@ def shutdown_db_connection(exception=None):
     try:
         if exception and isinstance(exception, Exception):
             logger.info("Disconnecting from database due to exception")
-            prisma_client.disconnect()
+            db_client.disconnect()
             logger.info("Disconnected from database")
     except Exception as e:
         logger.error(f"Error disconnecting from database: {e}")
@@ -135,7 +144,7 @@ def shutdown_db_connection(exception=None):
 def ensure_db_connection():
     """Ensure database connection is active before each request."""
     try:
-        prisma_client.connect()
+        db_client.connect()
     except Exception as e:
         logger.error(f"Failed to ensure database connection: {e}")
         logger.warning("Request may fail due to database connection issues")
@@ -206,7 +215,7 @@ def health():
         "components": {"app": "healthy"},
     }
     try:
-        connected = prisma_client.connect()
+        connected = db_client.connect()
         if connected:
             health_status["components"]["database"] = "healthy"
         else:
@@ -289,15 +298,49 @@ def train_model():
         if error_response:
             return error_response
 
-        # Call the service function
-        response, status_code = process_training_request(
-            validated_data, request.user_id, request.api_key
+        job_id = str(uuid.uuid4())
+        api_key_user_id = request.user_id
+
+        # 1. Create PENDING job record immediately
+        db_client.create_async_job(job_id, api_key_user_id, 'training', 'PENDING')
+
+        # 2. Submit actual work to executor
+        future = executor.submit(
+            _run_training_task, 
+            job_id, 
+            api_key_user_id, 
+            validated_data
         )
-        return response, status_code
+
+        try:
+            # 3. Try to get result with timeout
+            job_result_dict = future.result(timeout=8.5)
+            
+            status_code = job_result_dict.get("error_code", 200) if isinstance(job_result_dict, dict) else 200
+            if isinstance(job_result_dict, dict) and job_result_dict.get("status") == "error":
+                status_code = job_result_dict.get("error_code", 500)
+
+            return jsonify(job_result_dict), status_code
+
+        except TimeoutError:
+            logger.info(f"Training job {job_id} for user {api_key_user_id} taking longer, returning 202.")
+            return jsonify({
+                "status": "processing", 
+                "prediction_id": job_id, 
+                "message": "Training request accepted and is processing in the background."
+            }), 202
+        except Exception as e:
+            logger.error(f"Error managing future for training job {job_id}: {e}", exc_info=True)
+            db_client.update_async_job_status(job_id, 'FAILED', error_message=f"Internal error managing job: {str(e)}")
+            return jsonify({
+                "status": "error", 
+                "error_message": "Failed to process training request due to an internal error.",
+                "prediction_id": job_id
+            }), 500
 
     except Exception as e:
         logger.error(f"Error in train_model endpoint: {e}", exc_info=True)
-        return create_error_response(str(e), 500)
+        return create_error_response(f"Server error in training endpoint: {str(e)}", 500)
 
 
 @app.route("/classify", methods=["POST"])
@@ -361,9 +404,47 @@ def classify_transactions_async():
         if error_response:
             return error_response
 
-        # Call the service function
-        response, status_code = process_classification_request(validated_data, user_id)
-        return response, status_code
+        job_id = str(uuid.uuid4())
+        api_key_user_id = request.user_id
+
+        # 1. Create PENDING job record immediately
+        db_client.create_async_job(job_id, api_key_user_id, 'classification', 'PENDING')
+
+        # 2. Submit actual work to executor
+        future = executor.submit(
+            _run_classification_task, 
+            job_id, 
+            api_key_user_id, 
+            validated_data
+        )
+
+        try:
+            # 3. Try to get result with timeout
+            job_result_dict = future.result(timeout=8.5)
+            
+            status_code = job_result_dict.get("error_code", 200) if isinstance(job_result_dict, dict) else 200
+            if isinstance(job_result_dict, dict) and job_result_dict.get("status") == "error":
+                status_code = job_result_dict.get("error_code", 500)
+            elif isinstance(job_result_dict, dict) and job_result_dict.get("status") == "error" and job_result_dict.get("error_code") == 409:
+                status_code = 409 # Specific for embedding mismatch
+
+            return jsonify(job_result_dict), status_code
+
+        except TimeoutError:
+            logger.info(f"Classification job {job_id} for user {api_key_user_id} taking longer, returning 202.")
+            return jsonify({
+                "status": "processing", 
+                "prediction_id": job_id, 
+                "message": "Classification request accepted and is processing in the background."
+            }), 202
+        except Exception as e:
+            logger.error(f"Error managing future for classification job {job_id}: {e}", exc_info=True)
+            db_client.update_async_job_status(job_id, 'FAILED', error_message=f"Internal error managing job: {str(e)}")
+            return jsonify({
+                "status": "error", 
+                "error_message": "Failed to process classification request due to an internal error.",
+                "prediction_id": job_id
+            }), 500
 
     except Exception as e:
         logger.error(f"Critical error in /classify endpoint: {e}", exc_info=True)
@@ -416,11 +497,18 @@ def get_classification_or_training_status(prediction_id):
     try:
         requesting_user_id = request.user_id
 
-        # Call the service function
-        response, status_code = get_and_process_status(
-            prediction_id, requesting_user_id
-        )
-        return response, status_code
+        # New call to the refactored status service, which returns a dictionary
+        status_dict = get_and_process_status(prediction_id, requesting_user_id)
+        
+        # Determine status code based on the dictionary returned by status_service
+        # status_service now returns error_code if applicable
+        response_status_code = 200 # Default for PENDING, PROCESSING, COMPLETED
+        if isinstance(status_dict, dict) and status_dict.get("status") == "error":
+            response_status_code = status_dict.get("error_code", 500)
+        elif isinstance(status_dict, dict) and status_dict.get("status") == "failed":
+             response_status_code = status_dict.get("error_code", 500) # Or a more specific client error if needed
+
+        return jsonify(status_dict), response_status_code
 
     except Exception as e:
         logger.error(
@@ -515,7 +603,7 @@ def get_user_config():
                 "Permission denied: API key does not match requested user ID", 403
             )
 
-        response = prisma_client.get_account_by_user_id(user_id)
+        response = db_client.get_account_by_user_id(user_id)
         if not response:
             # Create default if not found?
             # Or return 404? Returning 404 for now.
@@ -524,7 +612,7 @@ def get_user_config():
         # Update API key in DB if provided key is different (ensure user owns the config first)
         if request.api_key != response.get("api_key"):
             try:
-                prisma_client.update_account(user_id, {"api_key": request.api_key})
+                db_client.update_user(request.user_id, {"api_key": request.api_key})
                 logger.info(f"Updated API key for user {user_id}")
             except Exception as db_update_err:
                 logger.error(
@@ -581,7 +669,7 @@ def get_api_usage():
     try:
         user_id = request.user_id
         logger.info(f"Getting API usage stats for user: {user_id}")
-        usage_stats = prisma_client.get_account_usage_stats(user_id)
+        usage_stats = db_client.get_account_usage_stats(user_id)
         if not usage_stats:
             # Return default usage if not found?
             logger.warning(f"No usage stats found for user {user_id}")
@@ -670,7 +758,7 @@ def clean_text_endpoint():
 
         # Check API usage limit
         try:
-            usage_stats = prisma_client.get_account_usage_stats(user_id)
+            usage_stats = db_client.get_account_usage_stats(user_id)
             if usage_stats and usage_stats.get("daily_requests", 0) > 10000:
                 return create_error_response("Daily API limit exceeded.", 429)
         except Exception as e:
@@ -730,25 +818,26 @@ def cleanup_old_webhook_results():
         embeddings_cutoff_date = datetime.now() - timedelta(days=30)
 
         logger.info(f"Cleaning up webhook results older than {webhook_cutoff_date}")
-        deleted_count = prisma_client.delete_old_webhook_results(webhook_cutoff_date)
-        logger.info(
-            f"Cleaned up {deleted_count} webhook results older than {webhook_cutoff_date}"
-        )
+        # deleted_count = db_client.delete_old_webhook_results(webhook_cutoff_date)
+        # logger.info(
+            # f"Cleaned up {deleted_count} webhook results older than {webhook_cutoff_date}"
+        # )
 
         logger.info(
             f"Cleaning up embeddings/contexts older than {embeddings_cutoff_date}"
         )
         try:
             # Assumes a method exists in prisma_client
-            deleted_embeds = prisma_client.delete_old_embeddings_and_contexts(
-                embeddings_cutoff_date
-            )
-            logger.info(
-                f"Cleaned up {deleted_embeds} embeddings/contexts older than {embeddings_cutoff_date}"
-            )
+            # deleted_embeds = db_client.delete_old_embeddings_and_contexts(
+            #     embeddings_cutoff_date
+            # )
+            # logger.info(
+            #     f"Cleaned up {deleted_embeds} embeddings/contexts older than {embeddings_cutoff_date}"
+            # )
+            pass # Placeholder if methods are removed for now
         except AttributeError:
             logger.warning(
-                "prisma_client.delete_old_embeddings_and_contexts method not found. Skipping cleanup."
+                "db_client.delete_old_embeddings_and_contexts method not found. Skipping cleanup."
             )
         except Exception as e:
             logger.error(f"Error cleaning up embeddings and contexts: {e}")
@@ -756,6 +845,49 @@ def cleanup_old_webhook_results():
     except Exception as e:
         logger.error(f"Error cleaning up old webhook results: {e}")
 
+
+# === Helper functions for background tasks ===
+def _run_training_task(job_id: str, user_id: str, validated_data: TrainRequest):
+    try:
+        logger.info(f"Starting background training task {job_id} for user {user_id}")
+        db_client.update_async_job_status(job_id, 'PROCESSING')
+        
+        # process_training_request now returns a dictionary
+        result_dict = process_training_request(validated_data, user_id)
+        
+        if isinstance(result_dict, dict) and result_dict.get("status") == "completed":
+            db_client.update_async_job_status(job_id, 'COMPLETED', result_data=result_dict)
+        else: # Error occurred within the service
+            error_msg = result_dict.get("error_message", "Unknown training error") if isinstance(result_dict, dict) else "Unknown training error"
+            db_client.update_async_job_status(job_id, 'FAILED', error_message=error_msg)
+        
+        return result_dict # Return the dict for immediate response if job was fast
+    except Exception as e:
+        logger.error(f"Exception in _run_training_task for job {job_id}: {e}", exc_info=True)
+        error_payload = {"status": "error", "error_message": f"Critical error in training task: {str(e)}", "error_code": 500}
+        db_client.update_async_job_status(job_id, 'FAILED', error_message=error_payload.get("error_message"))
+        return error_payload
+
+def _run_classification_task(job_id: str, user_id: str, validated_data: ClassifyRequest):
+    try:
+        logger.info(f"Starting background classification task {job_id} for user {user_id}")
+        db_client.update_async_job_status(job_id, 'PROCESSING')
+        
+        # process_classification_request now returns a dictionary
+        result_dict = process_classification_request(validated_data, user_id)
+        
+        if isinstance(result_dict, dict) and result_dict.get("status") == "completed":
+            db_client.update_async_job_status(job_id, 'COMPLETED', result_data=result_dict)
+        else: # Error occurred within the service
+            error_msg = result_dict.get("error_message", "Unknown classification error") if isinstance(result_dict, dict) else "Unknown classification error"
+            db_client.update_async_job_status(job_id, 'FAILED', error_message=error_msg)
+            
+        return result_dict # Return the dict for immediate response if job was fast
+    except Exception as e:
+        logger.error(f"Exception in _run_classification_task for job {job_id}: {e}", exc_info=True)
+        error_payload = {"status": "error", "error_message": f"Critical error in classification task: {str(e)}", "error_code": 500}
+        db_client.update_async_job_status(job_id, 'FAILED', error_message=error_payload.get("error_message"))
+        return error_payload
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5003))

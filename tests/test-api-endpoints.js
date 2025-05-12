@@ -440,6 +440,9 @@ const loadCategorizationData = (file_name) => {
 
 // Test training flow
 const trainModel = async (config) => {
+  const operationStartTime = Date.now();
+  let usedPolling = false;
+
   try {
     logInfo("Starting training...");
     logInfo("Training model...");
@@ -517,17 +520,19 @@ const trainModel = async (config) => {
           if (result.status === "completed") {
             // Synchronous Success!
             logInfo("Training completed synchronously.");
-            // Return a success object immediately, mimicking pollForTrainingCompletion result
+            const durationMs = Date.now() - operationStartTime;
             return {
               status: "completed",
               message: "Training completed successfully (synchronous)!",
               result: result,
-              elapsedMinutes: 0, // Indicate immediate completion
+              durationMs: durationMs,
+              usedPolling: false,
             };
           } else if (result.status === "processing" && result.prediction_id) {
             // Asynchronous start indicated by 200 status + processing status in body
             logInfo("Training started asynchronously (indicated by 200 response).");
             predictionId = result.prediction_id;
+            usedPolling = true; // Polling will be used
             break; // Exit retry loop, proceed to polling
           } else {
             // Unexpected body format for 200 status
@@ -541,6 +546,7 @@ const trainModel = async (config) => {
           if (result.prediction_id) {
             logInfo("Training started asynchronously (indicated by 202 response).");
             predictionId = result.prediction_id;
+            usedPolling = true; // Polling will be used
             break; // Exit retry loop, proceed to polling
           } else {
             throw new Error(`Training failed: Received status 202 but no prediction_id in body: ${responseText}`);
@@ -575,6 +581,7 @@ const trainModel = async (config) => {
           lastError?.toString() || "Unknown error"
         }`
       );
+      const durationMs = Date.now() - operationStartTime;
       throw new Error(
         `Training request failed after ${maxRetries} attempts: ${lastError?.toString() || "Unknown error"}`
       );
@@ -584,22 +591,26 @@ const trainModel = async (config) => {
     if (predictionId) {
       logInfo(`Training requires polling with prediction ID: ${predictionId}`);
       logInfo("Training in progress, please wait...");
+      usedPolling = true; // Explicitly set as polling is used
 
       // Store start time for polling
-      const startTime = new Date().getTime();
+      const pollingStartTime = new Date().getTime();
 
       // Poll for status until completion or timeout
-      const pollResult = await pollForTrainingCompletion(predictionId, startTime, config);
+      const pollResult = await pollForTrainingCompletion(predictionId, pollingStartTime, config);
+      const durationMs = Date.now() - operationStartTime;
 
-      return pollResult;
+      return { ...pollResult, durationMs: durationMs, usedPolling: true };
     } else {
       logError("Error: No prediction ID received");
-      throw new Error("No prediction ID received from server");
+      const durationMs = Date.now() - operationStartTime;
+      throw new Error("No prediction ID received from server"); // This will be caught by the main catch
     }
   } catch (error) {
     logError(`Training error: ${error.toString()}`);
     logDebug(`Error stack: ${error.stack}`);
-    return { error: error.toString(), status: "failed" };
+    const durationMs = Date.now() - operationStartTime;
+    return { error: error.toString(), status: "failed", durationMs: durationMs, usedPolling: usedPolling };
   }
 };
 
@@ -756,6 +767,9 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
 
 // Test categorization flow
 const categoriseTransactions = async (config) => {
+  const operationStartTime = Date.now();
+  let usedPolling = false;
+
   try {
     // Prepare request data with only transactions (simplified API)
     const requestData = {
@@ -810,12 +824,14 @@ const categoriseTransactions = async (config) => {
           // Synchronous success!
           logInfo("Received synchronous classification results.");
           response = { data: await response_fetch.json(), status: 200 };
+          // usedPolling remains false
           break; // Exit the loop, we have results
         } else if (response_fetch.status === 202) {
           // Asynchronous processing started
           logInfo("Classification started asynchronously. Polling required.");
           response = { data: await response_fetch.json(), status: 202 };
           predictionId = response.data.prediction_id;
+          usedPolling = true; // Polling will be used
           if (!predictionId) {
             throw new Error("Server started async processing but did not return a prediction ID.");
           }
@@ -858,7 +874,8 @@ const categoriseTransactions = async (config) => {
       } else {
         logError("Synchronous response received, but results are missing or status is not 'completed'.");
         logError("Response data:", JSON.stringify(response.data, null, 2));
-        throw new Error("Invalid synchronous response format.");
+        const durationMs = Date.now() - operationStartTime;
+        throw new Error("Invalid synchronous response format."); // Will be caught by outer catch
       }
     } else if (response.status === 202 && predictionId) {
       // --- Start Polling for Asynchronous Results ---
@@ -907,7 +924,8 @@ const categoriseTransactions = async (config) => {
             process.stdout.write("\n");
             const errorMessage = statusResponse.data.error || "Unknown error during processing";
             logError(`Categorisation failed: ${errorMessage}`);
-            return { status: "failed", error: errorMessage }; // Exit function on failure
+            const durationMs = Date.now() - operationStartTime;
+            return { status: "failed", error: errorMessage, durationMs: durationMs, usedPolling: true }; // Exit function on failure
           } else if (status === "processing") {
             // Log progress occasionally
             if (pollingAttempt % 12 === 0) {
@@ -930,7 +948,8 @@ const categoriseTransactions = async (config) => {
       if (pollingAttempt >= maxPollingAttempts) {
         process.stdout.write("\n");
         logWarning(`Reached maximum number of polling attempts (${maxPollingAttempts}). Assuming failure.`);
-        return { status: "timeout", error: "Polling timed out" };
+        const durationMs = Date.now() - operationStartTime;
+        return { status: "timeout", error: "Polling timed out", durationMs: durationMs, usedPolling: true };
       }
       // --- End Polling ---
     } else {
@@ -1030,16 +1049,19 @@ const categoriseTransactions = async (config) => {
         console.log("Results format invalid or results array missing in the final response.");
         console.log("Final Response Data:", JSON.stringify(response.data, null, 2));
         console.log("=====================================\n");
-        return { status: "failed", error: "Invalid results format received" };
+        const durationMs = Date.now() - operationStartTime;
+        return { status: "failed", error: "Invalid results format received", durationMs: durationMs, usedPolling: usedPolling };
       }
     }
 
     // Return final status and results
-    return { status: finalStatus, results };
+    const durationMs = Date.now() - operationStartTime;
+    return { status: finalStatus, results, durationMs: durationMs, usedPolling: usedPolling };
   } catch (error) {
     console.log(`\nCategorisation failed: ${error.message}`);
     logDebug(`Error stack: ${error.stack}`);
-    return { status: "failed", error: error.message };
+    const durationMs = Date.now() - operationStartTime;
+    return { status: "failed", error: error.message, durationMs: durationMs, usedPolling: usedPolling };
   }
 };
 
@@ -1233,6 +1255,7 @@ const cleanup = async () => {
 
 // Main function
 const main = async () => {
+  let trainingResult, categorizationResult; // Store results for performance summary
   try {
     console.log("\n=== Starting Test Script ===\n");
 
@@ -1294,7 +1317,7 @@ const main = async () => {
     // const trainingData = await loadTrainingData("training_test.csv");
     // const trainingData = await loadTrainingData("full_train.csv");
     const trainingData = await loadTrainingData("train_woolies_test.csv");
-    const categorizationData = await loadCategorizationData("cat_woolies_test.csv");
+    const categorizationData = await loadCategorizationData("categorise_full.csv");
     // const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
@@ -1311,7 +1334,7 @@ const main = async () => {
     // 6. Run Training (if enabled)
     if (RUN_TRAINING) {
       console.log("6. Running Training...");
-      const trainingResult = await trainModel(config);
+      trainingResult = await trainModel(config); // Store result
 
       if (trainingResult.status !== "completed") {
         throw new Error(`Training failed: ${trainingResult.error || "Unknown error"}`);
@@ -1326,13 +1349,25 @@ const main = async () => {
     // 7. Run Categorization (if enabled)
     if (RUN_CATEGORIZATION) {
       console.log("7. Running Categorization...");
-      const categorizationResult = await categoriseTransactions(config);
+      categorizationResult = await categoriseTransactions(config); // Store result
 
       if (categorizationResult.status !== "completed") {
         throw new Error(`Categorization failed: ${categorizationResult.error || "Unknown error"}`);
       }
       console.log("   Categorization completed successfully\n");
     }
+
+    // Print Performance Summary before cleanup
+    console.log("\n=== Performance Summary ===");
+    if (RUN_TRAINING && trainingResult) {
+      const trainingDurationSec = (trainingResult.durationMs / 1000).toFixed(2);
+      console.log(`   Training took: ${trainingDurationSec}s (Polling: ${trainingResult.usedPolling ? 'Yes' : 'No'})`);
+    }
+    if (RUN_CATEGORIZATION && categorizationResult) {
+      const catDurationSec = (categorizationResult.durationMs / 1000).toFixed(2);
+      console.log(`   Categorization took: ${catDurationSec}s (Polling: ${categorizationResult.usedPolling ? 'Yes' : 'No'})`);
+    }
+    console.log("===========================\n");
 
     // 8. Cleanup
     console.log("8. Cleaning up...");
