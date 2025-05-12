@@ -52,6 +52,7 @@ class ClassifyRequest(BaseModel):
     """Request model for the /classify endpoint."""
 
     transactions: List[Union[str, TransactionInput]]
+    user_categories: Optional[List[Dict[str, str]]] = None
     spreadsheetId: Optional[str] = None
     sheetName: Optional[str] = "new_transactions"
     categoryColumn: Optional[str] = "E"

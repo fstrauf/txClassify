@@ -202,6 +202,7 @@ const startFlaskServer = async (port) => {
 const loadTrainingData = (file_name) => {
   return new Promise((resolve, reject) => {
     const results = [];
+    const categories = new Set(); // Use a Set to store unique category names
     const startTime = Date.now();
     let headersProcessed = false;
     let descriptionIndex = -1;
@@ -300,6 +301,7 @@ const loadTrainingData = (file_name) => {
         // Ensure we have the required fields before adding
         if (transaction.description && transaction.Category) {
           results.push(transaction);
+          categories.add(transaction.Category); // Add category name to the Set
         } else {
           logDebug(`Skipping invalid transaction data: ${JSON.stringify(row)}`);
         }
@@ -307,6 +309,8 @@ const loadTrainingData = (file_name) => {
       .on("end", () => {
         const duration = (Date.now() - startTime) / 1000;
         logInfo(`Loaded ${results.length} training records in ${duration.toFixed(1)}s`);
+        const uniqueCategories = Array.from(categories); // Convert Set to Array
+        logInfo(`Found ${uniqueCategories.length} unique categories in training data.`);
 
         if (results.length === 0) {
           logError(
@@ -320,9 +324,10 @@ const loadTrainingData = (file_name) => {
           // Log how many transactions have the amount field
           const withAmount = results.filter((t) => t.amount !== undefined).length;
           logInfo(`${withAmount} of ${results.length} transactions have amount field set`);
+          logDebug(`Unique categories found: ${uniqueCategories.join(', ')}`); // Log unique categories
         }
 
-        resolve(results);
+        resolve({ transactions: results, uniqueCategories }); // Return both transactions and unique categories
       })
       .on("error", (error) => {
         logError(`Error loading training data: ${error.toString()}`);
@@ -766,14 +771,15 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
 };
 
 // Test categorization flow
-const categoriseTransactions = async (config) => {
+const categoriseTransactions = async (config, userCategories) => {
   const operationStartTime = Date.now();
   let usedPolling = false;
 
   try {
-    // Prepare request data with only transactions (simplified API)
+    // Prepare request data with transactions and categories
     const requestData = {
       transactions: config.categorizationDataFile,
+      user_categories: userCategories || [], // Include the categories, default to empty array
     };
 
     // Add logging for debugging API key issues
@@ -977,26 +983,41 @@ const categoriseTransactions = async (config) => {
           const secondCategory = result.second_predicted_category || "N/A";
           const secondScore = result.second_similarity_score;
           const secondScorePercent = secondScore ? (secondScore * 100).toFixed(2) : "N/A";
+          const adjustmentInfo = result.adjustment_info || {}; // Get adjustment info
+          const isLlmAssisted = adjustmentInfo.llm_assisted === true;
 
-          let logLine = `${index + 1}. "${narrative}"`;
+          let logLine = `${index + 1}. \"${narrative}\"`;
 
           // Show cleaned narrative if different from original
           const cleaned_narrative = result.cleaned_narrative || null;
           if (cleaned_narrative && cleaned_narrative !== narrative) {
             logLine += `\n     Cleaned: "${cleaned_narrative}"`;
           }
-          logLine += ` → ${category}`;
+          logLine += ` \u2192 ${category}`;
 
-          // If Unknown, show the rejected category and the top score
-          if (category === "Unknown" && result.debug_info?.rejected_best_category) {
-            logLine += ` (Rejected: ${result.debug_info.rejected_best_category} at ${scorePercent}%)`;
+          // --- LLM Assist Info ---
+          if (isLlmAssisted) {
+            const llmModel = adjustmentInfo.llm_model || 'Unknown LLM';
+            const originalCategory = adjustmentInfo.original_embedding_category_name || 'Unknown Embedding Cat';
+            const originalScore = adjustmentInfo.original_similarity_score;
+            const originalScorePercent = originalScore ? (originalScore * 100).toFixed(2) : 'N/A';
+            logLine += ` (${scorePercent}%) [LLM (${llmModel}) Assisted]`; // Add score for LLM selected category if available (might be 0)
+            logLine += `\n     Original Embedding: ${originalCategory} (${originalScorePercent}%)`;
           } else {
-            // Otherwise, show the score for the accepted category
-            logLine += ` (${scorePercent}%)`;
+            // If Unknown, show the rejected category and the top score
+            if (category === "Unknown" && result.debug_info?.rejected_best_category) {
+              logLine += ` (Rejected: ${result.debug_info.rejected_best_category} at ${scorePercent}%)`;
+            } else {
+              // Otherwise, show the score for the accepted category
+              logLine += ` (${scorePercent}%)`;
+            }
           }
+          // --- End LLM Assist Info ---
 
-          // Add second match info
-          logLine += `\n     2nd Match: ${secondCategory} (${secondScorePercent}%)`;
+          // Add second match info only if not LLM assisted (less relevant otherwise)
+          if (!isLlmAssisted) {
+             logLine += `\n     2nd Match: ${secondCategory} (${secondScorePercent}%)`;
+          }
 
           // Add money direction
           if (result.money_in === true) {
@@ -1072,8 +1093,11 @@ const testCleanText = async (apiUrl) => {
   try {
     // 1. Load the training data
     console.log("1. Loading training data...");
-    const trainingData = await loadTrainingData("full_train.csv");
-    console.log(`   Loaded ${trainingData.length} records\n`);
+    const trainingDataResult = await loadTrainingData("train_woolies_test.csv");
+    const trainingData = trainingDataResult.transactions;
+    const uniqueTrainingCategories = trainingDataResult.uniqueCategories; // Store unique categories
+    console.log(`   Loaded ${trainingData.length} records`);
+    console.log(`   Found ${uniqueTrainingCategories.length} unique categories in training data.`); // Log category count
 
     // 2. Send clean text requests
     console.log("2. Testing clean_text endpoint...");
@@ -1256,6 +1280,7 @@ const cleanup = async () => {
 // Main function
 const main = async () => {
   let trainingResult, categorizationResult; // Store results for performance summary
+  let uniqueTrainingCategories = []; // Variable to store unique categories from training
   try {
     console.log("\n=== Starting Test Script ===\n");
 
@@ -1316,10 +1341,15 @@ const main = async () => {
     console.log("5. Loading Test Data...");
     // const trainingData = await loadTrainingData("training_test.csv");
     // const trainingData = await loadTrainingData("full_train.csv");
-    const trainingData = await loadTrainingData("train_woolies_test.csv");
-    const categorizationData = await loadCategorizationData("categorise_full.csv");
-    // const categorizationData = await loadCategorizationData("categorise_test.csv");
+    const { transactions: trainingData, uniqueCategories: uniqueTrainingCategories } = await loadTrainingData("training_test.csv"); // Destructure results
+    // const trainingDataResult = await loadTrainingData("train_woolies_test.csv");
+    // const trainingData = trainingDataResult.transactions;
+    // uniqueTrainingCategories = trainingDataResult.uniqueCategories; // Store unique categories
+
+    // const categorizationData = await loadCategorizationData("categorise_full.csv");
+    const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
+    console.log(`   Found ${uniqueTrainingCategories.length} unique categories in training data.`); // Log category count
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
 
     // Create test configuration
@@ -1349,7 +1379,15 @@ const main = async () => {
     // 7. Run Categorization (if enabled)
     if (RUN_CATEGORIZATION) {
       console.log("7. Running Categorization...");
-      categorizationResult = await categoriseTransactions(config); // Store result
+
+      // Prepare user_categories for the API call [{id: string, name: string}]
+      const userCategoriesForApi = uniqueTrainingCategories.map(name => ({ 
+        id: name, // Use name as ID for simplicity in test script
+        name: name 
+      }));
+      logDebug(`Prepared ${userCategoriesForApi.length} categories for API: ${JSON.stringify(userCategoriesForApi)}`);
+
+      categorizationResult = await categoriseTransactions(config, userCategoriesForApi); // Pass categories
 
       if (categorizationResult.status !== "completed") {
         throw new Error(`Categorization failed: ${categorizationResult.error || "Unknown error"}`);
