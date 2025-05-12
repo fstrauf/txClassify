@@ -10,10 +10,13 @@ import logging
 import sys
 import time
 from typing import List, Optional, Union, Dict, Any
-from utils.prisma_client import prisma_client
+from concurrent.futures import ThreadPoolExecutor
+import uuid
+from utils.prisma_client import db_client
 from dotenv import load_dotenv
 import io
 from flasgger import Swagger, swag_from
+from pydantic import ValidationError
 
 # Import from new modules
 from config import (
@@ -85,6 +88,13 @@ swagger_template = {
 
 swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
+# === ThreadPoolExecutor for background tasks ===
+# Adjust max_workers as needed based on server resources and expected load
+# For CPU-bound tasks like embedding generation, number of CPU cores is a good starting point.
+# For I/O-bound tasks (if any were dominant), could be higher.
+# Since our tasks are CPU-bound for ~10-15s, a small number is fine to prevent resource exhaustion.
+executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 2)
+
 # === Constants Moved to config.py ===
 # BACKEND_API is imported
 logger.info(f"Backend API URL: {BACKEND_API}")
@@ -104,7 +114,7 @@ retry_count = 0
 while not connected and retry_count < max_retries:
     try:
         logger.info(f"Connecting to database (attempt {retry_count + 1}/{max_retries})")
-        connected = prisma_client.connect()
+        connected = db_client.connect()
         logger.info("Successfully connected to database on startup")
     except Exception as e:
         retry_count += 1
@@ -125,7 +135,7 @@ def shutdown_db_connection(exception=None):
     try:
         if exception and isinstance(exception, Exception):
             logger.info("Disconnecting from database due to exception")
-            prisma_client.disconnect()
+            db_client.disconnect()
             logger.info("Disconnected from database")
     except Exception as e:
         logger.error(f"Error disconnecting from database: {e}")
@@ -135,7 +145,7 @@ def shutdown_db_connection(exception=None):
 def ensure_db_connection():
     """Ensure database connection is active before each request."""
     try:
-        prisma_client.connect()
+        db_client.connect()
     except Exception as e:
         logger.error(f"Failed to ensure database connection: {e}")
         logger.warning("Request may fail due to database connection issues")
@@ -206,7 +216,7 @@ def health():
         "components": {"app": "healthy"},
     }
     try:
-        connected = prisma_client.connect()
+        connected = db_client.connect()
         if connected:
             health_status["components"]["database"] = "healthy"
         else:
@@ -289,15 +299,49 @@ def train_model():
         if error_response:
             return error_response
 
-        # Call the service function
-        response, status_code = process_training_request(
-            validated_data, request.user_id, request.api_key
+        job_id = str(uuid.uuid4())
+        api_key_user_id = request.user_id
+
+        # 1. Create PENDING job record immediately
+        db_client.create_async_job(job_id, api_key_user_id, 'training', 'PENDING')
+
+        # 2. Submit actual work to executor
+        future = executor.submit(
+            _run_training_task, 
+            job_id, 
+            api_key_user_id, 
+            validated_data
         )
-        return response, status_code
+
+        try:
+            # 3. Try to get result with timeout
+            job_result_dict = future.result(timeout=8.5)
+            
+            status_code = job_result_dict.get("error_code", 200) if isinstance(job_result_dict, dict) else 200
+            if isinstance(job_result_dict, dict) and job_result_dict.get("status") == "error":
+                status_code = job_result_dict.get("error_code", 500)
+
+            return jsonify(job_result_dict), status_code
+
+        except TimeoutError:
+            logger.info(f"Training job {job_id} for user {api_key_user_id} taking longer, returning 202.")
+            return jsonify({
+                "status": "processing", 
+                "prediction_id": job_id, 
+                "message": "Training request accepted and is processing in the background."
+            }), 202
+        except Exception as e:
+            logger.error(f"Error managing future for training job {job_id}: {e}", exc_info=True)
+            db_client.update_async_job_status(job_id, 'FAILED', error_message=f"Internal error managing job: {str(e)}")
+            return jsonify({
+                "status": "error", 
+                "error_message": "Failed to process training request due to an internal error.",
+                "prediction_id": job_id
+            }), 500
 
     except Exception as e:
         logger.error(f"Error in train_model endpoint: {e}", exc_info=True)
-        return create_error_response(str(e), 500)
+        return create_error_response(f"Server error in training endpoint: {str(e)}", 500)
 
 
 @app.route("/classify", methods=["POST"])
@@ -306,7 +350,7 @@ def train_model():
     {
         "tags": ["Classification"],
         "summary": "Classify transactions",
-        "description": "Classifies a list of transaction descriptions",
+        "description": "Classifies a list of transaction descriptions. If processing takes longer than ~8.5 seconds, returns a 202 Accepted with a prediction_id for polling.",
         "parameters": [
             {
                 "name": "X-API-Key",
@@ -320,31 +364,58 @@ def train_model():
                 "in": "body",
                 "required": True,
                 "schema": {
-                    "type": "object",
-                    "required": ["transactions"],
-                    "properties": {
-                        "transactions": {
-                            "type": "array",
-                            "description": "List of transaction descriptions to classify",
-                            "items": {"type": "string"},
-                        }
-                    },
+                    "$ref": "#/definitions/ClassifyRequest" # Reference the model definition
                 },
             },
         ],
-        "responses": {
-            200: {
-                "description": "Classification started successfully",
-                "examples": {
-                    "application/json": {
-                        "status": "processing",
-                        "prediction_id": "abcd1234",
-                        "message": "Classification started. Check status endpoint for updates.",
-                    }
-                },
+        "definitions": { # Add definition for Swagger UI
+            "ClassifyRequest": {
+                "type": "object",
+                "required": ["transactions"],
+                "properties": {
+                    "transactions": {
+                        "type": "array",
+                        "description": "List of transactions (strings or objects) to classify",
+                        "items": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"$ref": "#/definitions/TransactionInput"}
+                            ]
+                        }
+                    },
+                    "user_categories": {
+                        "type": "array",
+                        "description": "(Optional) List of user category objects ({id, name}) for LLM assist",
+                        "items": {
+                             "type": "object",
+                             "properties": {
+                                 "id": {"type": "string"},
+                                 "name": {"type": "string"}
+                             }
+                         }
+                    },
+                    "spreadsheetId": {"type": "string", "description": "(Optional) Google Sheet ID for context/output"},
+                    "sheetName": {"type": "string", "default": "new_transactions", "description": "(Optional) Sheet name"},
+                    "categoryColumn": {"type": "string", "default": "E", "description": "(Optional) Category column letter"},
+                    "startRow": {"type": "string", "default": "1", "description": "(Optional) Starting row number"}
+                }
             },
+            "TransactionInput": {
+                 "type": "object",
+                 "required": ["description"],
+                 "properties": {
+                     "description": {"type": "string"},
+                     "money_in": {"type": "boolean", "description": "True for income, False for expense"}
+                     # Amount might also be useful here if available from frontend
+                 }
+            }
+        },
+        "responses": {
+            200: {"description": "Classification completed synchronously"},
+            202: {"description": "Classification accepted for background processing"},
             400: {"description": "Invalid request data"},
             401: {"description": "Invalid or missing API key"},
+            409: {"description": "Conflict (e.g., embedding mismatch, requires re-training)"},
             500: {"description": "Server error"},
         },
     }
@@ -352,24 +423,90 @@ def train_model():
 def classify_transactions_async():
     """Attempts synchronous classification first, falls back to async if needed."""
     try:
-        user_id = request.user_id
-
+        user_id = request.user_id # Get user_id associated with the API key
         data = request.get_json()
         if not data:
-            return create_error_response("No data provided", 400)
-        validated_data, error_response = validate_request_data(ClassifyRequest, data)
-        if error_response:
-            return error_response
+            return create_error_response("Missing request data", 400)
 
-        # Call the service function
-        response, status_code = process_classification_request(validated_data, user_id)
-        return response, status_code
+        # Validate request data using Pydantic model
+        try:
+            validated_data = ClassifyRequest(**data)
+        except ValidationError as e:
+            logger.error(f"Validation error for /classify: {e.json()}")
+            # Provide a more user-friendly error message
+            error_details = e.errors()
+            first_error = error_details[0]['msg'] if error_details else "Invalid data"
+            return create_error_response(f"Validation error: {first_error}", 400)
 
-    except Exception as e:
-        logger.error(f"Critical error in /classify endpoint: {e}", exc_info=True)
-        return create_error_response(
-            f"An unexpected server error occurred: {str(e)}", 500
+        # Generate a unique job ID
+        job_id = str(uuid.uuid4())
+
+        # --- Critical Section: Record Job Intention --- #
+        try:
+            db_client.create_async_job(job_id, user_id, 'classification', 'PENDING')
+            logger.info(f"Created PENDING job record {job_id} for user {user_id}")
+        except Exception as db_err:
+            logger.error(f"Failed to create PENDING job record for job {job_id}: {db_err}", exc_info=True)
+            # Fail fast if we can't even record the job
+            return create_error_response("Failed to initiate classification job.", 500)
+        # --- End Critical Section --- #
+
+        # Submit actual work to the executor
+        # Pass the full validated_data object, which includes user_categories
+        future = executor.submit(
+            _run_classification_task,
+            job_id,         # Pass the generated job ID
+            user_id,        # Pass the user ID
+            validated_data  # Pass the whole validated request model
         )
+
+        # Try to get the result synchronously with a timeout
+        try:
+            # Wait for the result for up to ~8.5 seconds
+            job_result_dict = future.result(timeout=8.5)
+
+            # Check the structure and status of the result from the task
+            if not isinstance(job_result_dict, dict):
+                 logger.error(f"Task for job {job_id} returned unexpected type: {type(job_result_dict)}")
+                 # Update job status to FAILED as task result was bad
+                 db_client.update_async_job_status(job_id, 'FAILED', error_message="Internal error: Invalid result format from task.")
+                 return create_error_response("Internal error during classification processing.", 500)
+
+            # Determine status code based on result
+            status_code = 200 # Default success
+            if job_result_dict.get("status") == "error":
+                status_code = job_result_dict.get("error_code", 500)
+            
+            logger.info(f"Classification job {job_id} completed synchronously. Returning {status_code}.")
+            # Return the full result dictionary (contains status, message, results/error)
+            return jsonify(job_result_dict), status_code
+
+        except TimeoutError:
+            # Task didn't complete within the timeout
+            logger.info(f"Classification job {job_id} for user {user_id} taking longer, returning 202 Accepted.")
+            # The job status remains PENDING or will be updated by the background task
+            return jsonify({
+                "status": "processing",
+                "prediction_id": job_id,
+                "message": "Classification request accepted and is processing in the background."
+            }), 202
+
+        except Exception as future_err:
+            # Error retrieving result from the future (e.g., task raised an unhandled exception)
+            logger.error(f"Error retrieving result for classification job {job_id}: {future_err}", exc_info=True)
+            # The background task *should* handle its own errors and update the DB,
+            # but we update here just in case it failed before it could.
+            db_client.update_async_job_status(job_id, 'FAILED', error_message=f"Internal error managing job future: {str(future_err)}")
+            return jsonify({
+                "status": "error",
+                "error_message": "Failed to process classification request due to an internal error.",
+                "prediction_id": job_id
+            }), 500
+
+    except Exception as route_err:
+        # Catch-all for errors in the route handler itself (before job submission)
+        logger.error(f"Error in /classify route for user {request.user_id if hasattr(request, 'user_id') else 'Unknown'}: {route_err}", exc_info=True)
+        return create_error_response(f"Server error in classification endpoint: {str(route_err)}", 500)
 
 
 @app.route("/status/<prediction_id>", methods=["GET"])
@@ -416,11 +553,18 @@ def get_classification_or_training_status(prediction_id):
     try:
         requesting_user_id = request.user_id
 
-        # Call the service function
-        response, status_code = get_and_process_status(
-            prediction_id, requesting_user_id
-        )
-        return response, status_code
+        # New call to the refactored status service, which returns a dictionary
+        status_dict = get_and_process_status(prediction_id, requesting_user_id)
+        
+        # Determine status code based on the dictionary returned by status_service
+        # status_service now returns error_code if applicable
+        response_status_code = 200 # Default for PENDING, PROCESSING, COMPLETED
+        if isinstance(status_dict, dict) and status_dict.get("status") == "error":
+            response_status_code = status_dict.get("error_code", 500)
+        elif isinstance(status_dict, dict) and status_dict.get("status") == "failed":
+             response_status_code = status_dict.get("error_code", 500) # Or a more specific client error if needed
+
+        return jsonify(status_dict), response_status_code
 
     except Exception as e:
         logger.error(
@@ -515,7 +659,7 @@ def get_user_config():
                 "Permission denied: API key does not match requested user ID", 403
             )
 
-        response = prisma_client.get_account_by_user_id(user_id)
+        response = db_client.get_account_by_user_id(user_id)
         if not response:
             # Create default if not found?
             # Or return 404? Returning 404 for now.
@@ -524,7 +668,7 @@ def get_user_config():
         # Update API key in DB if provided key is different (ensure user owns the config first)
         if request.api_key != response.get("api_key"):
             try:
-                prisma_client.update_account(user_id, {"api_key": request.api_key})
+                db_client.update_user(request.user_id, {"api_key": request.api_key})
                 logger.info(f"Updated API key for user {user_id}")
             except Exception as db_update_err:
                 logger.error(
@@ -581,7 +725,7 @@ def get_api_usage():
     try:
         user_id = request.user_id
         logger.info(f"Getting API usage stats for user: {user_id}")
-        usage_stats = prisma_client.get_account_usage_stats(user_id)
+        usage_stats = db_client.get_account_usage_stats(user_id)
         if not usage_stats:
             # Return default usage if not found?
             logger.warning(f"No usage stats found for user {user_id}")
@@ -670,7 +814,7 @@ def clean_text_endpoint():
 
         # Check API usage limit
         try:
-            usage_stats = prisma_client.get_account_usage_stats(user_id)
+            usage_stats = db_client.get_account_usage_stats(user_id)
             if usage_stats and usage_stats.get("daily_requests", 0) > 10000:
                 return create_error_response("Daily API limit exceeded.", 429)
         except Exception as e:
@@ -730,25 +874,26 @@ def cleanup_old_webhook_results():
         embeddings_cutoff_date = datetime.now() - timedelta(days=30)
 
         logger.info(f"Cleaning up webhook results older than {webhook_cutoff_date}")
-        deleted_count = prisma_client.delete_old_webhook_results(webhook_cutoff_date)
-        logger.info(
-            f"Cleaned up {deleted_count} webhook results older than {webhook_cutoff_date}"
-        )
+        # deleted_count = db_client.delete_old_webhook_results(webhook_cutoff_date)
+        # logger.info(
+            # f"Cleaned up {deleted_count} webhook results older than {webhook_cutoff_date}"
+        # )
 
         logger.info(
             f"Cleaning up embeddings/contexts older than {embeddings_cutoff_date}"
         )
         try:
             # Assumes a method exists in prisma_client
-            deleted_embeds = prisma_client.delete_old_embeddings_and_contexts(
-                embeddings_cutoff_date
-            )
-            logger.info(
-                f"Cleaned up {deleted_embeds} embeddings/contexts older than {embeddings_cutoff_date}"
-            )
+            # deleted_embeds = db_client.delete_old_embeddings_and_contexts(
+            #     embeddings_cutoff_date
+            # )
+            # logger.info(
+            #     f"Cleaned up {deleted_embeds} embeddings/contexts older than {embeddings_cutoff_date}"
+            # )
+            pass # Placeholder if methods are removed for now
         except AttributeError:
             logger.warning(
-                "prisma_client.delete_old_embeddings_and_contexts method not found. Skipping cleanup."
+                "db_client.delete_old_embeddings_and_contexts method not found. Skipping cleanup."
             )
         except Exception as e:
             logger.error(f"Error cleaning up embeddings and contexts: {e}")
@@ -756,6 +901,52 @@ def cleanup_old_webhook_results():
     except Exception as e:
         logger.error(f"Error cleaning up old webhook results: {e}")
 
+
+# === Helper functions for background tasks ===
+def _run_training_task(job_id: str, user_id: str, validated_data: TrainRequest):
+    """Runs the training process and updates the async job status."""
+    logger.info(f"Starting background training task for job {job_id}, user {user_id}")
+    try:
+        db_client.update_async_job_status(job_id, 'PROCESSING')
+        # Assuming process_training_request handles its own errors and returns a dict
+        result_dict = process_training_request(validated_data, user_id)
+
+        final_status = 'COMPLETED' if result_dict.get("status") != "error" else 'FAILED'
+        error_msg = result_dict.get("error_message") if final_status == 'FAILED' else None
+        result_data_json = json.dumps(result_dict) if final_status == 'COMPLETED' else None
+
+        db_client.update_async_job_status(job_id, final_status, result_data=result_data_json, error_message=error_msg)
+        logger.info(f"Background training task for job {job_id} finished with status: {final_status}")
+        return result_dict # Return the result for synchronous case
+
+    except Exception as e:
+        logger.error(f"Unhandled exception in _run_training_task for job {job_id}: {e}", exc_info=True)
+        db_client.update_async_job_status(job_id, 'FAILED', error_message=f"Internal error: {str(e)}")
+        # Return an error structure consistent with what process_training_request might return
+        return {"status": "error", "error_message": f"Internal error during training task: {str(e)}", "error_code": 500}
+
+def _run_classification_task(job_id: str, user_id: str, validated_data: ClassifyRequest):
+    """Runs the classification process and updates the async job status."""
+    logger.info(f"Starting background classification task for job {job_id}, user {user_id}")
+    try:
+        db_client.update_async_job_status(job_id, 'PROCESSING')
+        # Call the main processing function, passing the full validated data
+        # process_classification_request now handles extracting user_categories internally
+        result_dict = process_classification_request(validated_data, user_id)
+
+        final_status = 'COMPLETED' if result_dict.get("status") != "error" else 'FAILED'
+        error_msg = result_dict.get("error_message") if final_status == 'FAILED' else None
+        result_data_json = json.dumps(result_dict) if final_status == 'COMPLETED' else None
+
+        db_client.update_async_job_status(job_id, final_status, result_data=result_data_json, error_message=error_msg)
+        logger.info(f"Background classification task for job {job_id} finished with status: {final_status}")
+        return result_dict # Return the result for synchronous case
+
+    except Exception as e:
+        logger.error(f"Unhandled exception in _run_classification_task for job {job_id}: {e}", exc_info=True)
+        db_client.update_async_job_status(job_id, 'FAILED', error_message=f"Internal error: {str(e)}")
+        # Return an error structure consistent with what process_classification_request might return
+        return {"status": "error", "error_message": f"Internal error during classification task: {str(e)}", "error_code": 500}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5003))

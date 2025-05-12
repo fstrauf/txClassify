@@ -4,7 +4,7 @@ import io
 import numpy as np
 import time
 import logging
-from utils.prisma_client import prisma_client
+from utils.prisma_client import db_client
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +63,8 @@ def store_embeddings(data: np.ndarray, embedding_id: str, user_id: str) -> bool:
 
         for attempt in range(max_retries):
             try:
-                # Correctly call the singular method name in prisma_client
-                result = prisma_client.store_embedding(
+                # Correctly call the singular method name in db_client
+                result = db_client.store_embedding(
                     embedding_id, data_bytes, user_id
                 )
 
@@ -113,7 +113,7 @@ def fetch_embeddings(embedding_id: str) -> np.ndarray:
 
         for attempt in range(max_retries):
             try:
-                data_bytes = prisma_client.fetch_embedding(embedding_id)
+                data_bytes = db_client.fetch_embedding(embedding_id)
                 break
             except Exception as e:
                 if "connection pool" in str(e).lower() or "timeout" in str(e).lower():
