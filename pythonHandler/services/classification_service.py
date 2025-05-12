@@ -7,9 +7,8 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import List, Dict, Any, Optional
 import time
-from flask import jsonify
 
-from utils.embedding_utils import fetch_embeddings, store_embeddings
+from utils.embedding_utils import fetch_embeddings
 
 # from utils.prisma_client import prisma_client
 # from utils.replicate_utils import run_prediction
@@ -162,15 +161,18 @@ def process_classification_request(validated_data, user_id):
                     logger.warning(
                         f"Embedding dimension mismatch for user {user_id}. Instructing to re-train."
                     )
-                    return create_error_response(
-                        "Model retraining required: The embedding model has been updated. Please re-train your model using the spreadsheet addon before classifying new transactions.",
-                        409,  # 409 Conflict is appropriate here
-                    )
+                    return {
+                        "status": "error",
+                        "error_message": "Model retraining required: The embedding model has been updated. Please re-train your model using the spreadsheet addon before classifying new transactions.",
+                        "error_code": 409 # 409 Conflict is appropriate here
+                    }
 
                 # For other errors from categorization pipeline
-                return create_error_response(
-                    f"Categorization failed: {first_error_message}", 500
-                )
+                return {
+                    "status": "error",
+                    "error_message": f"Categorization failed: {first_error_message}",
+                    "error_code": 500
+                }
 
             results_after_refunds = _detect_refunds(
                 initial_results, embeddings, user_id
@@ -179,16 +181,11 @@ def process_classification_request(validated_data, user_id):
             # --- End Pipeline ---
 
             # Return synchronous success response
-            return (
-                jsonify(
-                    {
-                        "status": "completed",
-                        "message": "Classification completed successfully (local embeddings)",
-                        "results": final_results,
-                    }
-                ),
-                200,
-            )
+            return {
+                "status": "completed",
+                "message": "Classification completed successfully",
+                "results": final_results,
+            }
 
         except Exception as process_error:
             logger.error(
@@ -196,17 +193,21 @@ def process_classification_request(validated_data, user_id):
                 exc_info=True,
             )
             # Return an error to the user
-            return create_error_response(
-                f"Failed to process classification results: {str(process_error)}", 500
-            )
+            return {
+                "status": "error",
+                "error_message": f"Failed to process classification results: {str(process_error)}",
+                "error_code": 500
+            }
 
     except Exception as e:
         logger.error(
             f"Critical error processing classification request: {e}", exc_info=True
         )
-        return create_error_response(
-            "Internal server error during classification processing", 500
-        )
+        return {
+            "status": "error",
+            "error_message": "Internal server error during classification processing",
+            "error_code": 500
+        }
 
 
 # === Categorization Pipeline Helpers ===
