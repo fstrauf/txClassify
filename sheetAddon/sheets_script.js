@@ -1483,6 +1483,10 @@ function trainModel(config) {
         OPERATION_TYPE: "training",
         START_TIME: Date.now().toString(),
         SERVICE_URL: serviceConfig.serviceUrl,
+        CONFIG: JSON.stringify({}), // Added for polling consistency
+        SHEET_ID: sheet.getSheetId().toString(), // Added for polling consistency
+        START_ROW: "0", // Placeholder for training
+        END_ROW: "0" // Placeholder for training
       });
 
       // Show the polling dialog (which should show 100% immediately)
@@ -1502,6 +1506,10 @@ function trainModel(config) {
         OPERATION_TYPE: "training",
         START_TIME: Date.now().toString(),
         SERVICE_URL: serviceConfig.serviceUrl,
+        CONFIG: JSON.stringify({}), // Added for polling consistency
+        SHEET_ID: sheet.getSheetId().toString(), // Added for polling consistency
+        START_ROW: "0", // Placeholder for training
+        END_ROW: "0" // Placeholder for training
       });
 
       // Show polling dialog
@@ -1633,26 +1641,51 @@ function pollOperationStatus() {
     switch (result.status) {
       case "completed":
       case "succeeded":
-        Logger.log("Operation completed successfully");
+        Logger.log("Operation completed successfully via polling.");
 
         // Handle categorization results if needed
         if (operationType === "categorise" && result) {
-          // Check if result exists
           try {
-            // Pass the retrieved sheet object and the full config
-            writeResultsToSheet(result, config, sheet);
+            var finalResultData = null;
+            if (result.result_data && typeof result.result_data === 'string') {
+              try {
+                finalResultData = JSON.parse(result.result_data);
+                Logger.log("Parsed result_data from polling response.");
+              } catch (parseError) {
+                Logger.log("Error parsing result_data JSON: " + parseError);
+                throw new Error("Completed, but failed to parse results data from server.");
+              }
+            } else if (result.results) {
+               // Fallback for potential direct results (less likely now)
+               Logger.log("Using direct results field from polling response (fallback).");
+               finalResultData = result; // Pass the whole result object if results are directly in it
+            } else {
+                 Logger.log("Completed, but no result_data or results field found in the status response.");
+                 throw new Error("Completed, but results data was missing from the server response.");
+            }
+
+            // Pass the retrieved sheet object, the full config, and the parsed result data
+            writeResultsToSheet(finalResultData, config, sheet);
             Logger.log("Results written to sheet successfully from polling.");
+
           } catch (writeError) {
-            Logger.log("Error writing results to sheet from polling: " + writeError);
+            Logger.log("Error processing or writing results to sheet from polling: " + writeError);
             // Update status to reflect the writing error but still mark as completed?
             // Let's return a slightly different completed message
             userProperties.deleteAllProperties(); // Still clear state
             return {
               status: "completed",
-              message: "Categorisation complete, but error writing results: " + writeError.message,
+              message: "Categorisation complete, but error processing/writing results: " + writeError.message,
               progress: 100,
             };
           }
+        } else if (operationType === 'training') {
+            Logger.log("Training completed successfully via polling.");
+            // Update training stats if needed (consider adding this back if useful)
+            // updateStats("Last Training Time", new Date().toLocaleString());
+            // updateStats("Model Status", "Ready");
+            // updateStats("training_operations", (parseInt(PropertiesService.getScriptProperties().getProperty("training_operations") || "0") + 1).toString());
+
         }
 
         // Clear operation state

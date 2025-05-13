@@ -18,7 +18,9 @@
     "start:api": "cd pythonHandler && source venv/bin/activate && export FLASK_APP=main && export FLASK_ENV=development && python -m flask run --host=0.0.0.0 --port=5003",
     "start": "docker-compose up",
     "start:build": "docker-compose up --build",
-    "prod:logs": "./scripts/follow_logs.sh"
+    "prod:logs": "./scripts/follow_logs.sh",
+    "sheet:push": "clasp push",
+    "sheet:logs": "clasp logs --watch"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
