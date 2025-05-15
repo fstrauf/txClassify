@@ -15,7 +15,7 @@ REPLICATE_MODEL_VERSION = (
 EMBEDDING_DIMENSION = 384  # Dimension of the embeddings (Adjust based on model)
 
 # === Classification Confidence Configuration ===
-MIN_ABSOLUTE_CONFIDENCE = 0.70  # Minimum similarity score to consider a match valid
+MIN_ABSOLUTE_CONFIDENCE = 0.75  # Minimum similarity score to consider a match valid
 MIN_RELATIVE_CONFIDENCE_DIFF = (
     0.03  # Minimum difference between best and second best score for high confidence
 )
@@ -27,3 +27,6 @@ BACKEND_API = os.environ.get("BACKEND_API", "http://localhost:5001")
 
 # Database Configuration (from environment variables)
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# === Feature Flags ===
+USE_NZ_BUSINESS_DATA_MATCHING = False
