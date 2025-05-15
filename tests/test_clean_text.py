@@ -17,9 +17,7 @@ def analyze_clean_text_effectiveness():
     Analyze how the clean_text function reduces transaction counts and identify duplicate patterns.
     """
     # Read the training data
-    data_file = os.path.join(
-        workspace_root, "tests", "test_data", "train_woolies_test.csv"
-    )
+    data_file = os.path.join(workspace_root, "tests", "test_data", "full_train.csv")
     df = pd.read_csv(data_file)
 
     # Get initial counts

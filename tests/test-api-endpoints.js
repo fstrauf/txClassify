@@ -58,8 +58,6 @@ if (missingVars.length > 0) {
 logInfo("✅ Environment variables loaded successfully");
 
 const fs = require("fs");
-const { spawn } = require("child_process");
-const http = require("http");
 const csv = require("csv-parser");
 
 // Configuration
@@ -69,134 +67,15 @@ const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
 
 // Global variables
 let webhookServer;
-let flaskProcess;
 
 // Check for test mode flags
 const RUN_TRAINING = !process.argv.includes("--cat-only");
 const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
 const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
-const USE_DEV_API = process.argv.includes("--use-dev-api");
-// const DEV_API_URL = "https://txclassify-dev.onrender.com";
-// const DEV_API_URL = "http://146.190.163.238:8000";
-const DEV_API_URL = "https://api.expensesorted.com";
+
 // Log the actual values being used
 logInfo(`Using TEST_USER_ID: ${TEST_USER_ID}`);
 logInfo(`Using TEST_API_KEY: ${TEST_API_KEY ? "***" + TEST_API_KEY.slice(-4) : "Not set"}`);
-
-// Helper function to find a free port
-const findFreePort = async (startPort) => {
-  return new Promise((resolve) => {
-    const server = http.createServer();
-    server.listen(startPort, () => {
-      const port = server.address().port;
-      server.close(() => {
-        resolve(port);
-      });
-    });
-    server.on("error", () => {
-      // Port is in use, try the next one
-      resolve(findFreePort(startPort + 1));
-    });
-  });
-};
-
-// Start Flask server
-const startFlaskServer = async (port) => {
-  logInfo(`Starting Flask server on port ${port}...`);
-
-  // Start the Flask server
-  const env = {
-    ...process.env,
-    FLASK_APP: "main",
-    FLASK_ENV: "testing",
-    PORT: port.toString(),
-  };
-
-  const options = {
-    env,
-    stdio: "pipe",
-    cwd: path.join(process.cwd(), "pythonHandler"),
-  };
-
-  return new Promise((resolve, reject) => {
-    let detectedPort = null;
-    let startTimeout = setTimeout(() => {
-      reject(new Error("Flask server failed to start within 30 seconds"));
-    }, 30000);
-
-    // Try different Python commands based on system configuration
-    const pythonCommands = [
-      path.join(process.cwd(), "pythonHandler", ".venv", "bin", "python"),
-      "python3",
-      "python",
-      "py",
-    ];
-    let currentCommandIndex = 0;
-
-    const tryStartFlask = (commandIndex) => {
-      if (commandIndex >= pythonCommands.length) {
-        clearTimeout(startTimeout);
-        reject(
-          new Error("Could not find a working Python executable. Please ensure Python is installed and in your PATH.")
-        );
-        return;
-      }
-
-      const pythonCommand = pythonCommands[commandIndex];
-      logDebug(`Trying to start Flask with: ${pythonCommand}`);
-
-      flaskProcess = spawn(pythonCommand, ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
-
-      flaskProcess.stdout.on("data", (data) => {
-        const output = data.toString().trim();
-        logDebug(`Flask: ${output}`);
-
-        // Only look for the port in the "Running on" message
-        const match = output.match(/Running on http:\/\/[^:]+:(\d+)/);
-        if (match) {
-          detectedPort = parseInt(match[1]);
-          logInfo(`\n✅ Flask server started on port ${detectedPort}`);
-          clearTimeout(startTimeout);
-          resolve(detectedPort);
-        }
-      });
-
-      flaskProcess.stderr.on("data", (data) => {
-        const error = data.toString().trim();
-        logError(`Flask error: ${error}`);
-
-        // If port is in use, kill process and try next port
-        if (error.includes("Address already in use")) {
-          logInfo(`\n⚠️ Port ${port} is in use, trying port ${port + 1}`);
-          flaskProcess.kill();
-          clearTimeout(startTimeout);
-          startFlaskServer(port + 1)
-            .then(resolve)
-            .catch(reject);
-        }
-      });
-
-      flaskProcess.on("error", (error) => {
-        logError(`Failed to start Flask with ${pythonCommand}: ${error.message}`);
-        // Try the next Python command
-        flaskProcess.kill();
-        tryStartFlask(commandIndex + 1);
-      });
-
-      flaskProcess.on("close", (code) => {
-        // Only handle unexpected exits
-        if (code !== 0 && !detectedPort) {
-          logError(`Flask server exited with code ${code}`);
-          // Try the next Python command
-          tryStartFlask(commandIndex + 1);
-        }
-      });
-    };
-
-    // Start trying Python commands
-    tryStartFlask(currentCommandIndex);
-  });
-};
 
 // Load training data from CSV
 const loadTrainingData = (file_name) => {
@@ -324,7 +203,7 @@ const loadTrainingData = (file_name) => {
           // Log how many transactions have the amount field
           const withAmount = results.filter((t) => t.amount !== undefined).length;
           logInfo(`${withAmount} of ${results.length} transactions have amount field set`);
-          logDebug(`Unique categories found: ${uniqueCategories.join(', ')}`); // Log unique categories
+          logDebug(`Unique categories found: ${uniqueCategories.join(", ")}`); // Log unique categories
         }
 
         resolve({ transactions: results, uniqueCategories }); // Return both transactions and unique categories
@@ -997,10 +876,10 @@ const categoriseTransactions = async (config, userCategories) => {
 
           // --- LLM Assist Info ---
           if (isLlmAssisted) {
-            const llmModel = adjustmentInfo.llm_model || 'Unknown LLM';
-            const originalCategory = adjustmentInfo.original_embedding_category_name || 'Unknown Embedding Cat';
+            const llmModel = adjustmentInfo.llm_model || "Unknown LLM";
+            const originalCategory = adjustmentInfo.original_embedding_category_name || "Unknown Embedding Cat";
             const originalScore = adjustmentInfo.original_similarity_score;
-            const originalScorePercent = originalScore ? (originalScore * 100).toFixed(2) : 'N/A';
+            const originalScorePercent = originalScore ? (originalScore * 100).toFixed(2) : "N/A";
             logLine += ` (${scorePercent}%) [LLM (${llmModel}) Assisted]`; // Add score for LLM selected category if available (might be 0)
             logLine += `\n     Original Embedding: ${originalCategory} (${originalScorePercent}%)`;
           } else {
@@ -1016,7 +895,7 @@ const categoriseTransactions = async (config, userCategories) => {
 
           // Add second match info only if not LLM assisted (less relevant otherwise)
           if (!isLlmAssisted) {
-             logLine += `\n     2nd Match: ${secondCategory} (${secondScorePercent}%)`;
+            logLine += `\n     2nd Match: ${secondCategory} (${secondScorePercent}%)`;
           }
 
           // Add money direction
@@ -1071,7 +950,12 @@ const categoriseTransactions = async (config, userCategories) => {
         console.log("Final Response Data:", JSON.stringify(response.data, null, 2));
         console.log("=====================================\n");
         const durationMs = Date.now() - operationStartTime;
-        return { status: "failed", error: "Invalid results format received", durationMs: durationMs, usedPolling: usedPolling };
+        return {
+          status: "failed",
+          error: "Invalid results format received",
+          durationMs: durationMs,
+          usedPolling: usedPolling,
+        };
       }
     }
 
@@ -1227,36 +1111,6 @@ const testCleanText = async (apiUrl) => {
 
 // Cleanup function
 const cleanup = async () => {
-  // Stop Flask server only if it was started locally
-  if (flaskProcess && !USE_DEV_API && !process.env.TEST_TARGET_API_URL) {
-    log("Stopping Flask server...");
-    flaskProcess.kill();
-
-    // Wait for the process to exit
-    await new Promise((resolve) => {
-      if (flaskProcess.exitCode !== null) {
-        log(`Flask server process exited with code ${flaskProcess.exitCode}`);
-        resolve();
-      } else {
-        flaskProcess.once("exit", (code) => {
-          log(`Flask server process exited with code ${code}`);
-          resolve();
-        });
-
-        // Set a timeout in case the process doesn't exit
-        setTimeout(() => {
-          log("Flask server process did not exit in time, forcing...");
-          try {
-            flaskProcess.kill("SIGKILL");
-          } catch (e) {
-            log(`Error killing Flask process: ${e.message}`);
-          }
-          resolve();
-        }, 3000);
-      }
-    });
-  }
-
   // Close webhook server
   if (webhookServer) {
     await new Promise((resolve) => {
@@ -1280,7 +1134,6 @@ const cleanup = async () => {
 // Main function
 const main = async () => {
   let trainingResult, categorizationResult; // Store results for performance summary
-  let uniqueTrainingCategories = []; // Variable to store unique categories from training
   try {
     console.log("\n=== Starting Test Script ===\n");
 
@@ -1290,17 +1143,12 @@ const main = async () => {
       console.log("1. Using Target API URL from environment variable...");
       apiUrl = process.env.TEST_TARGET_API_URL;
       console.log(`   API URL: ${apiUrl}\n`);
-      // Skip starting local Flask server if TEST_TARGET_API_URL is set
-    } else if (USE_DEV_API) {
-      console.log("1. Using Development API...");
-      apiUrl = DEV_API_URL;
-      console.log(`   API URL: ${apiUrl}\n`);
     } else {
-      // 1. Start Flask Server Locally
-      console.log("1. Starting Local Flask Server...");
-      const port = await startFlaskServer(API_PORT);
-      apiUrl = `http://localhost:${port}`;
-      console.log(`   Server URL: ${apiUrl}\n`);
+      console.error("❌ ERROR: TEST_TARGET_API_URL environment variable is not set.");
+      console.error(
+        "Please set it in your .env file to point to your Dockerized API (e.g., http://localhost or http://localhost:3005)."
+      );
+      process.exit(1);
     }
 
     // 2. Setup Test User...
@@ -1341,7 +1189,9 @@ const main = async () => {
     console.log("5. Loading Test Data...");
     // const trainingData = await loadTrainingData("training_test.csv");
     // const trainingData = await loadTrainingData("full_train.csv");
-    const { transactions: trainingData, uniqueCategories: uniqueTrainingCategories } = await loadTrainingData("training_test.csv"); // Destructure results
+    const { transactions: trainingData, uniqueCategories: uniqueTrainingCategories } = await loadTrainingData(
+      "nz_train.csv"
+    ); // Destructure results
     // const trainingDataResult = await loadTrainingData("train_woolies_test.csv");
     // const trainingData = trainingDataResult.transactions;
     // uniqueTrainingCategories = trainingDataResult.uniqueCategories; // Store unique categories
@@ -1381,9 +1231,9 @@ const main = async () => {
       console.log("7. Running Categorization...");
 
       // Prepare user_categories for the API call [{id: string, name: string}]
-      const userCategoriesForApi = uniqueTrainingCategories.map(name => ({ 
+      const userCategoriesForApi = uniqueTrainingCategories.map((name) => ({
         id: name, // Use name as ID for simplicity in test script
-        name: name 
+        name: name,
       }));
       logDebug(`Prepared ${userCategoriesForApi.length} categories for API: ${JSON.stringify(userCategoriesForApi)}`);
 
@@ -1399,21 +1249,20 @@ const main = async () => {
     console.log("\n=== Performance Summary ===");
     if (RUN_TRAINING && trainingResult) {
       const trainingDurationSec = (trainingResult.durationMs / 1000).toFixed(2);
-      console.log(`   Training took: ${trainingDurationSec}s (Polling: ${trainingResult.usedPolling ? 'Yes' : 'No'})`);
+      console.log(`   Training took: ${trainingDurationSec}s (Polling: ${trainingResult.usedPolling ? "Yes" : "No"})`);
     }
     if (RUN_CATEGORIZATION && categorizationResult) {
       const catDurationSec = (categorizationResult.durationMs / 1000).toFixed(2);
-      console.log(`   Categorization took: ${catDurationSec}s (Polling: ${categorizationResult.usedPolling ? 'Yes' : 'No'})`);
+      console.log(
+        `   Categorization took: ${catDurationSec}s (Polling: ${categorizationResult.usedPolling ? "Yes" : "No"})`
+      );
     }
     console.log("===========================\n");
 
     // 8. Cleanup
     console.log("8. Cleaning up...");
     // Only stop flask process if it was started locally AND not using TEST_TARGET_API_URL
-    if (flaskProcess && !USE_DEV_API && !process.env.TEST_TARGET_API_URL) {
-      flaskProcess.kill();
-      console.log("   Flask server stopped");
-    }
+    // Removed flaskProcess kill logic
 
     console.log("\n=== Test Completed Successfully ===\n");
     process.exit(0);
@@ -1421,10 +1270,7 @@ const main = async () => {
     console.error(`\n❌ ERROR: ${error.message}`);
 
     // Ensure cleanup on error
-    if (flaskProcess && !USE_DEV_API && !process.env.TEST_TARGET_API_URL) {
-      flaskProcess.kill();
-      console.log("   Flask server stopped");
-    }
+    // Removed flaskProcess kill logic in error handling
 
     process.exit(1);
   }
