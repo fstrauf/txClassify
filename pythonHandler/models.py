@@ -31,7 +31,6 @@ class TrainRequest(BaseModel):
 
     transactions: List[Transaction]
     expenseSheetId: Optional[str] = None
-    userId: Optional[str] = None
 
     @field_validator("transactions")
     @classmethod
@@ -46,6 +45,7 @@ class TransactionInput(BaseModel):
     money_in: Optional[bool] = (
         None  # True for income/credit/positive transactions, False for expense/debit/negative transactions
     )
+    amount: Optional[float] = None # Numerical amount of the transaction
 
 
 class ClassifyRequest(BaseModel):
@@ -53,10 +53,10 @@ class ClassifyRequest(BaseModel):
 
     transactions: List[Union[str, TransactionInput]]
     user_categories: Optional[List[Dict[str, str]]] = None
-    spreadsheetId: Optional[str] = None
-    sheetName: Optional[str] = "new_transactions"
-    categoryColumn: Optional[str] = "E"
-    startRow: Optional[str] = "1"
+    # spreadsheetId: Optional[str] = None # Client-side concern for Sheets Add-on
+    # sheetName: Optional[str] = "new_transactions" # Client-side concern
+    # categoryColumn: Optional[str] = "E" # Client-side concern
+    # startRow: Optional[str] = "1" # Client-side concern
 
     @field_validator("transactions")
     @classmethod

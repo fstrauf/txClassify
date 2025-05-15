@@ -65,9 +65,6 @@ const API_PORT = process.env.API_PORT || 3005;
 const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
 const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
 
-// Global variables
-let webhookServer;
-
 // Check for test mode flags
 const RUN_TRAINING = !process.argv.includes("--cat-only");
 const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
@@ -1107,28 +1104,6 @@ const testCleanText = async (apiUrl) => {
     console.error(`\nclean_text test failed: ${error.message}`);
     return false;
   }
-};
-
-// Cleanup function
-const cleanup = async () => {
-  // Close webhook server
-  if (webhookServer) {
-    await new Promise((resolve) => {
-      webhookServer.close(() => {
-        log("Webhook server closed");
-        resolve();
-      });
-
-      // Set a timeout in case the server doesn't close
-      setTimeout(() => {
-        log("Webhook server did not close in time");
-        resolve();
-      }, 2000);
-    });
-  }
-
-  // Return a resolved promise to indicate cleanup is complete
-  return Promise.resolve();
 };
 
 // Main function

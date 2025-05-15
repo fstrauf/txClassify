@@ -1,0 +1,43 @@
+name: Deploy Python Handler to Droplet
+
+on:
+  push:
+    branches:
+      - main # Or 'master' if that's your default branch
+
+jobs:
+  deploy:
+    name: Deploy to DigitalOcean Droplet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # Using a recent version
+
+      - name: Deploy to Droplet via SSH
+        uses: appleboy/ssh-action@v1.0.3 # Using a recent version of ssh-action
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22 # Default SSH port, change if yours is different
+          script: |
+            echo "Navigating to project directory: ${{ secrets.PYTHON_HANDLER_PATH_ON_DROPLET }}"
+            cd ${{ secrets.PYTHON_HANDLER_PATH_ON_DROPLET }}
+            
+            echo "Ensuring on the correct branch and pulling latest changes..."
+            git checkout main # Or your default branch
+            git pull origin main
+            
+            echo "Stopping current running containers (if any)..."
+            docker-compose down
+            
+            echo "Building and starting new containers in detached mode..."
+            docker-compose up -d --build
+            
+            echo "Displaying recent logs for the backend service..."
+            docker-compose logs --tail=50 backend # 'backend' is your service name from docker-compose.yml
+            
+            echo "Cleaning up unused Docker images to save space..."
+            docker image prune -af
+            
+            echo "Deployment process completed!"

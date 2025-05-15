@@ -230,14 +230,19 @@ def health():
     {
         "tags": ["Training"],
         "summary": "Train transaction classifier",
-        "description": "Trains the model with new transaction data",
+        "description": (
+            "Trains the model with new transaction data. Requires a minimum of 10 transactions. "
+            "The user is identified via the X-API-Key. "
+            "If training completes within ~8.5s, a 200 OK is returned with the completion status. "
+            "If it takes longer, a 202 Accepted is returned, and the client must poll the /status endpoint."
+        ),
         "parameters": [
             {
                 "name": "X-API-Key",
                 "in": "header",
                 "type": "string",
                 "required": True,
-                "description": "API Key for authentication",
+                "description": "API Key for authentication (implicitly provides user context)",
             },
             {
                 "name": "body",
@@ -245,33 +250,87 @@ def health():
                 "required": True,
                 "schema": {
                     "type": "object",
-                    "required": ["transactions", "expenseSheetId"],
+                    "required": ["transactions"],
                     "properties": {
                         "transactions": {
                             "type": "array",
-                            "description": "List of transactions to train with",
+                            "description": "Array of transaction objects (minimum 10) with descriptions and categories.",
+                            "minItems": 10,
                             "items": {
                                 "type": "object",
+                                "required": ["description", "Category"],
                                 "properties": {
-                                    "description": {"type": "string"},
-                                    "Category": {"type": "string"},
+                                    "description": {
+                                        "type": "string",
+                                        "description": "The transaction description or narrative.",
+                                        "example": "WOOLWORTHS 2099 Dee Why AU AUS"
+                                    },
+                                    "Category": {
+                                        "type": "string",
+                                        "description": "The category label for the transaction.",
+                                        "example": "Groceries"
+                                    },
                                 },
                             },
                         },
-                        "expenseSheetId": {"type": "string"},
-                        "userId": {"type": "string"},
+                        "expenseSheetId": {
+                            "type": "string",
+                            "description": (
+                                "(Optional) Client-specific identifier for the training dataset (e.g., a spreadsheet ID). "
+                                "Not used by the core training service but can be passed through."
+                            ),
+                            "minLength": 1,
+                            "example": "spreadsheet-unique-id-123"
+                        }
                     },
+                    "example": {
+                        "transactions": [
+                            {"description": "TRANSPORTFORNSW TAP SYDNEY AUS Card Value Date: 23/01/2024", "Category": "Transport"},
+                            {"description": "WOOLWORTHS 2099 Dee Why AU AUS Card Value Date: 28/01/2024", "Category": "Groceries"},
+                            {"description": "RivaReno Gelato Barangaroo NS AUS Card Value Date: 28/01/2024", "Category": "DinnerBars"},
+                            {"description": "Harris Farm Markets NS AUS Card Value Date: 28/01/2024", "Category": "Groceries"},
+                            {"description": "TREACHERY CAMP PL SEAL ROCKS NS AUS Card Value Date: 27/01/2024", "Category": "Travel"},
+                            {"description": "MED*ALDIMobile CHATSWOOD AU AUS Card Value Date: 27/01/2024", "Category": "Utility"},
+                            {"description": "ADOBE CREATIVE CLOUD Sydney AU AUS Card Value Date: 27/01/2024", "Category": "Utility"},
+                            {"description": "COTTON ON MEGA 2957 FORSTER NS AUS Card Value Date: 27/01/2024", "Category": "Shopping"},
+                            {"description": "ALDI STORES - DEE WHY AU", "Category": "Groceries"},
+                            {"description": "Transfer to other Bank NetBank Dee Why Pde", "Category": "Living"}
+                        ]
+                        # "expenseSheetId": "test-sheet-id-for-training-optional"
+                    }
                 },
             },
         ],
         "responses": {
             200: {
-                "description": "Training started successfully",
+                "description": (
+                    "Training completed synchronously OR training initiated and will complete asynchronously. "
+                    "If synchronous, 'status' will be 'completed'. "
+                    "If asynchronous (but responded before timeout), 'status' will be 'processing' and 'prediction_id' will be provided for polling."
+                ),
+                "examples": {
+                    "application/json_sync_completed": {
+                        "status": "completed",
+                        "message": "Training completed successfully for model: user-xyz-123.",
+                        "model_id": "user-xyz-123",
+                        "unique_description_count": 150,
+                        "category_count": 12,
+                        "training_duration_seconds": 5.2
+                    },
+                    "application/json_async_started_200": {
+                        "status": "processing",
+                        "prediction_id": "train_job_abc789",
+                        "message": "Training started. Check status endpoint for updates."
+                    }
+                },
+            },
+            202: {
+                "description": "Training accepted for background processing due to exceeding initial processing time. Poll /status/{prediction_id} for completion.",
                 "examples": {
                     "application/json": {
                         "status": "processing",
-                        "prediction_id": "abcd1234",
-                        "message": "Training started. Check status endpoint for updates.",
+                        "prediction_id": "train_job_def456",
+                        "message": "Training request accepted and is processing in the background."
                     }
                 },
             },
@@ -366,86 +425,171 @@ def train_model():
     {
         "tags": ["Classification"],
         "summary": "Classify transactions",
-        "description": "Classifies a list of transaction descriptions. If processing takes longer than ~8.5 seconds, returns a 202 Accepted with a prediction_id for polling.",
+        "description": (
+            "Classifies a list of transaction descriptions. The user is identified via the X-API-Key. "
+            "If processing takes longer than the gateway timeout (e.g., ~8.5 seconds on Render), "
+            "this endpoint returns a 202 Accepted with a `prediction_id`. The client should then poll "
+            "the `/status/{prediction_id}` endpoint to get the final results. "
+        ),
         "parameters": [
             {
                 "name": "X-API-Key",
                 "in": "header",
                 "type": "string",
                 "required": True,
-                "description": "API Key for authentication",
+                "description": "API Key for authentication.",
             },
             {
                 "name": "body",
                 "in": "body",
                 "required": True,
                 "schema": {
-                    "$ref": "#/definitions/ClassifyRequest"  # Reference the model definition
+                    "type": "object",
+                    "required": ["transactions"],
+                    "properties": {
+                        "transactions": {
+                            "type": "array",
+                            "items": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {
+                                        "$ref": "#/definitions/TransactionInput",
+                                    },
+                                ]
+                            },
+                            "description": "List of transaction descriptions (strings) or transaction objects.",
+                            "example": [
+                                "Coffee with John",
+                                "Salary payment MAY",
+                                {
+                                    "description": "Grocery shopping at local store",
+                                    "amount": -55.20,
+                                    "money_in": False,
+                                },
+                                {
+                                    "description": "Online course subscription",
+                                    "amount": -19.99
+                                },
+                                {
+                                    "description": "Client payment for project X",
+                                    "amount": 1200.00,
+                                    "money_in": True
+                                }
+                            ],
+                        },
+                        "user_categories": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "name": {"type": "string"},
+                                },
+                                "required": ["id", "name"]
+                            },
+                            "description": (
+                                "(Optional) List of user-defined categories to assist the LLM, especially for few-shot learning or specific user preferences. "
+                                "Each category should have an 'id' and a 'name'."
+                            ),
+                            "example": [
+                                {"id": "cat_travel", "name": "Travel Expenses"},
+                                {"id": "cat_utilities", "name": "Utilities"},
+                            ],
+                        },
+                    },
                 },
             },
         ],
-        "definitions": {  # Add definition for Swagger UI
-            "ClassifyRequest": {
-                "type": "object",
-                "required": ["transactions"],
-                "properties": {
-                    "transactions": {
-                        "type": "array",
-                        "description": "List of transactions (strings or objects) to classify",
-                        "items": {
-                            "oneOf": [
-                                {"type": "string"},
-                                {"$ref": "#/definitions/TransactionInput"},
-                            ]
-                        },
-                    },
-                    "user_categories": {
-                        "type": "array",
-                        "description": "(Optional) List of user category objects ({id, name}) for LLM assist",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {"type": "string"},
-                                "name": {"type": "string"},
-                            },
-                        },
-                    },
-                    "spreadsheetId": {
-                        "type": "string",
-                        "description": "(Optional) Google Sheet ID for context/output",
-                    },
-                    "sheetName": {
-                        "type": "string",
-                        "default": "new_transactions",
-                        "description": "(Optional) Sheet name",
-                    },
-                    "categoryColumn": {
-                        "type": "string",
-                        "default": "E",
-                        "description": "(Optional) Category column letter",
-                    },
-                    "startRow": {
-                        "type": "string",
-                        "default": "1",
-                        "description": "(Optional) Starting row number",
-                    },
-                },
-            },
+        "definitions": {
             "TransactionInput": {
                 "type": "object",
                 "required": ["description"],
                 "properties": {
-                    "description": {"type": "string"},
+                    "description": {
+                        "type": "string",
+                        "description": "The transaction description or narrative.",
+                        "example": "UBER TRIP SYDNEY"
+                    },
                     "money_in": {
                         "type": "boolean",
-                        "description": "True for income, False for expense",
+                        "description": "Indicates if the transaction is income/credit (true) or an expense/debit (false). Helps in disambiguation, especially for transfer detection.",
+                        "example": False
                     },
-                    # Amount might also be useful here if available from frontend
+                    "amount": { 
+                        "type": "number",
+                        "format": "float",
+                        "description": "(Optional) The numerical amount of the transaction. Used for transfer detection.",
+                        "example": 25.50
+                    }
                 },
             },
         },
         "responses": {
-            200: {"description": "Classification completed synchronously"},
+            200: {
+                "description": "Classification completed synchronously",
+                "examples": {
+                    "application/json": {
+                        "status": "completed",
+                        "message": "Classification completed successfully.",
+                        "prediction_id": "clf_job_sync_abc123",
+                        "type": "classification",
+                        "results": [
+                            {
+                                "narrative": "UBER EATS SYDNEY",
+                                "cleaned_narrative": "UBER EATS SYDNEY",
+                                "predicted_category": "Food & Dining",
+                                "predicted_category_name": "Food & Dining",
+                                "similarity_score": 0.9523,
+                                "second_predicted_category": "Transport",
+                                "second_similarity_score": 0.1200,
+                                "money_in": False,
+                                "amount": 25.50,
+                                "adjustment_info": {
+                                    "is_low_confidence": False,
+                                    "reason": None,
+                                    "llm_assisted": True,
+                                    "llm_model": "gpt-3.5-turbo",
+                                    "original_embedding_category": "Takeaway",
+                                    "original_embedding_category_name": "Takeaway Food",
+                                    "original_similarity_score": 0.65,
+                                    "transfer_detection_reason": None,
+                                    "adjusted": True,
+                                    "original_category": "Takeaway",
+                                    "matched_transfer_key": None,
+                                    "is_refund_candidate": False
+                                },
+                                "debug_info": {
+                                    "reason_code": "LOW_ABS_CONF",
+                                    "best_score": 0.45,
+                                    "threshold": 0.7,
+                                    "evaluated_category": "Groceries",
+                                    "neighbor_categories": ["Groceries", "Shopping", "Groceries"],
+                                    "neighbor_cleaned_descs": ["WOOLWORTHS METRO", "KMART ONLINE", "COLES CENTRAL"],
+                                    "neighbor_original_descs": ["WOOLWORTHS METRO 123", "KMART ONLINE ORDER", "COLES CENTRAL SYDNEY"],
+                                    "neighbor_scores": [0.45, 0.42, 0.41],
+                                    "second_best_category": "Shopping",
+                                    "difference": 0.03,
+                                    "rel_threshold": 0.1,
+                                    "unique_neighbor_categories": ["Groceries", "Shopping"]
+                                }
+                            },
+                            {
+                                "narrative": "Salary Deposit CBA",
+                                "cleaned_narrative": "SALARY DEPOSIT CBA",
+                                "predicted_category": "Income",
+                                "predicted_category_name": "Income",
+                                "similarity_score": 0.9910,
+                                "second_predicted_category": "Unknown",
+                                "second_similarity_score": 0.0500,
+                                "money_in": True,
+                                "amount": 2500.00,
+                                "adjustment_info": {"adjusted": False},
+                                "debug_info": None
+                            }
+                        ]
+                    }
+                }
+            },
             202: {"description": "Classification accepted for background processing"},
             400: {"description": "Invalid request data"},
             401: {"description": "Invalid or missing API key"},
@@ -588,7 +732,18 @@ def classify_transactions_async():
     {
         "tags": ["Status"],
         "summary": "Get prediction status",
-        "description": "Get the current status of a classification or training job",
+        "description": (
+            "Retrieves the current status and, if completed, the results of an asynchronous job "
+            "(either classification or training) identified by its prediction_id.\n\n"
+            "- For **completed classification jobs**: The response includes the final classification `results` "
+            "(array of categorized transactions), the job `type` ('classification'), overall `status` ('completed'), "
+            "and any passthrough `config` data that was associated with the job.\n"
+            "- For **completed training jobs**: The response includes a summary `message`, details like `model_id`, "
+            "`unique_description_count`, `category_count`, the job `type` ('training'), and overall `status` ('completed').\n"
+            "- For **jobs still processing**: The response indicates `status` ('processing') and the job `type`.\n"
+            "- For **failed jobs**: The response indicates `status` ('failed'), the job `type`, and may include an `error_message` or `error_details`.\n\n"
+            "The user is identified via the X-API-Key and can only access the status of their own jobs."
+        ),
         "parameters": [
             {
                 "name": "prediction_id",
@@ -600,20 +755,70 @@ def classify_transactions_async():
         ],
         "responses": {
             200: {
-                "description": "Prediction status",
+                "description": (
+                    "Successfully retrieved job status. The body will contain the detailed status. "
+                    "If the job is completed, results (for classification) or summary details (for training) will be included. "
+                    "See main endpoint description for variations based on job type and state (processing, failed)."
+                ),
                 "examples": {
-                    "application/json": {
+                    "application/json": { # Using the completed classification as the primary example for 200 OK
                         "status": "completed",
-                        "message": "Processing completed successfully",
+                        "message": "Classification completed successfully.",
+                        "prediction_id": "clf_job_abc123",
+                        "type": "classification",
                         "results": [
                             {
+                                "narrative": "UBER EATS SYDNEY",
+                                "cleaned_narrative": "UBER EATS SYDNEY",
                                 "predicted_category": "Food & Dining",
-                                "similarity_score": 0.95,
-                                "narrative": "UBER EATS",
+                                "predicted_category_name": "Food & Dining",
+                                "similarity_score": 0.9523,
+                                "second_predicted_category": "Transport",
+                                "second_similarity_score": 0.1200,
+                                "money_in": False,
+                                "amount": 25.50,
+                                "adjustment_info": {
+                                    "is_low_confidence": False,
+                                    "reason": None,
+                                    "llm_assisted": True,
+                                    "llm_model": "gpt-3.5-turbo",
+                                    "original_embedding_category": "Takeaway",
+                                    "original_embedding_category_name": "Takeaway Food",
+                                    "original_similarity_score": 0.65,
+                                    "transfer_detection_reason": None,
+                                    "adjusted": True,
+                                    "original_category": "Takeaway",
+                                    "matched_transfer_key": None,
+                                    "is_refund_candidate": False
+                                },
+                                "debug_info": {
+                                    "reason_code": "LOW_ABS_CONF",
+                                    "best_score": 0.45,
+                                    "threshold": 0.7,
+                                    "evaluated_category": "Groceries",
+                                    "neighbor_categories": ["Groceries", "Shopping", "Groceries"],
+                                    "neighbor_cleaned_descs": ["WOOLWORTHS METRO", "KMART ONLINE", "COLES CENTRAL"],
+                                    "neighbor_original_descs": ["WOOLWORTHS METRO 123", "KMART ONLINE ORDER", "COLES CENTRAL SYDNEY"],
+                                    "neighbor_scores": [0.45, 0.42, 0.41],
+                                    "second_best_category": "Shopping",
+                                    "difference": 0.03,
+                                    "rel_threshold": 0.1,
+                                    "unique_neighbor_categories": ["Groceries", "Shopping"]
+                                }
                             }
+                            # Add more example results items if desired, or keep it concise
                         ],
+                        "config": { 
+                            "categoryColumn": "D",
+                            "startRow": "2",
+                            "sheetName": "NewTransactionsToClassify",
+                            "spreadsheetId": "test-sheet-id-for-classification"
+                        }
                     }
-                },
+                    # Other examples (training_completed, processing, failed_job) are still valuable 
+                    # for documentation but might not be directly rendered by default in all UIs 
+                    # if only one example per media type is shown. The main endpoint description covers them.
+                }
             },
             404: {"description": "Prediction not found or context missing"},
             500: {"description": "Server error"},
@@ -940,42 +1145,6 @@ def clean_text_endpoint():
     except Exception as e:
         logger.error(f"Error in clean_text endpoint: {str(e)}")
         return create_error_response(str(e), 500)
-
-
-def cleanup_old_webhook_results():
-    """Clean up old webhook results from the database."""
-    try:
-        webhook_cutoff_date = datetime.now() - timedelta(days=7)
-        embeddings_cutoff_date = datetime.now() - timedelta(days=30)
-
-        logger.info(f"Cleaning up webhook results older than {webhook_cutoff_date}")
-        # deleted_count = db_client.delete_old_webhook_results(webhook_cutoff_date)
-        # logger.info(
-        # f"Cleaned up {deleted_count} webhook results older than {webhook_cutoff_date}"
-        # )
-
-        logger.info(
-            f"Cleaning up embeddings/contexts older than {embeddings_cutoff_date}"
-        )
-        try:
-            # Assumes a method exists in prisma_client
-            # deleted_embeds = db_client.delete_old_embeddings_and_contexts(
-            #     embeddings_cutoff_date
-            # )
-            # logger.info(
-            #     f"Cleaned up {deleted_embeds} embeddings/contexts older than {embeddings_cutoff_date}"
-            # )
-            pass  # Placeholder if methods are removed for now
-        except AttributeError:
-            logger.warning(
-                "db_client.delete_old_embeddings_and_contexts method not found. Skipping cleanup."
-            )
-        except Exception as e:
-            logger.error(f"Error cleaning up embeddings and contexts: {e}")
-
-    except Exception as e:
-        logger.error(f"Error cleaning up old webhook results: {e}")
-
 
 # === Helper functions for background tasks ===
 def _run_training_task(job_id: str, user_id: str, validated_data: TrainRequest):
