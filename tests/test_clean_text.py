@@ -8,7 +8,8 @@ workspace_root = Path(__file__).parent.parent
 python_handler_path = workspace_root / "pythonHandler"
 sys.path.extend([str(workspace_root), str(python_handler_path)])
 
-from pythonHandler.main import clean_text
+# Import from the correct location after refactoring
+from pythonHandler.utils.text_utils import clean_text
 
 
 def analyze_clean_text_effectiveness():
@@ -21,7 +22,7 @@ def analyze_clean_text_effectiveness():
 
     # Get initial counts
     total_original = len(df)
-    unique_original = len(df["description"].unique())
+    unique_original = len(df["Description"].unique())
 
     print(f"\nOriginal Data Analysis:")
     print(f"Total transactions: {total_original}")
@@ -29,7 +30,7 @@ def analyze_clean_text_effectiveness():
     print(f"Duplicate ratio: {(total_original - unique_original) / total_original:.2%}")
 
     # Apply clean_text and analyze results
-    df["cleaned_description"] = df["description"].apply(clean_text)
+    df["cleaned_description"] = df["Description"].apply(clean_text)
     unique_cleaned = len(df["cleaned_description"].unique())
 
     print(f"\nAfter Cleaning Analysis:")
@@ -47,7 +48,7 @@ def analyze_clean_text_effectiveness():
         print(f"Count: {count:3d} | {desc}")
 
         # Show original variations for this cleaned description
-        originals = df[df["cleaned_description"] == desc]["description"].unique()
+        originals = df[df["cleaned_description"] == desc]["Description"].unique()
         print("Original variations:")
         for orig in originals[:3]:  # Show max 3 variations
             print(f"  - {orig}")
@@ -58,7 +59,7 @@ def analyze_clean_text_effectiveness():
     # Save analysis to CSV for further inspection
     analysis_df = (
         df.groupby("cleaned_description")
-        .agg({"description": ["count", lambda x: list(x.unique())]})
+        .agg({"Description": ["count", lambda x: list(x.unique())]})
         .reset_index()
     )
     analysis_df.columns = [

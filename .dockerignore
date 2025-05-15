@@ -1,0 +1,33 @@
+# Docker ignore
+
+# Environment files
+.env
+.env.*
+
+# Git files
+.git
+.gitignore
+
+# Python cache and virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE and OS specific
+.vscode/
+.idea/
+.DS_Store
+
+# Node modules (if any at root, not relevant to pythonHandler)
+node_modules/
+
+# Test outputs or local data not needed in image
+htmlcov/
+.pytest_cache/
+.coverage
+local_data/
+
+# Docker specific (if any locally)
+docker-compose.override.yml 

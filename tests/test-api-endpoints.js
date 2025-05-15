@@ -3,31 +3,6 @@ const path = require("path");
 // Load environment variables from .env file with explicit path
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
-// Verify critical environment variables are loaded
-console.log("Checking environment variables...");
-const criticalEnvVars = ["DATABASE_URL", "REPLICATE_API_TOKEN", "TEST_API_KEY", "TEST_USER_ID"];
-const missingVars = criticalEnvVars.filter((varName) => !process.env[varName]);
-if (missingVars.length > 0) {
-  console.error(`❌ Missing required environment variables: ${missingVars.join(", ")}`);
-  console.error("Please check that your .env file is in the project root and contains these variables.");
-  process.exit(1);
-}
-console.log("✅ Environment variables loaded successfully");
-
-const fs = require("fs");
-const { spawn } = require("child_process");
-const http = require("http");
-const csv = require("csv-parser");
-
-// Configuration
-const API_PORT = process.env.API_PORT || 3005;
-const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
-const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
-
-// Global variables
-let webhookServer;
-let flaskProcess;
-
 // Set up logging with verbosity levels
 const LOG_LEVELS = {
   ERROR: 0, // Only errors
@@ -48,13 +23,6 @@ if (process.argv.includes("--verbose")) {
 } else if (process.argv.includes("--trace")) {
   CURRENT_LOG_LEVEL = LOG_LEVELS.TRACE;
 }
-
-// Check for test mode flags
-const RUN_TRAINING = !process.argv.includes("--cat-only");
-const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
-const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
-const USE_DEV_API = process.argv.includes("--use-dev-api");
-const DEV_API_URL = "https://txclassify-dev.onrender.com";
 
 const log = (message, level = LOG_LEVELS.INFO) => {
   // Only log messages at or below the current log level
@@ -78,129 +46,39 @@ const logInfo = (message) => log(message, LOG_LEVELS.INFO);
 const logDebug = (message) => log(message, LOG_LEVELS.DEBUG);
 const logTrace = (message) => log(message, LOG_LEVELS.TRACE);
 
+// Verify critical environment variables are loaded
+logInfo("Checking environment variables...");
+const criticalEnvVars = ["DATABASE_URL", "REPLICATE_API_TOKEN", "TEST_API_KEY", "TEST_USER_ID"];
+const missingVars = criticalEnvVars.filter((varName) => !process.env[varName]);
+if (missingVars.length > 0) {
+  logError(`❌ Missing required environment variables: ${missingVars.join(", ")}`);
+  logError("Please check that your .env file is in the project root and contains these variables.");
+  process.exit(1);
+}
+logInfo("✅ Environment variables loaded successfully");
+
+const fs = require("fs");
+const csv = require("csv-parser");
+
+// Configuration
+const API_PORT = process.env.API_PORT || 3005;
+const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
+const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
+
+// Check for test mode flags
+const RUN_TRAINING = !process.argv.includes("--cat-only");
+const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
+const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
+
 // Log the actual values being used
 logInfo(`Using TEST_USER_ID: ${TEST_USER_ID}`);
 logInfo(`Using TEST_API_KEY: ${TEST_API_KEY ? "***" + TEST_API_KEY.slice(-4) : "Not set"}`);
-
-// Helper function to find a free port
-const findFreePort = async (startPort) => {
-  return new Promise((resolve) => {
-    const server = http.createServer();
-    server.listen(startPort, () => {
-      const port = server.address().port;
-      server.close(() => {
-        resolve(port);
-      });
-    });
-    server.on("error", () => {
-      // Port is in use, try the next one
-      resolve(findFreePort(startPort + 1));
-    });
-  });
-};
-
-// Start Flask server
-const startFlaskServer = async (port) => {
-  console.log(`Starting Flask server on port ${port}...`);
-
-  // Start the Flask server
-  const env = {
-    ...process.env,
-    FLASK_APP: "main",
-    FLASK_ENV: "testing",
-    PORT: port.toString(),
-  };
-
-  const options = {
-    env,
-    stdio: "pipe",
-    cwd: path.join(process.cwd(), "pythonHandler"),
-  };
-
-  return new Promise((resolve, reject) => {
-    let detectedPort = null;
-    let startTimeout = setTimeout(() => {
-      reject(new Error("Flask server failed to start within 30 seconds"));
-    }, 30000);
-
-    // Try different Python commands based on system configuration
-    const pythonCommands = [
-      path.join(process.cwd(), "pythonHandler", ".venv", "bin", "python"),
-      "python3",
-      "python",
-      "py",
-    ];
-    let currentCommandIndex = 0;
-
-    const tryStartFlask = (commandIndex) => {
-      if (commandIndex >= pythonCommands.length) {
-        clearTimeout(startTimeout);
-        reject(
-          new Error("Could not find a working Python executable. Please ensure Python is installed and in your PATH.")
-        );
-        return;
-      }
-
-      const pythonCommand = pythonCommands[commandIndex];
-      console.log(`Trying to start Flask with: ${pythonCommand}`);
-
-      flaskProcess = spawn(pythonCommand, ["-m", "flask", "run", "--host=0.0.0.0", `--port=${port}`], options);
-
-      flaskProcess.stdout.on("data", (data) => {
-        const output = data.toString().trim();
-        console.log(`Flask: ${output}`);
-
-        // Only look for the port in the "Running on" message
-        const match = output.match(/Running on http:\/\/[^:]+:(\d+)/);
-        if (match) {
-          detectedPort = parseInt(match[1]);
-          console.log(`\n✅ Flask server started on port ${detectedPort}`);
-          clearTimeout(startTimeout);
-          resolve(detectedPort);
-        }
-      });
-
-      flaskProcess.stderr.on("data", (data) => {
-        const error = data.toString().trim();
-        console.error(`Flask error: ${error}`);
-
-        // If port is in use, kill process and try next port
-        if (error.includes("Address already in use")) {
-          console.log(`\n⚠️ Port ${port} is in use, trying port ${port + 1}`);
-          flaskProcess.kill();
-          clearTimeout(startTimeout);
-          startFlaskServer(port + 1)
-            .then(resolve)
-            .catch(reject);
-        }
-      });
-
-      flaskProcess.on("error", (error) => {
-        console.error(`Failed to start Flask with ${pythonCommand}: ${error.message}`);
-        // Try the next Python command
-        flaskProcess.kill();
-        tryStartFlask(commandIndex + 1);
-      });
-
-      flaskProcess.on("close", (code) => {
-        // Only handle unexpected exits
-        if (code !== 0 && !detectedPort) {
-          console.error(`Flask server exited with code ${code}`);
-          // Try the next Python command
-          tryStartFlask(commandIndex + 1);
-        }
-      });
-    };
-
-    // Start trying Python commands
-    tryStartFlask(currentCommandIndex);
-  });
-};
 
 // Load training data from CSV
 const loadTrainingData = (file_name) => {
   return new Promise((resolve, reject) => {
     const results = [];
+    const categories = new Set(); // Use a Set to store unique category names
     const startTime = Date.now();
     let headersProcessed = false;
     let descriptionIndex = -1;
@@ -299,6 +177,7 @@ const loadTrainingData = (file_name) => {
         // Ensure we have the required fields before adding
         if (transaction.description && transaction.Category) {
           results.push(transaction);
+          categories.add(transaction.Category); // Add category name to the Set
         } else {
           logDebug(`Skipping invalid transaction data: ${JSON.stringify(row)}`);
         }
@@ -306,6 +185,8 @@ const loadTrainingData = (file_name) => {
       .on("end", () => {
         const duration = (Date.now() - startTime) / 1000;
         logInfo(`Loaded ${results.length} training records in ${duration.toFixed(1)}s`);
+        const uniqueCategories = Array.from(categories); // Convert Set to Array
+        logInfo(`Found ${uniqueCategories.length} unique categories in training data.`);
 
         if (results.length === 0) {
           logError(
@@ -319,9 +200,10 @@ const loadTrainingData = (file_name) => {
           // Log how many transactions have the amount field
           const withAmount = results.filter((t) => t.amount !== undefined).length;
           logInfo(`${withAmount} of ${results.length} transactions have amount field set`);
+          logDebug(`Unique categories found: ${uniqueCategories.join(", ")}`); // Log unique categories
         }
 
-        resolve(results);
+        resolve({ transactions: results, uniqueCategories }); // Return both transactions and unique categories
       })
       .on("error", (error) => {
         logError(`Error loading training data: ${error.toString()}`);
@@ -439,9 +321,12 @@ const loadCategorizationData = (file_name) => {
 
 // Test training flow
 const trainModel = async (config) => {
+  const operationStartTime = Date.now();
+  let usedPolling = false;
+
   try {
     logInfo("Starting training...");
-    console.log("Training model...");
+    logInfo("Training model...");
 
     // Validate config object
     if (!config) {
@@ -478,7 +363,7 @@ const trainModel = async (config) => {
       try {
         // Add retry attempt to status
         if (retryCount > 0) {
-          console.log(`Retrying training request (attempt ${retryCount + 1}/${maxRetries})...`);
+          logInfo(`Retrying training request (attempt ${retryCount + 1}/${maxRetries})...`);
           // Simple delay for retries
           await new Promise((resolve) => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
         }
@@ -515,18 +400,20 @@ const trainModel = async (config) => {
 
           if (result.status === "completed") {
             // Synchronous Success!
-            console.log("Training completed synchronously.");
-            // Return a success object immediately, mimicking pollForTrainingCompletion result
+            logInfo("Training completed synchronously.");
+            const durationMs = Date.now() - operationStartTime;
             return {
               status: "completed",
               message: "Training completed successfully (synchronous)!",
               result: result,
-              elapsedMinutes: 0, // Indicate immediate completion
+              durationMs: durationMs,
+              usedPolling: false,
             };
           } else if (result.status === "processing" && result.prediction_id) {
             // Asynchronous start indicated by 200 status + processing status in body
-            console.log("Training started asynchronously (indicated by 200 response).");
+            logInfo("Training started asynchronously (indicated by 200 response).");
             predictionId = result.prediction_id;
+            usedPolling = true; // Polling will be used
             break; // Exit retry loop, proceed to polling
           } else {
             // Unexpected body format for 200 status
@@ -538,8 +425,9 @@ const trainModel = async (config) => {
           logTrace(`Response body (status 202): ${responseText}`);
           const result = JSON.parse(responseText);
           if (result.prediction_id) {
-            console.log("Training started asynchronously (indicated by 202 response).");
+            logInfo("Training started asynchronously (indicated by 202 response).");
             predictionId = result.prediction_id;
+            usedPolling = true; // Polling will be used
             break; // Exit retry loop, proceed to polling
           } else {
             throw new Error(`Training failed: Received status 202 but no prediction_id in body: ${responseText}`);
@@ -574,6 +462,7 @@ const trainModel = async (config) => {
           lastError?.toString() || "Unknown error"
         }`
       );
+      const durationMs = Date.now() - operationStartTime;
       throw new Error(
         `Training request failed after ${maxRetries} attempts: ${lastError?.toString() || "Unknown error"}`
       );
@@ -582,23 +471,27 @@ const trainModel = async (config) => {
     // Check if we got a prediction ID
     if (predictionId) {
       logInfo(`Training requires polling with prediction ID: ${predictionId}`);
-      console.log("Training in progress, please wait...");
+      logInfo("Training in progress, please wait...");
+      usedPolling = true; // Explicitly set as polling is used
 
       // Store start time for polling
-      const startTime = new Date().getTime();
+      const pollingStartTime = new Date().getTime();
 
       // Poll for status until completion or timeout
-      const pollResult = await pollForTrainingCompletion(predictionId, startTime, config);
+      const pollResult = await pollForTrainingCompletion(predictionId, pollingStartTime, config);
+      const durationMs = Date.now() - operationStartTime;
 
-      return pollResult;
+      return { ...pollResult, durationMs: durationMs, usedPolling: true };
     } else {
       logError("Error: No prediction ID received");
-      throw new Error("No prediction ID received from server");
+      const durationMs = Date.now() - operationStartTime;
+      throw new Error("No prediction ID received from server"); // This will be caught by the main catch
     }
   } catch (error) {
     logError(`Training error: ${error.toString()}`);
     logDebug(`Error stack: ${error.stack}`);
-    return { error: error.toString(), status: "failed" };
+    const durationMs = Date.now() - operationStartTime;
+    return { error: error.toString(), status: "failed", durationMs: durationMs, usedPolling: usedPolling };
   }
 };
 
@@ -754,27 +647,31 @@ const pollForTrainingCompletion = async (predictionId, startTime, config) => {
 };
 
 // Test categorization flow
-const categoriseTransactions = async (config) => {
+const categoriseTransactions = async (config, userCategories) => {
+  const operationStartTime = Date.now();
+  let usedPolling = false;
+
   try {
-    // Prepare request data with only transactions (simplified API)
+    // Prepare request data with transactions and categories
     const requestData = {
       transactions: config.categorizationDataFile,
+      user_categories: userCategories || [], // Include the categories, default to empty array
     };
 
     // Add logging for debugging API key issues
     const serviceUrl = config.serviceUrl;
     const serverPort = new URL(serviceUrl).port;
 
-    console.log("==== API Key Debug Info ====");
-    console.log(`config.apiKey is ${config.apiKey ? "defined" : "undefined"}`);
-    console.log(`TEST_API_KEY is ${TEST_API_KEY ? "defined" : "undefined"}`);
-    console.log(
+    logDebug("==== API Key Debug Info ====");
+    logDebug(`config.apiKey is ${config.apiKey ? "defined" : "undefined"}`);
+    logDebug(`TEST_API_KEY is ${TEST_API_KEY ? "defined" : "undefined"}`);
+    logDebug(
       `Using API key: ${(config.apiKey || TEST_API_KEY)?.substring(0, 3)}...${(
         config.apiKey || TEST_API_KEY
       )?.substring((config.apiKey || TEST_API_KEY)?.length - 3)}`
     );
-    console.log(`Server URL: ${serviceUrl} (port: ${serverPort})`);
-    console.log("==========================");
+    logDebug(`Server URL: ${serviceUrl} (port: ${serverPort})`);
+    logDebug("==========================");
 
     // Send request to classify endpoint
     logInfo(`Sending categorisation request to ${serviceUrl}/classify`);
@@ -807,14 +704,16 @@ const categoriseTransactions = async (config) => {
         // --- Handle different response statuses ---
         if (response_fetch.status === 200) {
           // Synchronous success!
-          console.log("Received synchronous classification results.");
+          logInfo("Received synchronous classification results.");
           response = { data: await response_fetch.json(), status: 200 };
+          // usedPolling remains false
           break; // Exit the loop, we have results
         } else if (response_fetch.status === 202) {
           // Asynchronous processing started
-          console.log("Classification started asynchronously. Polling required.");
+          logInfo("Classification started asynchronously. Polling required.");
           response = { data: await response_fetch.json(), status: 202 };
           predictionId = response.data.prediction_id;
+          usedPolling = true; // Polling will be used
           if (!predictionId) {
             throw new Error("Server started async processing but did not return a prediction ID.");
           }
@@ -833,7 +732,7 @@ const categoriseTransactions = async (config) => {
         if (attempt === maxAttempts) {
           throw error; // Rethrow on last attempt
         }
-        console.log(`Retrying categorisation request (attempt ${attempt + 1}/${maxAttempts})...`);
+        logInfo(`Retrying categorisation request (attempt ${attempt + 1}/${maxAttempts})...`);
         await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Wait before retry
         attempt++;
       }
@@ -853,16 +752,17 @@ const categoriseTransactions = async (config) => {
       if (response.data && response.data.results && response.data.status === "completed") {
         results = response.data.results;
         finalStatus = "completed";
-        console.log(`Synchronous classification completed successfully! Found ${results.length} results.`);
+        logInfo(`Synchronous classification completed successfully! Found ${results.length} results.`);
       } else {
-        console.error("Synchronous response received, but results are missing or status is not 'completed'.");
-        console.error("Response data:", JSON.stringify(response.data, null, 2));
-        throw new Error("Invalid synchronous response format.");
+        logError("Synchronous response received, but results are missing or status is not 'completed'.");
+        logError("Response data:", JSON.stringify(response.data, null, 2));
+        const durationMs = Date.now() - operationStartTime;
+        throw new Error("Invalid synchronous response format."); // Will be caught by outer catch
       }
     } else if (response.status === 202 && predictionId) {
       // --- Start Polling for Asynchronous Results ---
-      console.log(`Categorisation in progress with prediction ID: ${predictionId}`);
-      console.log("Polling for results...");
+      logInfo(`Categorisation in progress with prediction ID: ${predictionId}`);
+      logInfo("Polling for results...");
       process.stdout.write("Categorization progress: ");
 
       const maxPollingAttempts = 60;
@@ -897,16 +797,17 @@ const categoriseTransactions = async (config) => {
           const elapsedMinutes = Math.floor(pollingAttempt / 12); // Assuming 5-second intervals (12 polls per minute)
 
           if (status === "completed") {
-            console.log("\n");
-            console.log(`Categorisation completed successfully via polling!`);
+            process.stdout.write("\n");
+            logInfo(`Categorisation completed successfully via polling!`);
             results = statusResponse.data.results || [];
             finalStatus = "completed";
             break; // Exit polling loop
           } else if (status === "failed") {
-            console.log("\n");
+            process.stdout.write("\n");
             const errorMessage = statusResponse.data.error || "Unknown error during processing";
-            console.log(`Categorisation failed: ${errorMessage}`);
-            return { status: "failed", error: errorMessage }; // Exit function on failure
+            logError(`Categorisation failed: ${errorMessage}`);
+            const durationMs = Date.now() - operationStartTime;
+            return { status: "failed", error: errorMessage, durationMs: durationMs, usedPolling: true }; // Exit function on failure
           } else if (status === "processing") {
             // Log progress occasionally
             if (pollingAttempt % 12 === 0) {
@@ -927,9 +828,10 @@ const categoriseTransactions = async (config) => {
       } // End polling loop
 
       if (pollingAttempt >= maxPollingAttempts) {
-        console.log("\n");
-        console.log(`Reached maximum number of polling attempts (${maxPollingAttempts}). Assuming failure.`);
-        return { status: "timeout", error: "Polling timed out" };
+        process.stdout.write("\n");
+        logWarning(`Reached maximum number of polling attempts (${maxPollingAttempts}). Assuming failure.`);
+        const durationMs = Date.now() - operationStartTime;
+        return { status: "timeout", error: "Polling timed out", durationMs: durationMs, usedPolling: true };
       }
       // --- End Polling ---
     } else {
@@ -939,88 +841,129 @@ const categoriseTransactions = async (config) => {
 
     // --- Process Results (Common for both Sync and Async) ---
     if (finalStatus === "completed") {
-      console.log("Processing final categorisation results...");
       logInfo(`Status response data: ${JSON.stringify(response.data)}`); // Log the data source (sync or last poll)
 
       if (results && Array.isArray(results)) {
         logInfo(`Found ${results.length} results.`);
 
-        // Add narratives from original transactions (if needed - check if API returns them)
-        // Assuming results contain narrative, category, score, money_in, amount
-        if (results.length > 0) {
-          logInfo("Displaying results...");
+        // Log the results for debugging
+        logInfo("Displaying results...");
+        logInfo("\n===== CATEGORISATION RESULTS ======");
+        logInfo(`Total transactions categorised: ${results.length}`);
 
-          // Print results in a nice format
-          console.log("\n===== CATEGORISATION RESULTS =====");
-          console.log(`Total transactions categorised: ${results.length}`);
+        results.forEach((result, index) => {
+          const narrative = result.narrative || "N/A";
+          const category = result.predicted_category || "Error";
+          const score = result.similarity_score;
+          const scorePercent = score ? (score * 100).toFixed(2) : "N/A";
+          const secondCategory = result.second_predicted_category || "N/A";
+          const secondScore = result.second_similarity_score;
+          const secondScorePercent = secondScore ? (secondScore * 100).toFixed(2) : "N/A";
+          const adjustmentInfo = result.adjustment_info || {}; // Get adjustment info
+          const isLlmAssisted = adjustmentInfo.llm_assisted === true;
 
-          results.forEach((result, index) => {
-            const narrative = result.narrative || "N/A"; // Handle missing narrative
-            const predicted_category = result.predicted_category || "Unknown";
-            const confidence = result.similarity_score ? `${(result.similarity_score * 100).toFixed(2)}%` : "N/A";
-            const second_predicted_category = result.second_predicted_category || "N/A";
-            const second_confidence = result.second_similarity_score
-              ? `${(result.second_similarity_score * 100).toFixed(2)}%`
-              : "N/A";
+          let logLine = `${index + 1}. \"${narrative}\"`;
 
-            // Add money_in/money_out display
-            const direction =
-              result.money_in === true ? "MONEY_IN" : result.money_in === false ? "MONEY_OUT" : "UNKNOWN_DIR";
+          // Show cleaned narrative if different from original
+          const cleaned_narrative = result.cleaned_narrative || null;
+          if (cleaned_narrative && cleaned_narrative !== narrative) {
+            logLine += `\n     Cleaned: "${cleaned_narrative}"`;
+          }
+          logLine += ` \u2192 ${category}`;
 
-            // Display amount if available
-            const amountStr =
-              result.amount !== null && result.amount !== undefined ? `$${Math.abs(result.amount).toFixed(2)}` : "";
+          // --- LLM Assist Info ---
+          if (isLlmAssisted) {
+            const llmModel = adjustmentInfo.llm_model || "Unknown LLM";
+            const originalCategory = adjustmentInfo.original_embedding_category_name || "Unknown Embedding Cat";
+            const originalScore = adjustmentInfo.original_similarity_score;
+            const originalScorePercent = originalScore ? (originalScore * 100).toFixed(2) : "N/A";
+            logLine += ` (${scorePercent}%) [LLM (${llmModel}) Assisted]`; // Add score for LLM selected category if available (might be 0)
+            logLine += `\n     Original Embedding: ${originalCategory} (${originalScorePercent}%)`;
+          } else {
+            // If Unknown, show the rejected category and the top score
+            if (category === "Unknown" && result.debug_info?.rejected_best_category) {
+              logLine += ` (Rejected: ${result.debug_info.rejected_best_category} at ${scorePercent}%)`;
+            } else {
+              // Otherwise, show the score for the accepted category
+              logLine += ` (${scorePercent}%)`;
+            }
+          }
+          // --- End LLM Assist Info ---
 
-            // Determine reason if Unknown
-            let unknownReason = "";
-            if (predicted_category === "Unknown") {
-              const score = result.similarity_score;
-              const secondScore = result.second_similarity_score;
-              // Define thresholds here (matching Python)
-              const MIN_ABSOLUTE_CONFIDENCE = 0.85;
-              const MIN_RELATIVE_CONFIDENCE_DIFF = 0.05;
+          // Add second match info only if not LLM assisted (less relevant otherwise)
+          if (!isLlmAssisted) {
+            logLine += `\n     2nd Match: ${secondCategory} (${secondScorePercent}%)`;
+          }
 
-              if (score === null || score === undefined || score < MIN_ABSOLUTE_CONFIDENCE) {
-                unknownReason = "(Low Absolute Confidence)";
-              } else if (
-                secondScore !== null &&
-                secondScore !== undefined &&
-                score - secondScore < MIN_RELATIVE_CONFIDENCE_DIFF
-              ) {
-                unknownReason = "(Low Relative Confidence)";
-              } else {
-                unknownReason = "(Conflicting Neighbors)"; // Inferred reason
+          // Add money direction
+          if (result.money_in === true) {
+            logLine += " | MONEY_IN";
+          } else if (result.money_in === false) {
+            logLine += " | MONEY_OUT";
+          }
+
+          // --- NEW: Add Debug Info Reason ---
+          // Display the debug reason if the category is Unknown
+          if (category === "Unknown" && result.debug_info) {
+            const debug = result.debug_info;
+            let debugReason = debug.reason_code || "Unknown reason";
+            let details = "";
+
+            if (debug.reason_code === "LOW_ABS_CONF") {
+              details = `Score: ${debug.best_score?.toFixed(2)} < Threshold: ${debug.threshold?.toFixed(2)}`;
+            } else if (debug.reason_code === "LOW_REL_CONF") {
+              details = `Diff: ${debug.difference?.toFixed(2)} < Threshold: ${debug.threshold?.toFixed(2)} (Top: '${
+                debug.best_category
+              }'/${debug.best_score?.toFixed(2)}, 2nd: '${
+                debug.second_best_category
+              }'/${debug.second_best_score?.toFixed(2)})`;
+            } else if (debug.reason_code === "CONFLICTING_NEIGHBORS") {
+              const neighbors = debug.unique_neighbor_categories || [];
+              details = `Neighbors: [${neighbors.join(", ")}]`;
+              // Optionally add neighbor scores if available
+              if (debug.neighbor_scores && debug.neighbor_categories) {
+                const neighborDetails = debug.neighbor_categories
+                  .map((cat, idx) => `${cat}: ${debug.neighbor_scores[idx]?.toFixed(2)}`)
+                  .join(", ");
+                details += ` (Scores: ${neighborDetails})`;
               }
+            } else if (debug.reason_code === "DEFAULT") {
+              details = `Score: ${debug.best_score?.toFixed(2)} - Defaulted to Unknown`;
             }
 
-            console.log(
-              `${
-                index + 1
-              }. \"${narrative}\" → ${predicted_category} (${confidence}) ${unknownReason}\n     2nd Match: ${second_predicted_category} (${second_confidence}) | ${direction} ${amountStr}`
-            );
-          });
+            logLine += `\n     DEBUG: Reason: ${debugReason} | ${details}`;
+          } else if (category === "Unknown" && result.adjustment_info?.unknown_reason) {
+            // Fallback to original reason if debug_info is missing but reason exists
+            logLine += ` (${result.adjustment_info.unknown_reason})`;
+          }
+          // --- End Debug Info ---
 
-          console.log("=====================================\n");
-        } else {
-          console.log("\n===== CATEGORISATION RESULTS =====");
-          console.log("No results were returned by the API, although status was 'completed'.");
-          console.log("=====================================\n");
-        }
+          console.log(logLine);
+        });
+        console.log("=====================================\n");
       } else {
         console.log("\n===== CATEGORISATION RESULTS =====");
         console.log("Results format invalid or results array missing in the final response.");
         console.log("Final Response Data:", JSON.stringify(response.data, null, 2));
         console.log("=====================================\n");
-        return { status: "failed", error: "Invalid results format received" };
+        const durationMs = Date.now() - operationStartTime;
+        return {
+          status: "failed",
+          error: "Invalid results format received",
+          durationMs: durationMs,
+          usedPolling: usedPolling,
+        };
       }
     }
 
     // Return final status and results
-    return { status: finalStatus, results };
+    const durationMs = Date.now() - operationStartTime;
+    return { status: finalStatus, results, durationMs: durationMs, usedPolling: usedPolling };
   } catch (error) {
     console.log(`\nCategorisation failed: ${error.message}`);
     logDebug(`Error stack: ${error.stack}`);
-    return { status: "failed", error: error.message };
+    const durationMs = Date.now() - operationStartTime;
+    return { status: "failed", error: error.message, durationMs: durationMs, usedPolling: usedPolling };
   }
 };
 
@@ -1031,8 +974,11 @@ const testCleanText = async (apiUrl) => {
   try {
     // 1. Load the training data
     console.log("1. Loading training data...");
-    const trainingData = await loadTrainingData("full_train.csv");
-    console.log(`   Loaded ${trainingData.length} records\n`);
+    const trainingDataResult = await loadTrainingData("train_woolies_test.csv");
+    const trainingData = trainingDataResult.transactions;
+    const uniqueTrainingCategories = trainingDataResult.uniqueCategories; // Store unique categories
+    console.log(`   Loaded ${trainingData.length} records`);
+    console.log(`   Found ${uniqueTrainingCategories.length} unique categories in training data.`); // Log category count
 
     // 2. Send clean text requests
     console.log("2. Testing clean_text endpoint...");
@@ -1160,75 +1106,24 @@ const testCleanText = async (apiUrl) => {
   }
 };
 
-// Cleanup function
-const cleanup = async () => {
-  // Stop Flask server only if it was started locally
-  if (flaskProcess && !USE_DEV_API) {
-    log("Stopping Flask server...");
-    flaskProcess.kill();
-
-    // Wait for the process to exit
-    await new Promise((resolve) => {
-      if (flaskProcess.exitCode !== null) {
-        log(`Flask server process exited with code ${flaskProcess.exitCode}`);
-        resolve();
-      } else {
-        flaskProcess.once("exit", (code) => {
-          log(`Flask server process exited with code ${code}`);
-          resolve();
-        });
-
-        // Set a timeout in case the process doesn't exit
-        setTimeout(() => {
-          log("Flask server process did not exit in time, forcing...");
-          try {
-            flaskProcess.kill("SIGKILL");
-          } catch (e) {
-            log(`Error killing Flask process: ${e.message}`);
-          }
-          resolve();
-        }, 3000);
-      }
-    });
-  }
-
-  // Close webhook server
-  if (webhookServer) {
-    await new Promise((resolve) => {
-      webhookServer.close(() => {
-        log("Webhook server closed");
-        resolve();
-      });
-
-      // Set a timeout in case the server doesn't close
-      setTimeout(() => {
-        log("Webhook server did not close in time");
-        resolve();
-      }, 2000);
-    });
-  }
-
-  // Return a resolved promise to indicate cleanup is complete
-  return Promise.resolve();
-};
-
 // Main function
 const main = async () => {
+  let trainingResult, categorizationResult; // Store results for performance summary
   try {
     console.log("\n=== Starting Test Script ===\n");
 
     let apiUrl;
 
-    if (USE_DEV_API) {
-      console.log("1. Using Development API...");
-      apiUrl = DEV_API_URL;
+    if (process.env.TEST_TARGET_API_URL) {
+      console.log("1. Using Target API URL from environment variable...");
+      apiUrl = process.env.TEST_TARGET_API_URL;
       console.log(`   API URL: ${apiUrl}\n`);
     } else {
-      // 1. Start Flask Server Locally
-      console.log("1. Starting Local Flask Server...");
-      const port = await startFlaskServer(API_PORT);
-      apiUrl = `http://localhost:${port}`;
-      console.log(`   Server URL: ${apiUrl}\n`);
+      console.error("❌ ERROR: TEST_TARGET_API_URL environment variable is not set.");
+      console.error(
+        "Please set it in your .env file to point to your Dockerized API (e.g., http://localhost or http://localhost:3005)."
+      );
+      process.exit(1);
     }
 
     // 2. Setup Test User...
@@ -1267,12 +1162,19 @@ const main = async () => {
 
     // 5. Load Test Data
     console.log("5. Loading Test Data...");
-    const trainingData = await loadTrainingData("training_test.csv");
-    // const trainingData = await loadTrainingData("training_data.csv");
-    // const trainingData = await loadTrainingData("training_data_num_cat.csv");
-    // const categorizationData = await loadCategorizationData("categorise_test.csv");
+    // const trainingData = await loadTrainingData("training_test.csv");
+    // const trainingData = await loadTrainingData("full_train.csv");
+    const { transactions: trainingData, uniqueCategories: uniqueTrainingCategories } = await loadTrainingData(
+      "nz_train.csv"
+    ); // Destructure results
+    // const trainingDataResult = await loadTrainingData("train_woolies_test.csv");
+    // const trainingData = trainingDataResult.transactions;
+    // uniqueTrainingCategories = trainingDataResult.uniqueCategories; // Store unique categories
+
+    // const categorizationData = await loadCategorizationData("categorise_full.csv");
     const categorizationData = await loadCategorizationData("categorise_test.csv");
     console.log(`   Loaded ${trainingData.length} training records`);
+    console.log(`   Found ${uniqueTrainingCategories.length} unique categories in training data.`); // Log category count
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
 
     // Create test configuration
@@ -1287,7 +1189,7 @@ const main = async () => {
     // 6. Run Training (if enabled)
     if (RUN_TRAINING) {
       console.log("6. Running Training...");
-      const trainingResult = await trainModel(config);
+      trainingResult = await trainModel(config); // Store result
 
       if (trainingResult.status !== "completed") {
         throw new Error(`Training failed: ${trainingResult.error || "Unknown error"}`);
@@ -1302,7 +1204,15 @@ const main = async () => {
     // 7. Run Categorization (if enabled)
     if (RUN_CATEGORIZATION) {
       console.log("7. Running Categorization...");
-      const categorizationResult = await categoriseTransactions(config);
+
+      // Prepare user_categories for the API call [{id: string, name: string}]
+      const userCategoriesForApi = uniqueTrainingCategories.map((name) => ({
+        id: name, // Use name as ID for simplicity in test script
+        name: name,
+      }));
+      logDebug(`Prepared ${userCategoriesForApi.length} categories for API: ${JSON.stringify(userCategoriesForApi)}`);
+
+      categorizationResult = await categoriseTransactions(config, userCategoriesForApi); // Pass categories
 
       if (categorizationResult.status !== "completed") {
         throw new Error(`Categorization failed: ${categorizationResult.error || "Unknown error"}`);
@@ -1310,13 +1220,24 @@ const main = async () => {
       console.log("   Categorization completed successfully\n");
     }
 
+    // Print Performance Summary before cleanup
+    console.log("\n=== Performance Summary ===");
+    if (RUN_TRAINING && trainingResult) {
+      const trainingDurationSec = (trainingResult.durationMs / 1000).toFixed(2);
+      console.log(`   Training took: ${trainingDurationSec}s (Polling: ${trainingResult.usedPolling ? "Yes" : "No"})`);
+    }
+    if (RUN_CATEGORIZATION && categorizationResult) {
+      const catDurationSec = (categorizationResult.durationMs / 1000).toFixed(2);
+      console.log(
+        `   Categorization took: ${catDurationSec}s (Polling: ${categorizationResult.usedPolling ? "Yes" : "No"})`
+      );
+    }
+    console.log("===========================\n");
+
     // 8. Cleanup
     console.log("8. Cleaning up...");
-    // Only stop flask process if it was started locally
-    if (flaskProcess && !USE_DEV_API) {
-      flaskProcess.kill();
-      console.log("   Flask server stopped");
-    }
+    // Only stop flask process if it was started locally AND not using TEST_TARGET_API_URL
+    // Removed flaskProcess kill logic
 
     console.log("\n=== Test Completed Successfully ===\n");
     process.exit(0);
@@ -1324,10 +1245,7 @@ const main = async () => {
     console.error(`\n❌ ERROR: ${error.message}`);
 
     // Ensure cleanup on error
-    if (flaskProcess && !USE_DEV_API) {
-      flaskProcess.kill();
-      console.log("   Flask server stopped");
-    }
+    // Removed flaskProcess kill logic in error handling
 
     process.exit(1);
   }
