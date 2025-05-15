@@ -4,16 +4,23 @@
   "description": "Transaction classification system backend",
   "main": "index.js",
   "scripts": {
-    "test": "node tests/test-api-endpoints.js --verbose",
+    "test": "TX_CLASSIFY_DEBUG=true node tests/test-api-endpoints.js --verbose",
     "test:all": "node tests/test-api-endpoints.js --verbose",
     "test:train": "node tests/test-api-endpoints.js --train-only --verbose",
     "test:cat": "node tests/test-api-endpoints.js --cat-only --verbose",
     "test:quiet": "node tests/test-api-endpoints.js",
     "test:dev": "node tests/test-api-endpoints.js --use-dev-api",
+    "test:docker": "TEST_TARGET_API_URL=http://localhost node tests/test-api-endpoints.js --verbose",
     "test-db": "node test-db-connection.js",
+    "test:clean_text": "pythonHandler/.venv/bin/python tests/test_clean_text.py",
     "debug-test": "NODE_OPTIONS='--inspect' node tests/test-api-endpoints.js --verbose",
     "install:python": "cd pythonHandler && pip install -r requirements.txt",
-    "start:api": "cd pythonHandler && source venv/bin/activate && export FLASK_APP=main && export FLASK_ENV=development && python -m flask run --host=0.0.0.0 --port=5003"
+    "start:api": "cd pythonHandler && source venv/bin/activate && export FLASK_APP=main && export FLASK_ENV=development && python -m flask run --host=0.0.0.0 --port=5003",
+    "start": "docker-compose up",
+    "start:build": "docker-compose up --build",
+    "prod:logs": "./scripts/follow_logs.sh",
+    "sheet:push": "clasp push",
+    "sheet:logs": "clasp logs --watch"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

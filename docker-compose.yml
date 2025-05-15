@@ -1,0 +1,64 @@
+# version: '3.8' # This line is obsolete and can be removed
+
+services:
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile # Mount local Caddyfile from project root
+      - caddy_data:/data                 # Persists Caddy's state including certificates
+      - caddy_config:/config             # Persists Caddy's configuration state
+    depends_on: # Optional but good: wait for backend to be healthy if healthcheck is defined
+      - backend
+
+  backend:
+    build:
+      context: ./pythonHandler
+      dockerfile: Dockerfile
+    # ports: - "8000:8000" # REMOVED - Caddy handles external ports
+    env_file:
+      - ./.env
+    # volumes: # Commenting out direct code mount for production deployment
+    #   - ./pythonHandler:/app
+    restart: unless-stopped
+    # healthcheck: # Optional: Define a health check if your app has a /health endpoint
+    #   test: ["CMD", "curl", "--fail", "http://localhost:8000/health"] # Test inside container
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 30s # Give it time for Gunicorn and spaCy to load
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+# Note on .env file:
+# Ensure your .env file (at the project root) contains necessary variables like:
+# DATABASE_URL=your_production_db_connection_string
+# DIRECT_URL=your_production_db_direct_connection_string
+# REPLICATE_API_TOKEN=your_token
+# PORT=8000
+
+# You will need to create a file named 'Caddyfile' in the project root with the following content:
+# api.expensesorted.com {
+#     # Use your real email address for Let's Encrypt notices
+#     email your_email@example.com
+#     reverse_proxy backend:8000
+# }
+# --- End Revised docker-compose.yml content ---
+
+# Ensure the original content below this line is replaced by the structure above.
+# Keep the original notes if desired.
+
+# Note on .env file:
+# Ensure your .env file (at the project root) contains necessary variables like:
+# DATABASE_URL=your_local_or_dev_db_connection_string
+# DIRECT_URL=your_local_or_dev_db_direct_connection_string
+# REPLICATE_API_TOKEN=your_token (even if not used, your app might expect it)
+# TEST_USER_ID=your_test_user_id
+# TEST_API_KEY=your_test_api_key
+# PORT=8000 # This will be used by the Dockerfile CMD if $PORT is not set otherwise 
