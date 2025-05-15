@@ -13,6 +13,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4 # Using a recent version
 
+      - name: Debug SSH Key
+        run: |
+          if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+            echo "SSH_PRIVATE_KEY is empty"
+            exit 1
+          else
+            echo "SSH_PRIVATE_KEY is set"
+          fi
+
       - name: Deploy to Droplet via SSH
         uses: appleboy/ssh-action@v1.0.3 # Using a recent version of ssh-action
         with:
