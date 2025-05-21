@@ -19,7 +19,7 @@
     "start": "docker-compose up",
     "start:build": "docker-compose up --build",
     "prod:logs": "./scripts/follow_logs.sh",
-    "sheet:push": "clasp push",
+    "sheet:push": "cd sheetAddon && clasp push",
     "sheet:logs": "clasp logs --watch"
   },
   "dependencies": {

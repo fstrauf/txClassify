@@ -1,5 +1,5 @@
 // const CLASSIFICATION_SERVICE_URL = "https://txclassify.onrender.com";
-const CLASSIFICATION_SERVICE_URL = "https://api.expensesorted.com";
+// const CLASSIFICATION_SERVICE_URL = "https://api.expensesorted.com"; // Will be removed
 
 // Add menu to the spreadsheet
 function onOpen(e) {
@@ -210,14 +210,14 @@ function showTrainingDialog() {
   var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
 
   // Find default column indices
-  var narrativeColDefault = columnToLetter(headers.indexOf("Narrative") + 1);
-  var categoryColDefault = columnToLetter(headers.indexOf("Category") + 1);
-  var amountColDefault = columnToLetter(headers.indexOf("Amount") + 1);
+  var narrativeColDefault = SheetUtils.columnToLetter(headers.indexOf("Narrative") + 1);
+  var categoryColDefault = SheetUtils.columnToLetter(headers.indexOf("Category") + 1);
+  var amountColDefault = SheetUtils.columnToLetter(headers.indexOf("Amount") + 1);
 
   // Create column options - always include all columns up to last used column
   var columnOptions = [];
   for (var i = 0; i < lastColumn; i++) {
-    var letter = columnToLetter(i + 1);
+    var letter = SheetUtils.columnToLetter(i + 1);
     var header = headers[i] || ""; // Use empty string if header is null/undefined
     columnOptions.push(
       `<option value="${letter}"${letter === narrativeColDefault ? " selected" : ""}>` +
@@ -229,7 +229,7 @@ function showTrainingDialog() {
   // Create category column options with E as default
   var categoryColumnOptions = [];
   for (var i = 0; i < lastColumn; i++) {
-    var letter = columnToLetter(i + 1);
+    var letter = SheetUtils.columnToLetter(i + 1);
     var header = headers[i] || ""; // Use empty string if header is null/undefined
     categoryColumnOptions.push(
       `<option value="${letter}"${letter === "E" ? " selected" : ""}>` +
@@ -241,7 +241,7 @@ function showTrainingDialog() {
   // Create amount column options
   var amountColumnOptions = ['<option value="">-- None --</option>'];
   for (var i = 0; i < lastColumn; i++) {
-    var letter = columnToLetter(i + 1);
+    var letter = SheetUtils.columnToLetter(i + 1);
     var header = headers[i] || ""; // Use empty string if header is null/undefined
     amountColumnOptions.push(
       `<option value="${letter}"${letter === amountColDefault ? " selected" : ""}>` +
@@ -419,6 +419,7 @@ function setupApiKey() {
         border-radius: 3px; 
         cursor: pointer;
         margin-right: 10px;
+        min-width: 120px; /* Ensure button has a minimum width for consistent text change */
       }
       button:disabled {
         background: #ccc;
@@ -494,7 +495,7 @@ function setupApiKey() {
       <div id="success" class="success"></div>
     </div>
     
-    <button onclick="saveApiKey()">Save API Key</button>
+    <button onclick="saveApiKey()" id="saveApiKeyBtn">Save API Key</button>
     
     <a href="https://expensesorted.com/api-key" target="_blank" class="web-app-link">
       Get or Generate API Key from ExpenseSorted Web App
@@ -505,6 +506,7 @@ function setupApiKey() {
         var apiKey = document.getElementById('apiKey').value.trim();
         var errorDiv = document.getElementById('error');
         var successDiv = document.getElementById('success');
+        var saveBtn = document.getElementById('saveApiKeyBtn'); // Get the button
         
         // Hide any previous messages
         errorDiv.style.display = 'none';
@@ -515,11 +517,18 @@ function setupApiKey() {
           errorDiv.style.display = 'block';
           return;
         }
+
+        // Disable button and show loading state
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
         
         google.script.run
           .withSuccessHandler(function() {
             successDiv.textContent = 'API key saved successfully!';
             successDiv.style.display = 'block';
+            // Re-enable button and restore text
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save API Key';
             setTimeout(function() {
               google.script.host.close();
             }, 1500);
@@ -527,8 +536,11 @@ function setupApiKey() {
           .withFailureHandler(function(error) {
             errorDiv.textContent = error.message || 'An error occurred';
             errorDiv.style.display = 'block';
+            // Re-enable button and restore text
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save API Key';
           })
-          .saveApiKey(apiKey);
+          .triggerSaveApiKey(apiKey); // Updated to call a global wrapper in sheets_script.js
       }
     </script>
   `
@@ -539,34 +551,19 @@ function setupApiKey() {
   SpreadsheetApp.getUi().showModalDialog(html, "API Key Management");
 }
 
-// Helper function to save the API key
-function saveApiKey(apiKey) {
-  if (!apiKey) {
-    throw new Error("API key is required");
+// Global wrapper for saving API Key, callable from client-side HTML
+function triggerSaveApiKey(apiKey) {
+  try {
+    Config.saveApiKey(apiKey); // Calls the method in config.js
+    updateStatus("API key configured successfully!"); // Keep local updateStatus
+    return { success: true }; // Return success to client
+  } catch (e) {
+    Logger.log("Error in triggerSaveApiKey: " + e.toString());
+    return { error: e.message || e.toString() };
   }
-
-  var properties = PropertiesService.getScriptProperties();
-  properties.setProperty("API_KEY", apiKey.trim());
-  updateStatus("API key configured successfully!");
 }
 
-// Helper function to get stored properties
-function getServiceConfig() {
-  var properties = PropertiesService.getScriptProperties();
-  var apiKey = properties.getProperty("API_KEY");
-
-  if (!apiKey) {
-    throw new Error(
-      'API key not configured. Please go to expensesorted.com to get your API key, then use "Configure API Key" to set it up.'
-    );
-  }
-
-  return {
-    serviceUrl: CLASSIFICATION_SERVICE_URL,
-    apiKey: apiKey,
-    userId: Session.getEffectiveUser().getEmail(), // Use the user's email as userId
-  };
-}
+// Helper function to get stored properties - REMOVED (was getServiceConfig, now use Config.getServiceConfig())
 
 // Helper function to update status in sheet
 function updateStatus(message, additionalDetails = "") {
@@ -576,24 +573,17 @@ function updateStatus(message, additionalDetails = "") {
   // Create Log sheet if it doesn't exist
   if (!logSheet) {
     logSheet = ss.insertSheet("Log");
-    // Add headers
     logSheet.getRange("A1:D1").setValues([["Timestamp", "Status", "Message", "Details"]]);
     logSheet.setFrozenRows(1);
-    // Set column widths
-    logSheet.setColumnWidth(1, 180); // Timestamp
-    logSheet.setColumnWidth(2, 100); // Status
-    logSheet.setColumnWidth(3, 300); // Message
-    logSheet.setColumnWidth(4, 400); // Details
-
-    // Format headers
+    logSheet.setColumnWidth(1, 180);
+    logSheet.setColumnWidth(2, 100);
+    logSheet.setColumnWidth(3, 300);
+    logSheet.setColumnWidth(4, 400);
     var headerRange = logSheet.getRange("A1:D1");
     headerRange.setBackground("#f3f3f3").setFontWeight("bold").setHorizontalAlignment("center");
   }
 
-  // Get current timestamp
   var timestamp = new Date().toLocaleString();
-
-  // Determine status and details
   var status = "INFO";
   if (message.toLowerCase().includes("error")) {
     status = "ERROR";
@@ -603,46 +593,31 @@ function updateStatus(message, additionalDetails = "") {
     status = "PROCESSING";
   }
 
-  // Get active sheet name and additional context
   var activeSheet = SpreadsheetApp.getActiveSheet().getName();
   var contextDetails = additionalDetails || `Active Sheet: ${activeSheet}`;
-
-  // Insert new row after header
   logSheet.insertRowAfter(1);
-
-  // Write the log entry
   logSheet.getRange("A2:D2").setValues([[timestamp, status, message, contextDetails]]);
 
-  // Color coding
   var statusCell = logSheet.getRange("B2");
   switch (status) {
     case "ERROR":
-      statusCell.setBackground("#ffcdd2"); // Light red
+      statusCell.setBackground("#ffcdd2");
       break;
     case "SUCCESS":
-      statusCell.setBackground("#c8e6c9"); // Light green
+      statusCell.setBackground("#c8e6c9");
       break;
     case "PROCESSING":
-      statusCell.setBackground("#fff9c4"); // Light yellow
+      statusCell.setBackground("#fff9c4");
       break;
     default:
-      statusCell.setBackground("#ffffff"); // White
+      statusCell.setBackground("#ffffff");
   }
-
-  // Format the new row
   logSheet.getRange("A2:D2").setHorizontalAlignment("left").setVerticalAlignment("middle").setWrap(true);
-
-  // Keep only last 100 entries
   var lastRow = logSheet.getLastRow();
   if (lastRow > 101) {
-    // 1 header row + 100 log entries
     logSheet.deleteRows(102, lastRow - 101);
   }
-
-  // Make sure the Log sheet is visible
   logSheet.autoResizeColumns(1, 4);
-
-  // Show the Log sheet if it's hidden
   if (logSheet.isSheetHidden()) {
     logSheet.showSheet();
   }
@@ -653,19 +628,14 @@ function getSettingsSheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var settingsSheet = ss.getSheetByName("Settings");
 
-  // Create Settings sheet if it doesn't exist
   if (!settingsSheet) {
     settingsSheet = ss.insertSheet("Settings");
-    // Add headers
     settingsSheet.getRange("A1:B1").setValues([["Setting", "Value"]]);
     settingsSheet.setFrozenRows(1);
-    // Set column widths
-    settingsSheet.setColumnWidth(1, 200); // Setting name
-    settingsSheet.setColumnWidth(2, 300); // Value
-    // Hide the sheet
+    settingsSheet.setColumnWidth(1, 200);
+    settingsSheet.setColumnWidth(2, 300);
     settingsSheet.hideSheet();
   }
-
   return settingsSheet;
 }
 
@@ -674,21 +644,15 @@ function updateSetting(settingName, value) {
   var sheet = getSettingsSheet();
   var data = sheet.getDataRange().getValues();
   var rowIndex = -1;
-
-  // Look for existing setting
   for (var i = 1; i < data.length; i++) {
     if (data[i][0] === settingName) {
       rowIndex = i + 1;
       break;
     }
   }
-
   if (rowIndex === -1) {
-    // Add new setting at the end
     rowIndex = data.length + 1;
   }
-
-  // Update the setting
   sheet.getRange(rowIndex, 1, 1, 2).setValues([[settingName, value]]);
 }
 
@@ -697,27 +661,18 @@ function getStatsSheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var statsSheet = ss.getSheetByName("Stats");
 
-  // Create Stats sheet if it doesn't exist
   if (!statsSheet) {
     statsSheet = ss.insertSheet("Stats");
-    // Add headers
     statsSheet.getRange("A1:B1").setValues([["Metric", "Value"]]);
     statsSheet.setFrozenRows(1);
-
-    // Set column widths
-    statsSheet.setColumnWidth(1, 200); // Metric name
-    statsSheet.setColumnWidth(2, 300); // Value
-
-    // Format headers
+    statsSheet.setColumnWidth(1, 200);
+    statsSheet.setColumnWidth(2, 300);
     var headerRange = statsSheet.getRange("A1:B1");
     headerRange.setBackground("#f3f3f3").setFontWeight("bold").setHorizontalAlignment("center");
-
-    // Add initial metrics
     statsSheet
       .getRange("A2:A5")
       .setValues([["Last Training Time"], ["Training Data Size"], ["Training Sheet"], ["Model Status"]]);
   }
-
   return statsSheet;
 }
 
@@ -726,22 +681,16 @@ function updateStats(metric, value) {
   var sheet = getStatsSheet();
   var data = sheet.getDataRange().getValues();
   var rowIndex = -1;
-
-  // Look for existing metric
   for (var i = 1; i < data.length; i++) {
     if (data[i][0] === metric) {
       rowIndex = i + 1;
       break;
     }
   }
-
   if (rowIndex === -1) {
-    // Add new metric at the end
     rowIndex = data.length + 1;
     sheet.getRange(rowIndex, 1).setValue(metric);
   }
-
-  // Update the value
   sheet.getRange(rowIndex, 2).setValue(value);
 }
 
@@ -749,9 +698,9 @@ function updateStats(metric, value) {
 function categoriseTransactions(config) {
   try {
     Logger.log("Starting categorisation with config: " + JSON.stringify(config));
-    updateStatus("Starting categorisation...");
+    updateStatus("Starting categorisation..."); // Use local updateStatus
 
-    var serviceConfig = getServiceConfig();
+    var serviceConfig = Config.getServiceConfig(); // USE Config.getServiceConfig()
     var sheet = SpreadsheetApp.getActiveSheet();
     var spreadsheetId = sheet.getParent().getId();
 
@@ -864,7 +813,7 @@ function categoriseTransactions(config) {
     }
 
     Logger.log("Found " + transactions.length + " transactions to categorise");
-    updateStatus("Processing " + transactions.length + " transactions...");
+    updateStatus("Processing " + transactions.length + " transactions..."); // Use local updateStatus
 
     // Prepare the payload with transactions that may include money_in flag
     var payload = JSON.stringify({
@@ -962,11 +911,11 @@ function categoriseTransactions(config) {
     if (responseCode === 200 && result.status === "completed") {
       // Synchronous Success!
       Logger.log("Categorisation completed synchronously.");
-      updateStatus("Processing synchronous results...");
+      updateStatus("Processing synchronous results..."); // Use local updateStatus
       try {
-        var writeSuccess = writeResultsToSheet(result, config, sheet);
+        var writeSuccess = SheetUtils.writeResultsToSheet(result, config, sheet); // USE SheetUtils.writeResultsToSheet
         if (writeSuccess) {
-          updateStatus("Categorisation completed successfully!");
+          updateStatus("Categorisation completed successfully!"); // Use local updateStatus
           return { status: "success", message: "Categorisation completed synchronously!" };
         } else {
           throw new Error("Failed to write synchronous results to sheet.");
@@ -977,7 +926,7 @@ function categoriseTransactions(config) {
     } else if ((responseCode === 202 || responseCode === 200) && result.prediction_id) {
       // Asynchronous start (either 202 or 200 with status=processing)
       Logger.log("Categorisation started asynchronously. Prediction ID: " + result.prediction_id);
-      updateStatus("Categorisation started, processing in background...");
+      updateStatus("Categorisation started, processing in background..."); // Use local updateStatus
 
       // Store properties for polling
       var userProperties = PropertiesService.getUserProperties();
@@ -1008,266 +957,17 @@ function categoriseTransactions(config) {
     }
   } catch (error) {
     Logger.log("Categorisation error: " + error.toString());
-    updateStatus("Error: " + error.toString());
+    updateStatus("Error: " + error.toString()); // Use local updateStatus
     SpreadsheetApp.getUi().alert("Error: " + error.toString());
     return { error: error.toString() };
   }
 }
 
-// Helper function to write classification results to a sheet
-function writeResultsToSheet(result, config, sheet) {
-  try {
-    Logger.log("Writing results to sheet with config: " + JSON.stringify(config));
-    // Make sure we have a valid sheet object
-    if (!sheet || typeof sheet.getRange !== "function") {
-      Logger.log("Invalid sheet object provided to writeResultsToSheet. Attempting to get active sheet.");
-      sheet = SpreadsheetApp.getActiveSheet();
-      if (!sheet) {
-        throw new Error("Could not obtain a valid sheet to write results.");
-      }
-    }
+// Helper function to write classification results to a sheet - REMOVED (was writeResultsToSheet, now use SheetUtils.writeResultsToSheet)
 
-    // Extract the results array from the response, handling different potential structures
-    var resultsData = findResultsArray(result);
+// Helper function to find the results array within the API response - REMOVED (was findResultsArray, now use SheetUtils.findResultsArray)
 
-    if (!resultsData || resultsData.length === 0) {
-      Logger.log("No results array found in the response. Full result: " + JSON.stringify(result));
-      updateStatus("Processing complete, but no classification results were found in the response.");
-      // Don't throw an error, just indicate no results were written.
-      return false;
-    }
-
-    Logger.log("Found " + resultsData.length + " results to write");
-    Logger.log("Sample result: " + JSON.stringify(resultsData[0]));
-
-    // --- Get configuration from the passed config object ---
-    // The config passed here should now include startRow, endRow, categoryCol, confidenceCol, moneyInOutCol
-    var categoryCol = config.categoryCol;
-    var confidenceCol = config.confidenceCol; // Optional output column
-    var moneyInOutCol = config.moneyInOutCol; // Optional output column
-    var startRow = parseInt(config.startRow);
-    var endRow = parseInt(config.endRow);
-
-    // Validate essential configuration needed for writing
-    if (!categoryCol || !startRow || !endRow || startRow > endRow) {
-      Logger.log(
-        `Invalid configuration for writing results: categoryCol=${categoryCol}, startRow=${startRow}, endRow=${endRow}`
-      );
-      throw new Error(
-        `Invalid range or category column specified for writing results (Rows ${startRow}-${endRow}, Col ${categoryCol}).`
-      );
-    }
-
-    // Ensure the range size matches the results length
-    if (endRow - startRow + 1 !== resultsData.length) {
-      Logger.log(
-        `Mismatch between results count (${resultsData.length}) and selected range size (${
-          endRow - startRow + 1
-        } rows). Attempting to write based on results count.`
-      );
-      // Adjust endRow based on results count to prevent errors, though this indicates a potential issue.
-      endRow = startRow + resultsData.length - 1;
-      updateStatus(
-        `Warning: Number of results (${resultsData.length}) didn't match selected rows. Results written starting from row ${startRow}.`,
-        `Sheet: ${sheet.getName()}`
-      );
-    }
-
-    Logger.log(`Writing ${resultsData.length} results to sheet '${sheet.getName()}'`);
-    Logger.log(`Category column: ${categoryCol}, Start row: ${startRow}, End row: ${endRow}`);
-    if (confidenceCol) Logger.log(`Confidence column: ${confidenceCol}`);
-    if (moneyInOutCol) Logger.log(`Money In/Out column: ${moneyInOutCol}`);
-
-    // --- Write Categories (Mandatory) ---
-    var categories = resultsData.map(function (r) {
-      return [r.predicted_category || r.category || r.Category || ""]; // Handle different possible keys
-    });
-    var categoryRange = sheet.getRange(categoryCol + startRow + ":" + categoryCol + endRow);
-    categoryRange.setValues(categories);
-    Logger.log(`Categories written to ${categoryCol}${startRow}:${categoryCol}${endRow}`);
-
-    // --- Write Confidence Scores (Optional) ---
-    var hasConfidence = resultsData.some(function (r) {
-      return r.hasOwnProperty("similarity_score") || r.hasOwnProperty("confidence") || r.hasOwnProperty("score");
-    });
-
-    if (confidenceCol && hasConfidence) {
-      // Check if column specified AND data exists
-      Logger.log(`Attempting to write confidence scores to column ${confidenceCol}`);
-      var confidenceScores = resultsData.map(function (r) {
-        // Prioritize specific keys if available
-        var score =
-          r.similarity_score !== undefined
-            ? r.similarity_score
-            : r.confidence !== undefined
-            ? r.confidence
-            : r.score !== undefined
-            ? r.score
-            : "";
-        return [score];
-      });
-      try {
-        var confidenceRangeA1 = confidenceCol + startRow + ":" + confidenceCol + endRow;
-        Logger.log(`Attempting to write confidence scores to range: ${confidenceRangeA1}`);
-        var confidenceRange = sheet.getRange(confidenceRangeA1);
-        confidenceRange.setValues(confidenceScores);
-        // Format as percentage only if scores look like decimals between 0-1
-        if (confidenceScores.some((s) => typeof s[0] === "number" && s[0] >= 0 && s[0] <= 1)) {
-          confidenceRange.setNumberFormat("0.00%");
-        }
-        Logger.log(`Confidence scores written to ${confidenceCol}${startRow}:${confidenceCol}${endRow}`);
-      } catch (e) {
-        Logger.log(`Error writing confidence scores to column ${confidenceCol}: ${e}. Skipping confidence scores.`);
-        updateStatus(
-          `Warning: Could not write confidence scores to column ${confidenceCol}. Check column validity.`,
-          `Sheet: ${sheet.getName()}, Error: ${e}`
-        );
-      }
-    } else if (confidenceCol && !hasConfidence) {
-      Logger.log(`Confidence column ${confidenceCol} specified, but no confidence scores found in results.`);
-    } else if (!confidenceCol && hasConfidence) {
-      Logger.log(`Confidence scores found in results, but no output column was specified.`);
-    }
-
-    // --- Write Money In/Out Flag (Optional) ---
-    var hasMoneyInFlag = resultsData.some(function (r) {
-      return r.hasOwnProperty("money_in");
-    });
-
-    if (moneyInOutCol && hasMoneyInFlag) {
-      // Check if column specified AND data exists
-      Logger.log(`Attempting to write Money In/Out flags to column ${moneyInOutCol}`);
-      var moneyInValues = resultsData.map(function (r) {
-        if (r.money_in === true) {
-          return ["IN"];
-        } else if (r.money_in === false) {
-          return ["OUT"];
-        } else {
-          return [""];
-        } // Handle null/undefined/other
-      });
-      try {
-        var moneyInRangeA1 = moneyInOutCol + startRow + ":" + moneyInOutCol + endRow;
-        Logger.log(`Attempting to write Money In/Out flags to range: ${moneyInRangeA1}`);
-        var moneyInRange = sheet.getRange(moneyInRangeA1);
-        moneyInRange.setValues(moneyInValues);
-        Logger.log(`Money In/Out flags written to ${moneyInOutCol}${startRow}:${moneyInOutCol}${endRow}`);
-      } catch (e) {
-        Logger.log(`Error writing Money In/Out flags to column ${moneyInOutCol}: ${e}. Skipping flags.`);
-        updateStatus(
-          `Warning: Could not write Money In/Out flags to column ${moneyInOutCol}. Check column validity.`,
-          `Sheet: ${sheet.getName()}, Error: ${e}`
-        );
-      }
-    } else if (moneyInOutCol && !hasMoneyInFlag) {
-      Logger.log(`Money In/Out column ${moneyInOutCol} specified, but no money_in flags found in results.`);
-    } else if (!moneyInOutCol && hasMoneyInFlag) {
-      Logger.log(`Money In/Out flags found in results, but no output column was specified.`);
-    }
-
-    // Final status update
-    var statusMsg = `Categorised ${resultsData.length} selected transactions successfully!`;
-    var details = `Sheet: '${sheet.getName()}', Rows: ${startRow}-${endRow}, Category Col: ${categoryCol}`;
-    if (confidenceCol && hasConfidence) details += `, Confidence Col: ${confidenceCol}`;
-    if (moneyInOutCol && hasMoneyInFlag) details += `, Money In/Out Col: ${moneyInOutCol}`;
-    updateStatus(statusMsg, details);
-
-    // Track usage stat
-    try {
-      const statsSheet = getStatsSheet(); // Ensure stats sheet exists
-      const metrics = statsSheet.getRange("A2:A").getValues().flat();
-      let currentValue = 0;
-      // Find existing value if metric exists
-      for (let i = 0; i < metrics.length; i++) {
-        if (metrics[i] === "categorisations") {
-          // Read value from corresponding cell in column B
-          const val = statsSheet.getRange(`B${i + 2}`).getValue();
-          if (typeof val === "number") {
-            currentValue = val;
-          }
-          break;
-        }
-      }
-      // Update the stat by adding the new count
-      updateStats("categorisations", currentValue + resultsData.length);
-    } catch (statError) {
-      Logger.log("Could not update categorisation stats: " + statError);
-    }
-
-    return true;
-  } catch (error) {
-    Logger.log("Error writing results to sheet: " + error.toString());
-    SpreadsheetApp.getUi().alert("Error writing results: " + error.toString());
-    return false;
-  }
-}
-
-// Helper function to find the results array within the API response
-function findResultsArray(result) {
-  // Log the structure of the result object to help with debugging
-  Logger.log("findResultsArray: Checking structure of result object: " + JSON.stringify(Object.keys(result)));
-
-  // Try common paths first
-  if (result.results && Array.isArray(result.results)) {
-    Logger.log("findResultsArray: Found results in result.results");
-    return result.results;
-  } else if (result.data && Array.isArray(result.data)) {
-    Logger.log("findResultsArray: Found results in result.data");
-    return result.data;
-  } else if (result.result && typeof result.result === "object") {
-    // Handle nested result structures
-    if (result.result.results && Array.isArray(result.result.results)) {
-      Logger.log("findResultsArray: Found results in result.result.results");
-      return result.result.results;
-    } else if (result.result.data && Array.isArray(result.result.data)) {
-      Logger.log("findResultsArray: Found results in result.result.data");
-      return result.result.data;
-    }
-  }
-
-  // If not found in common paths, search deeper for an array with expected properties
-  Logger.log("findResultsArray: Results not found in common paths. Searching object keys...");
-  for (var key in result) {
-    if (
-      result.hasOwnProperty(key) &&
-      Array.isArray(result[key]) &&
-      result[key].length > 0 &&
-      (result[key][0].hasOwnProperty("predicted_category") ||
-        result[key][0].hasOwnProperty("Category") ||
-        result[key][0].hasOwnProperty("category"))
-    ) {
-      Logger.log("findResultsArray: Found results array in result." + key);
-      return result[key];
-    }
-  }
-
-  // Check if the top-level result itself is the array (less common but possible)
-  if (
-    Array.isArray(result) &&
-    result.length > 0 &&
-    (result[0].hasOwnProperty("predicted_category") ||
-      result[0].hasOwnProperty("Category") ||
-      result[0].hasOwnProperty("category"))
-  ) {
-    Logger.log("findResultsArray: Top-level response object appears to be the results array.");
-    return result;
-  }
-
-  Logger.log("findResultsArray: No suitable results array found in the response.");
-  return null; // Return null if no suitable array is found
-}
-
-// Helper function to convert column number to letter
-function columnToLetter(column) {
-  var temp,
-    letter = "";
-  while (column > 0) {
-    temp = (column - 1) % 26;
-    letter = String.fromCharCode(temp + 65) + letter;
-    column = (column - temp - 1) / 26;
-  }
-  return letter;
-}
+// Helper function to convert column number to letter - REMOVED (was columnToLetter, now use SheetUtils.columnToLetter)
 
 function trainModel(config) {
   var ui = SpreadsheetApp.getUi();
@@ -1278,7 +978,7 @@ function trainModel(config) {
       throw new Error("Missing required configuration parameters");
     }
 
-    var serviceConfig = getServiceConfig();
+    var serviceConfig = Config.getServiceConfig(); // Updated call
     var sheet = SpreadsheetApp.getActiveSheet();
     var originalSheetName = sheet.getName(); // Keep for logging/context if needed
     var lastRow = sheet.getLastRow();
@@ -1374,10 +1074,15 @@ function trainModel(config) {
     // Prepare payload
     var payload = JSON.stringify({
       transactions: transactions,
-      userId: serviceConfig.userId,
+      userId: Session.getEffectiveUser().getEmail(),
     });
 
-    Logger.log("Sending training request with " + transactions.length + " transactions");
+    Logger.log(
+      "Sending training request with " +
+        transactions.length +
+        " transactions for user: " +
+        Session.getEffectiveUser().getEmail()
+    );
 
     var options = {
       method: "post",
@@ -1469,12 +1174,12 @@ function trainModel(config) {
     if (responseCode === 200 && result.status === "completed") {
       // Synchronous Success BUT we still show polling dialog for consistency
       Logger.log("Training completed synchronously, but showing polling dialog anyway.");
-      updateStatus("Training finished quickly, showing progress...");
+      updateStatus("Training finished quickly, showing progress..."); // Use local updateStatus
       // Update stats immediately
-      updateStats("Last Training Time", new Date().toLocaleString());
-      updateStats("Model Status", "Ready");
-      updateStats("training_operations", 1);
-      updateStats("trained_transactions", transactions.length);
+      updateStats("Last Training Time", new Date().toLocaleString()); // Use local updateStats
+      updateStats("Model Status", "Ready"); // Use local updateStats
+      updateStats("training_operations", 1); // Use local updateStats
+      updateStats("trained_transactions", transactions.length); // Use local updateStats
 
       // Set properties needed for the polling dialog
       var userProperties = PropertiesService.getUserProperties();
@@ -1486,7 +1191,7 @@ function trainModel(config) {
         CONFIG: JSON.stringify({}), // Added for polling consistency
         SHEET_ID: sheet.getSheetId().toString(), // Added for polling consistency
         START_ROW: "0", // Placeholder for training
-        END_ROW: "0" // Placeholder for training
+        END_ROW: "0", // Placeholder for training
       });
 
       // Show the polling dialog (which should show 100% immediately)
@@ -1497,7 +1202,7 @@ function trainModel(config) {
     } else if ((responseCode === 202 || responseCode === 200) && result.prediction_id) {
       // Asynchronous Start
       Logger.log("Training started asynchronously (handled within trainModel). Prediction ID: " + result.prediction_id);
-      updateStatus("Training started, processing in background...");
+      updateStatus("Training started, processing in background..."); // Use local updateStatus
 
       // Set properties for polling (as before)
       var userProperties = PropertiesService.getUserProperties();
@@ -1509,7 +1214,7 @@ function trainModel(config) {
         CONFIG: JSON.stringify({}), // Added for polling consistency
         SHEET_ID: sheet.getSheetId().toString(), // Added for polling consistency
         START_ROW: "0", // Placeholder for training
-        END_ROW: "0" // Placeholder for training
+        END_ROW: "0", // Placeholder for training
       });
 
       // Show polling dialog
@@ -1616,7 +1321,7 @@ function pollOperationStatus() {
 
     // Call the status endpoint
     var options = {
-      headers: { "X-API-Key": getServiceConfig().apiKey }, // Still need API key here, get fresh
+      headers: { "X-API-Key": Config.getServiceConfig().apiKey }, // USE Config.getServiceConfig()
       muteHttpExceptions: true,
     };
 
@@ -1647,7 +1352,7 @@ function pollOperationStatus() {
         if (operationType === "categorise" && result) {
           try {
             var finalResultData = null;
-            if (result.result_data && typeof result.result_data === 'string') {
+            if (result.result_data && typeof result.result_data === "string") {
               try {
                 finalResultData = JSON.parse(result.result_data);
                 Logger.log("Parsed result_data from polling response.");
@@ -1656,18 +1361,17 @@ function pollOperationStatus() {
                 throw new Error("Completed, but failed to parse results data from server.");
               }
             } else if (result.results) {
-               // Fallback for potential direct results (less likely now)
-               Logger.log("Using direct results field from polling response (fallback).");
-               finalResultData = result; // Pass the whole result object if results are directly in it
+              // Fallback for potential direct results (less likely now)
+              Logger.log("Using direct results field from polling response (fallback).");
+              finalResultData = result; // Pass the whole result object if results are directly in it
             } else {
-                 Logger.log("Completed, but no result_data or results field found in the status response.");
-                 throw new Error("Completed, but results data was missing from the server response.");
+              Logger.log("Completed, but no result_data or results field found in the status response.");
+              throw new Error("Completed, but results data was missing from the server response.");
             }
 
             // Pass the retrieved sheet object, the full config, and the parsed result data
-            writeResultsToSheet(finalResultData, config, sheet);
+            SheetUtils.writeResultsToSheet(finalResultData, config, sheet); // USE SheetUtils.writeResultsToSheet
             Logger.log("Results written to sheet successfully from polling.");
-
           } catch (writeError) {
             Logger.log("Error processing or writing results to sheet from polling: " + writeError);
             // Update status to reflect the writing error but still mark as completed?
@@ -1679,13 +1383,12 @@ function pollOperationStatus() {
               progress: 100,
             };
           }
-        } else if (operationType === 'training') {
-            Logger.log("Training completed successfully via polling.");
-            // Update training stats if needed (consider adding this back if useful)
-            // updateStats("Last Training Time", new Date().toLocaleString());
-            // updateStats("Model Status", "Ready");
-            // updateStats("training_operations", (parseInt(PropertiesService.getScriptProperties().getProperty("training_operations") || "0") + 1).toString());
-
+        } else if (operationType === "training") {
+          Logger.log("Training completed successfully via polling.");
+          // Update training stats if needed (consider adding this back if useful)
+          // updateStats("Last Training Time", new Date().toLocaleString());
+          // updateStats("Model Status", "Ready");
+          // updateStats("training_operations", (parseInt(PropertiesService.getScriptProperties().getProperty("training_operations") || "0") + 1).toString());
         }
 
         // Clear operation state
@@ -1877,7 +1580,7 @@ function showPollingDialog() {
       // Start polling immediately
       pollStatus();
     </script>
-    `
+  `
   )
     .setWidth(400)
     .setHeight(180);
