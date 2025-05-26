@@ -23,7 +23,7 @@ from models import (
     ClassifyRequest,
     UserConfigRequest,
 )
-from utils.text_utils import clean_text
+from utils.text_utils import clean_text, clean_and_group_transactions
 from utils.request_utils import (
     validate_request_data,
     create_error_response,
@@ -1058,7 +1058,22 @@ def get_api_usage():
                             "type": "array",
                             "description": "List of transaction descriptions to clean",
                             "items": {"type": "string"},
-                        }
+                        },
+                        "use_embedding_grouping": {
+                            "type": "boolean",
+                            "description": "Whether to use embedding-based grouping",
+                            "default": False,
+                        },
+                        "embedding_clustering_method": {
+                            "type": "string",
+                            "description": "Clustering method for embeddings: hdbscan, dbscan, hierarchical, similarity",
+                            "default": "hdbscan",
+                        },
+                        "embedding_similarity_threshold": {
+                            "type": "number",
+                            "description": "Similarity threshold for embedding clustering",
+                            "default": 0.85,
+                        },
                     },
                 },
             },
@@ -1068,7 +1083,12 @@ def get_api_usage():
                 "description": "Cleaned descriptions",
                 "examples": {
                     "application/json": {
-                        "cleaned_descriptions": ["UBER EATS", "AMAZON", "NETFLIX"]
+                        "cleaned_descriptions": ["UBER EATS", "AMAZON", "NETFLIX"],
+                        "groups": {
+                            "UBER EATS": ["UBER EATS"],
+                            "AMAZON": ["AMAZON"],
+                            "NETFLIX": ["NETFLIX"]
+                        }
                     }
                 },
             },
@@ -1090,6 +1110,11 @@ def clean_text_endpoint():
         if not isinstance(descriptions, list):
             return create_error_response("Descriptions must be a list", 400)
 
+        # Extract grouping parameters
+        use_embedding_grouping = data.get("use_embedding_grouping", False)
+        embedding_clustering_method = data.get("embedding_clustering_method", "hdbscan")
+        embedding_similarity_threshold = data.get("embedding_similarity_threshold", 0.85)
+
         user_id = request.user_id
 
         # Check API usage limit
@@ -1100,6 +1125,43 @@ def clean_text_endpoint():
         except Exception as e:
             logger.warning(f"Error checking API usage for user {user_id}: {e}")
 
+        if use_embedding_grouping:
+            # Use the enhanced clean_and_group_transactions function
+            try:
+                # Create a custom config for the embedding grouping
+                from utils.text_utils import CleaningConfig
+                config = CleaningConfig()
+                config.use_embedding_grouping = True
+                config.embedding_clustering_method = embedding_clustering_method
+                config.embedding_similarity_threshold = embedding_similarity_threshold
+                
+                # Call the function with the correct signature
+                cleaned_descriptions, grouping_dict = clean_and_group_transactions(descriptions, config)
+                
+                # Convert grouping_dict to the expected format for the API response
+                # grouping_dict maps individual cleaned text to representative text
+                # We need to create groups where each group contains all texts that map to the same representative
+                groups = {}
+                for original_desc, cleaned_desc in zip(descriptions, cleaned_descriptions):
+                    representative = grouping_dict.get(cleaned_desc, cleaned_desc)
+                    if representative not in groups:
+                        groups[representative] = []
+                    groups[representative].append(cleaned_desc)
+                
+                response = {
+                    "cleaned_descriptions": cleaned_descriptions,
+                    "groups": groups
+                }
+                
+                return jsonify(response)
+                
+            except Exception as e:
+                logger.error(f"Error in embedding-based grouping: {str(e)}")
+                # Fallback to regular cleaning if embedding grouping fails
+                logger.warning("Falling back to regular text cleaning")
+                use_embedding_grouping = False
+
+        # Regular cleaning (fallback or when grouping is not requested)
         cleaned_descriptions = []
         invalid_descriptions = []
         for i, desc in enumerate(descriptions):

@@ -3,7 +3,13 @@ import numpy as np
 import logging
 from typing import List, Optional
 from spacy.language import Language
-import spacy_transformers
+
+# Try to import sentence-transformers as a fallback
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 # --- Configuration ---
 # Choose a transformer model compatible with spacy-transformers
@@ -18,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Global variable to hold the loaded pipeline (simple singleton pattern)
 _nlp_pipeline: Optional[Language] = None
+_sentence_transformer_model: Optional = None
 
 
 def load_spacy_pipeline() -> Optional[Language]:
@@ -90,44 +97,114 @@ def load_spacy_pipeline() -> Optional[Language]:
 
 def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
     """
-    Generates embeddings for a list of texts using the loaded spaCy transformer pipeline.
+    Generates embeddings for a list of texts using available embedding methods.
+    
+    Tries in order:
+    1. Sentence Transformers (if available)
+    2. spaCy transformer pipeline
+    3. Simple word vectors from spaCy
 
     Args:
         texts: A list of text strings to embed.
 
     Returns:
         A numpy array of embeddings (shape: num_texts x embedding_dim),
-        or None if the pipeline failed to load or an error occurred.
+        or None if no embedding method is available.
     """
-    nlp = load_spacy_pipeline()
-    if nlp is None:
-        logger.error("Cannot generate embeddings: spaCy pipeline is not loaded.")
-        return None
     if not texts:
         logger.warning("generate_embeddings called with empty list of texts.")
         return np.empty((0, 1))  # Return empty array with placeholder dim
 
-    try:
-        logger.info(
-            f"Generating embeddings for {len(texts)} texts using {TRANSFORMER_MODEL_NAME}..."
-        )
-        # Process texts in batches using nlp.pipe for efficiency
-        docs = list(nlp.pipe(texts))
+    # Strategy 1: Try sentence-transformers first (most reliable)
+    if SENTENCE_TRANSFORMERS_AVAILABLE:
+        try:
+            global _sentence_transformer_model
+            if _sentence_transformer_model is None:
+                logger.info("Loading sentence-transformers model...")
+                _sentence_transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
+                logger.info("Sentence-transformers model loaded successfully")
+            
+            logger.info(f"Generating embeddings for {len(texts)} texts using sentence-transformers...")
+            embeddings = _sentence_transformer_model.encode(texts)
+            logger.info(f"Generated embeddings using sentence-transformers (shape: {embeddings.shape})")
+            return embeddings
+            
+        except Exception as e:
+            logger.warning(f"Sentence-transformers failed: {e}. Falling back to spaCy.")
+    
+    # Strategy 2: Try spaCy transformer pipeline
+    nlp = load_spacy_pipeline()
+    if nlp is not None:
+        try:
+            logger.info(f"Generating embeddings for {len(texts)} texts using spaCy transformer...")
+            # Process texts in batches using nlp.pipe for efficiency
+            docs = list(nlp.pipe(texts))
 
-        # --- Embedding Extraction Strategy ---
-        # Strategy 1: Using doc.vector (requires a model that provides doc vectors, e.g., md/lg models or sentence-transformers)
-        # Check if vectors are available
+            # Check if vectors are available
+            if all(doc.has_vector for doc in docs):
+                embeddings = np.array([doc.vector for doc in docs])
+                logger.info(f"Extracted embeddings using doc.vector (shape: {embeddings.shape})")
+                return embeddings
+            else:
+                logger.warning("doc.vector not available for all docs. Trying transformer data extraction.")
+                # Try to extract from transformer data
+                embeddings = []
+                for doc in docs:
+                    if hasattr(doc._, "trf_data") and doc._.trf_data is not None:
+                        # Use mean pooling of transformer outputs
+                        token_embeddings = doc._.trf_data.tensors[0]
+                        # Simple mean pooling
+                        doc_embedding = np.mean(token_embeddings, axis=0)
+                        embeddings.append(doc_embedding)
+                    else:
+                        logger.warning("No transformer data available for document")
+                        return None
+                
+                if embeddings:
+                    embeddings = np.array(embeddings)
+                    logger.info(f"Extracted embeddings using transformer data (shape: {embeddings.shape})")
+                    return embeddings
+                    
+        except Exception as e:
+            logger.warning(f"spaCy transformer pipeline failed: {e}. Trying basic spaCy.")
+    
+    # Strategy 3: Try basic spaCy model with word vectors
+    try:
+        logger.info("Trying basic spaCy model...")
+        nlp_basic = spacy.load("en_core_web_md")
+        docs = list(nlp_basic.pipe(texts))
+        
         if all(doc.has_vector for doc in docs):
             embeddings = np.array([doc.vector for doc in docs])
-            logger.info(
-                f"Extracted embeddings using doc.vector (shape: {embeddings.shape})"
-            )
+            logger.info(f"Generated embeddings using basic spaCy (shape: {embeddings.shape})")
             return embeddings
-        else:
-            logger.warning(
-                "doc.vector not available for all docs. Attempting extraction via transformer data."
-            )
-            # Fall through to Strategy 2
+            
+    except Exception as e:
+        logger.warning(f"Basic spaCy model failed: {e}")
+    
+    # Strategy 4: Very simple character-based embeddings as last resort
+    try:
+        logger.warning("Using simple character-based embeddings as fallback")
+        embeddings = []
+        max_len = min(100, max(len(text) for text in texts) if texts else 100)
+        
+        for text in texts:
+            # Create a simple character frequency vector
+            char_vector = np.zeros(256)  # ASCII character space
+            for char in text.lower()[:max_len]:
+                char_vector[ord(char)] += 1
+            # Normalize
+            if np.sum(char_vector) > 0:
+                char_vector = char_vector / np.sum(char_vector)
+            embeddings.append(char_vector)
+        
+        embeddings = np.array(embeddings)
+        logger.info(f"Generated simple character embeddings (shape: {embeddings.shape})")
+        return embeddings
+        
+    except Exception as e:
+        logger.error(f"All embedding strategies failed: {e}")
+        return None
 
         # Strategy 2: Extracting from transformer data (doc._.trf_data)
         # This is common for many HuggingFace models integrated via spacy-transformers

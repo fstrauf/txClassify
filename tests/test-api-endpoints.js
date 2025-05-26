@@ -1124,7 +1124,7 @@ const testCleanText = async (apiUrl) => {
 
 // New function for bulk cleaning and grouping
 const runBulkCleanAndGroupTest = async (config) => {
-  logInfo("\n=== Starting Bulk Clean and Group Test ===\n");
+  logInfo("\n=== Starting Bulk Clean and Group Test with Embedding Optimization ===\n");
   const BULK_CSV_FILE = "ANZ Transactions Nov 2024 to May 2025.csv";
 
   try {
@@ -1156,14 +1156,28 @@ const runBulkCleanAndGroupTest = async (config) => {
     logInfo(`   Prepared ${descriptionsToClean.length} combined descriptions for cleaning.`);
     logDebug(`   Sample combined descriptions: ${JSON.stringify(descriptionsToClean.slice(0, 3))}`);
 
-    logInfo("2. Cleaning descriptions via /clean_text API...");
-    const batchSize = 100;
+    logInfo("2. Cleaning and grouping descriptions via /clean_text API with embedding optimization...");
+    logInfo("   Using embedding-based grouping with optimized parameters:");
+    logInfo("   - Clustering method: similarity (optimized for merchant grouping)");
+    logInfo("   - Similarity threshold: 0.8 (balanced accuracy vs grouping)");
+    logInfo("   - Caching enabled: true (for performance)");
+    logInfo("   - Batch processing: 50 items per batch (memory efficient)");
+    
+    const batchSize = 50; // Smaller batches for embedding processing
     const allCleanedDescriptions = [];
+    const allGroups = {};
     let processedCount = 0;
 
     for (let i = 0; i < descriptionsToClean.length; i += batchSize) {
       const batch = descriptionsToClean.slice(i, i + batchSize);
-      logDebug(`   Cleaning batch: ${i / batchSize + 1} (size: ${batch.length})`);
+      logDebug(`   Processing batch: ${i / batchSize + 1} (size: ${batch.length})`);
+
+      const requestBody = {
+        descriptions: batch,
+        use_embedding_grouping: true,
+        embedding_clustering_method: "similarity", // Optimized method
+        embedding_similarity_threshold: 0.8, // Optimized threshold
+      };
 
       const response = await fetch(`${config.serviceUrl}/clean_text`, {
         method: "POST",
@@ -1172,14 +1186,31 @@ const runBulkCleanAndGroupTest = async (config) => {
           "X-API-Key": config.apiKey || TEST_API_KEY,
           Accept: "application/json",
         },
-        body: JSON.stringify({ descriptions: batch }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
         logError(`Failed to clean text batch: ${response.status} - ${errorText}`);
-        allCleanedDescriptions.push(...batch);
-        logWarning(`   Using original combined descriptions for failed batch ${i / batchSize + 1}.`);
+        // Fallback to basic cleaning for failed batch
+        const fallbackResponse = await fetch(`${config.serviceUrl}/clean_text`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": config.apiKey || TEST_API_KEY,
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ descriptions: batch }),
+        });
+        
+        if (fallbackResponse.ok) {
+          const fallbackResult = await fallbackResponse.json();
+          allCleanedDescriptions.push(...fallbackResult.cleaned_descriptions);
+          logWarning(`   Used fallback cleaning for batch ${i / batchSize + 1}.`);
+        } else {
+          allCleanedDescriptions.push(...batch);
+          logWarning(`   Using original descriptions for failed batch ${i / batchSize + 1}.`);
+        }
         continue;
       }
 
@@ -1190,6 +1221,12 @@ const runBulkCleanAndGroupTest = async (config) => {
         result.cleaned_descriptions.length === batch.length
       ) {
         allCleanedDescriptions.push(...result.cleaned_descriptions);
+        
+        // Merge groups from this batch
+        if (result.groups && typeof result.groups === 'object') {
+          Object.assign(allGroups, result.groups);
+          logDebug(`   Batch ${i / batchSize + 1}: Found ${Object.keys(result.groups).length} groups`);
+        }
       } else {
         logError(
           `   Error in cleaned_descriptions response for batch ${i / batchSize + 1}. Expected ${
@@ -1200,7 +1237,7 @@ const runBulkCleanAndGroupTest = async (config) => {
         logWarning(`   Using original combined descriptions for malformed batch ${i / batchSize + 1}.`);
       }
       processedCount += batch.length;
-      logInfo(`   Processed ${processedCount}/${descriptionsToClean.length} descriptions for cleaning.`);
+      logInfo(`   Processed ${processedCount}/${descriptionsToClean.length} descriptions for cleaning and grouping.`);
     }
 
     if (allCleanedDescriptions.length !== descriptionsToClean.length) {

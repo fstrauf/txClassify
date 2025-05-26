@@ -1,25 +1,76 @@
-"""Utility functions for cleaning and processing text data using spaCy NER."""
+"""Generic utility functions for cleaning and processing financial transaction text data."""
 
 import re
 import logging
 import spacy
 import os
-import csv  # Added for reading CSV
-import ahocorasick  # Added for Aho-Corasick
-import Levenshtein  # NEW IMPORT
+import csv
+import ahocorasick
+import Levenshtein
+import numpy as np
+from sklearn.cluster import DBSCAN
+from sklearn.metrics.pairwise import cosine_similarity
+from scipy.cluster.hierarchy import linkage, fcluster
 from spacy.language import Language
 from spacy.matcher import Matcher
 from spacy.tokens import Token, Doc
-from typing import List, Union, Dict
-from config import USE_NZ_BUSINESS_DATA_MATCHING  # Added import
+from typing import List, Union, Dict, Optional, Tuple
+from config import USE_NZ_BUSINESS_DATA_MATCHING
+from functools import lru_cache
+import hashlib
+
+try:
+    import hdbscan
+    HDBSCAN_AVAILABLE = True
+except ImportError:
+    HDBSCAN_AVAILABLE = False
+    logging.getLogger(__name__).warning("HDBSCAN not available. Install with: pip install hdbscan")
+
+try:
+    from utils.local_embedding_utils import generate_embeddings
+    EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    EMBEDDINGS_AVAILABLE = False
+    logging.getLogger(__name__).warning("Local embedding utils not available")
 
 logger = logging.getLogger(__name__)
 
 
-# --- Define CleaningConfig Class FIRST ---
+# --- Define CleaningConfig Class ---
 class CleaningConfig:
     def __init__(self):
+        # Generic cleaning options
         self.remove_card_numbers = True
+        self.remove_reference_codes = True
+        self.remove_transaction_codes = True
+        self.remove_merchant_codes = True
+        self.normalize_whitespace = True
+        self.to_lowercase = True
+        
+        # Advanced cleaning options
+        self.use_nlp_extraction = True
+        self.remove_common_payment_terms = True
+        self.remove_bank_codes = True
+        self.remove_urls_emails = True
+        self.normalize_merchant_names = True
+        
+        # Grouping options
+        self.use_fuzzy_matching = True
+        self.similarity_threshold = 0.85
+        
+        # Embedding-based grouping options
+        self.use_embedding_grouping = False
+        self.embedding_clustering_method = "similarity"  # "hdbscan", "dbscan", "hierarchical", "similarity"
+        self.embedding_similarity_threshold = 0.8  # Optimized default
+        self.embedding_min_cluster_size = 2
+        self.embedding_eps = 0.25  # Optimized for merchant names (lower = tighter clusters)
+        self.embedding_min_samples = 2  # For DBSCAN
+        self.embedding_hierarchical_threshold = 0.3  # Optimized (lower = tighter clusters)
+        self.embedding_fallback_to_fuzzy = True  # Fallback to fuzzy matching if embeddings fail
+        self.embedding_use_cache = True  # Enable/disable embedding caching
+        self.embedding_batch_size = 50  # Process embeddings in batches for memory efficiency
+        
+        # Legacy options for backward compatibility
         self.normalize_merchants = True
         self.use_fuzzy_matching_post_clean = True
         self.similarity_threshold_post_clean = 0.85
@@ -31,948 +82,892 @@ class CleaningConfig:
         self.perform_company_suffix_removal = True
 
     def to_dict(self):
-        return {
-            "remove_card_numbers": self.remove_card_numbers,
-            "normalize_merchants": self.normalize_merchants,
-            "use_fuzzy_matching_post_clean": self.use_fuzzy_matching_post_clean,
-            "similarity_threshold_post_clean": self.similarity_threshold_post_clean,
-            "group_by_category_post_clean": self.group_by_category_post_clean,
-            "apply_nlp_features_extraction": self.apply_nlp_features_extraction,
-            "apply_merchant_variants_normalization": self.apply_merchant_variants_normalization,
-            "apply_alias_resolution": self.apply_alias_resolution,
-            "perform_aggressive_store_number_removal": self.perform_aggressive_store_number_removal,
-            "perform_company_suffix_removal": self.perform_company_suffix_removal,
-        }
+        return {k: v for k, v in self.__dict__.items()}
 
 
-# --- END CleaningConfig Class ---
-
-# --- Aho-Corasick Automaton for NZ Businesses ---
-NZ_BUSINESS_AUTOMATON = ahocorasick.Automaton()
-NZ_BUSINESS_DATA_FILEPATH = os.getenv(
-    "NZ_BUSINESS_DATA_PATH", "data/nz_business_data.csv"
-)
-# --- End Aho-Corasick ---
-
-# --- Define Noise Patterns and Custom Component FIRST ---
-
-# Patterns for the component added to the main pipeline (transaction noise)
+# --- Generic Transaction Noise Patterns ---
 transaction_noise_patterns = [
-    # Common transaction noise words/phrases
-    [{"LOWER": "tap"}, {"LOWER": "and", "OP": "?"}, {"LOWER": "pay"}],
-    [{"LOWER": "direct"}, {"LOWER": "debit"}],
-    [{"LOWER": "eftpos"}],
-    [{"LOWER": "purchase"}],
+    # Payment method indicators
+    [{"LOWER": {"IN": ["visa", "eftpos", "mastercard", "amex", "debit", "credit"]}}],
+    [{"LOWER": "tap"}, {"LOWER": {"IN": ["and", "&"]}, "OP": "?"}, {"LOWER": {"IN": ["pay", "go"]}}],
+    [{"LOWER": "contactless"}],
+    [{"LOWER": "chip"}, {"LOWER": {"IN": ["and", "&"]}, "OP": "?"}, {"LOWER": "pin"}],
+    
+    # Transaction types
+    [{"LOWER": {"IN": ["purchase", "payment", "transfer", "withdrawal", "deposit"]}}],
+    [{"LOWER": "direct"}, {"LOWER": {"IN": ["debit", "credit"]}}],
+    [{"LOWER": "automatic"}, {"LOWER": "payment"}],
+    [{"LOWER": {"IN": ["atm", "pos", "eft"]}}],
     [{"LOWER": "authorised"}],
-    [{"LOWER": "payment"}],
     [{"LOWER": "netbank"}],
     [{"LOWER": "commbank"}],
     [{"LOWER": "app"}],
+    
+    # Generic transaction codes (3-6 digits, letters, or combinations)
+    [{"TEXT": {"REGEX": r"^[A-Z]{2,4}\d{2,4}$"}}],  # e.g., "DF", "SP", "IF"
+    [{"TEXT": {"REGEX": r"^\d{3,6}$"}}],  # Standalone numbers
+    [{"TEXT": {"REGEX": r"^[A-Z]\d+[A-Z]?$"}}],  # e.g., "C", "S3D7741"
+    
+    # Bank/institution codes
+    [{"LOWER": {"REGEX": r"^s\d[a-z]\d+$"}}],  # ANZ style codes like "s3d7741"
+    [{"TEXT": {"REGEX": r"^\*{4,}$"}}],  # Masked numbers
+    
     # Common prefixes observed in logs
-    [{"LOWER": "df"}],  # Often appears with card numbers
-    [{"LOWER": "if"}],  # Often appears with card numbers or online services
-    [{"LOWER": "sp"}],  # Often a prefix for Shopify or similar payment processors
-    # Keywords often related to noise (can be part of ORG, matcher checks this)
-    [{"LOWER": "card"}],
-    [{"LOWER": "value"}],
-    [{"LOWER": "date"}],
-    [{"LOWER": "ref"}],
-    [{"LOWER": "reference"}],
-    [{"LOWER": "txn"}],
+    [{"LOWER": "df"}],
+    [{"LOWER": "if"}],
+    [{"LOWER": "sp"}],
+    
+    # Keywords often related to noise
+    [{"LOWER": {"IN": ["card", "value", "date", "ref", "reference", "txn"]}}],
+    
     # Specific digit sequences (>= 5 digits)
     [{"IS_DIGIT": True, "LENGTH": {">=": 5}}],
 ]
 
-# Patterns for generic location noise (used *inside* extract_nlp_features)
+# Patterns for generic location noise
 location_noise_patterns = [
-    # Common Country Codes/Names (English speaking focus for now)
-    [{"LOWER": "au"}],
-    [{"LOWER": "aus"}],
-    [{"LOWER": "australia"}],
-    [{"LOWER": "us"}],
-    [{"LOWER": "usa"}],
-    [{"LOWER": "united"}, {"LOWER": "states"}],
-    [{"LOWER": "gb"}],
-    [{"LOWER": "gbr"}],
-    [{"LOWER": "uk"}],
-    [{"LOWER": "united"}, {"LOWER": "kingdom"}],
-    [{"LOWER": "ca"}],
-    [{"LOWER": "can"}],
-    [{"LOWER": "canada"}],
-    [{"LOWER": "nz"}],
-    [{"LOWER": "nzl"}],
+    # Common Country Codes/Names
+    [{"LOWER": {"IN": ["au", "aus", "australia"]}}],
+    [{"LOWER": {"IN": ["us", "usa"]}}],
+    [{"LOWER": "united"}, {"LOWER": {"IN": ["states", "kingdom"]}}],
+    [{"LOWER": {"IN": ["gb", "gbr", "uk"]}}],
+    [{"LOWER": {"IN": ["ca", "can", "canada"]}}],
+    [{"LOWER": {"IN": ["nz", "nzl"]}}],
     [{"LOWER": "new"}, {"LOWER": "zealand"}],
-    # Common AU State Codes (Example - expand as needed)
-    [{"LOWER": "nsw"}],
-    [{"LOWER": "vic"}],
-    [{"LOWER": "qld"}],
-    [{"LOWER": "wa"}],
-    [{"LOWER": "sa"}],
-    [{"LOWER": "tas"}],
-    [{"LOWER": "act"}],
-    [{"LOWER": "nt"}],
-    # --- NEW --- Specific common cities/suburbs often appearing as noise
-    [{"LOWER": "dee"}],  # For "DEE WHY"
-    [{"LOWER": "ns"}],  # Common noise observed
+    
+    # Common State/Province Codes
+    [{"LOWER": {"IN": ["nsw", "vic", "qld", "wa", "sa", "tas", "act", "nt"]}}],
+    
+    # Common noise terms
+    [{"LOWER": {"IN": ["dee", "ns"]}}],
 ]
 
-# --- Custom spaCy Component (Handles Transaction Noise) ---
+# --- Custom spaCy Component ---
 if not Token.has_extension("is_transaction_noise"):
     Token.set_extension("is_transaction_noise", default=False)
 
-
-@Language.component("transaction_noise_filter")  # Component name matches add_pipe
+@Language.component("transaction_noise_filter")
 def transaction_noise_filter_component(doc: Doc) -> Doc:
-    """
-    Marks transaction-specific noise patterns.
-    Sets token._.is_transaction_noise = True
-    """
-    # Matcher is instantiated here, specific to this component call
+    """Marks transaction-specific noise patterns."""
     matcher = Matcher(doc.vocab)
     matcher.add("TRANSACTION_NOISE", transaction_noise_patterns)
     matches = matcher(doc)
 
     for match_id, start, end in matches:
-        pattern_name = doc.vocab.strings[match_id]
-        span = doc[start:end]
-        logger.debug(f"Transaction Noise Matcher: '{span.text}' ({pattern_name})")
         for i in range(start, end):
             doc[i]._.is_transaction_noise = True
     return doc
 
-
-# --- Load spaCy Model and Add Custom Component (AFTER component definition) ---
+# --- Load spaCy Model ---
 nlp = None
-SPA_MODEL_NAME = "en_core_web_sm"
+try:
+    nlp = spacy.load("en_core_web_sm")
+    if not nlp.has_pipe("transaction_noise_filter"):
+        nlp.add_pipe("transaction_noise_filter", after="ner" if "ner" in nlp.pipe_names else True)
+    logger.info("spaCy model loaded successfully")
+except Exception as e:
+    logger.error(f"Could not load spaCy model: {e}")
 
+# --- NZ Business Data Loading (kept for backward compatibility) ---
+NZ_BUSINESS_AUTOMATON = ahocorasick.Automaton()
+NZ_BUSINESS_DATA_FILEPATH = os.getenv("NZ_BUSINESS_DATA_PATH", "data/nz_business_data.csv")
 
-# --- Function to load NZ Business Data into Aho-Corasick Automaton ---
 def load_nz_business_data():
     """Loads NZ business names from a CSV file into the Aho-Corasick automaton."""
     global NZ_BUSINESS_AUTOMATON
     loaded_count = 0
     if not os.path.exists(NZ_BUSINESS_DATA_FILEPATH):
-        logger.warning(
-            f"NZ business data file not found at {NZ_BUSINESS_DATA_FILEPATH}. Automaton will be empty."
-        )
+        logger.warning(f"NZ business data file not found at {NZ_BUSINESS_DATA_FILEPATH}")
         return
 
     try:
         with open(NZ_BUSINESS_DATA_FILEPATH, mode="r", encoding="utf-8") as csvfile:
             reader = csv.DictReader(csvfile)
             if "ENTITY_NAME" not in reader.fieldnames:
-                logger.error(
-                    f"'ENTITY_NAME' column not found in {NZ_BUSINESS_DATA_FILEPATH}. Cannot load NZ business names."
-                )
+                logger.error(f"'ENTITY_NAME' column not found in {NZ_BUSINESS_DATA_FILEPATH}")
                 return
             for row in reader:
                 business_name = row["ENTITY_NAME"]
                 if business_name and business_name.strip():
-                    # Store names in lowercase for case-insensitive matching
-                    # The value stored can be the name itself or any other identifier
                     NZ_BUSINESS_AUTOMATON.add_word(
                         business_name.strip().lower(), business_name.strip().lower()
                     )
                     loaded_count += 1
         if loaded_count > 0:
             NZ_BUSINESS_AUTOMATON.make_automaton()
-            logger.info(
-                f"Successfully loaded {loaded_count} NZ business names into Aho-Corasick automaton from {NZ_BUSINESS_DATA_FILEPATH}."
-            )
-        else:
-            logger.warning(
-                f"No NZ business names loaded from {NZ_BUSINESS_DATA_FILEPATH}. File might be empty or names are invalid."
-            )
-    except FileNotFoundError:
-        logger.error(
-            f"NZ business data file not found: {NZ_BUSINESS_DATA_FILEPATH}. Ensure the path is correct."
-        )
+            logger.info(f"Successfully loaded {loaded_count} NZ business names")
     except Exception as e:
-        logger.error(
-            f"Error loading NZ business data from {NZ_BUSINESS_DATA_FILEPATH}: {e}",
-            exc_info=True,
-        )
+        logger.error(f"Error loading NZ business data: {e}")
 
+# Load NZ business data if enabled
+if USE_NZ_BUSINESS_DATA_MATCHING:
+    load_nz_business_data()
 
-# --- End NZ Business Data Loading ---
+# --- Generic Cleaning Functions ---
 
+def remove_card_numbers(text: str) -> str:
+    """Remove various credit card number patterns."""
+    patterns = [
+        # Full card numbers (various formats)
+        r'\b\d{4}[-\s]?\*{4}[-\s]?\*{4}[-\s]?\d{4}\b',
+        r'\b\d{4}[-\s]?\d{2}\*{2}[-\s]?\*{4}[-\s]?\d{4}\b',
+        r'\b\*{4}[-\s]?\*{4}[-\s]?\*{4}[-\s]?\d{4}\b',
+        r'\b\d{4}[-\s]?\*{4}[-\s]?\*{4}[-\s]?\*{4}\b',
+        
+        # Partial card numbers
+        r'\b\d{4}[-\s]?\*+[-\s]?\*+[-\s]?\d{1,4}\b',
+        r'\bxx\d+\b',
+        r'\b\*{4,}\b',
+        
+        # Card numbers with preceding indicators
+        r'\bcard\s*(?:number\s*)?\d{4}[-\s\*]{4,}\d{0,4}\b',
+        
+        # Specific format from your data: "4835-****-****-0311 Df"
+        r'\b\d{4}-\*{4}-\*{4}-\d{4}\s*[A-Z]{1,3}\b',
+        
+        # More generic masked patterns
+        r'\b[*xX]{4}-[*xX]{4}-[*xX]{4}-[*xX]{4}\b',
+        r'\b\d{4}[-\s]\*+[-\s]\*+[-\s]\d{4}\s*[A-Z]{1,3}\b',
+        
+        # Common variations
+        r'\b\d{4}\*+\d{1,4}\s*[A-Z]{1,3}\b',
+        r'\b\*{8,16}\s*[A-Z]{1,3}\b',
+    ]
+    
+    for pattern in patterns:
+        text = re.sub(pattern, ' ', text, flags=re.IGNORECASE)
+    
+    return text
 
-try:
-    logger.info(f"Attempting to load spaCy model by name: {SPA_MODEL_NAME}")
-    nlp = spacy.load(SPA_MODEL_NAME)
-    logger.info(f"Successfully loaded spaCy model: {SPA_MODEL_NAME}")
+def remove_reference_codes(text: str) -> str:
+    """Remove various reference and transaction codes."""
+    patterns = [
+        # Transaction reference codes
+        r'\b(?:ref|reference|txn|transaction)[:.]?\s*[A-Z0-9]{3,}\b',
+        r'\b[A-Z]{1,3}\s*\d{6,}\b',  # e.g., "G Br 134924"
+        r'\b\d{6,}\b',  # Long number sequences (likely references)
+        
+        # Bank codes and identifiers  
+        r'\b[A-Z]\d+[A-Z]?\d*\b',  # e.g., "S3D7741", "C", "A"
+        r'\b\d+[A-Z]+\d*\b',  # e.g., "2770157Nova"
+        
+        # Date/time codes
+        r'\b\d{6,}[A-Z]*\b',  # e.g., "250420131128"
+        
+        # Generic codes
+        r'\b[A-Z]{2,4}\d+\b',
+        r'\b\d+[A-Z]{2,4}\b',
+    ]
+    
+    for pattern in patterns:
+        text = re.sub(pattern, ' ', text, flags=re.IGNORECASE)
+    
+    return text
 
-    COMPONENT_NAME = "transaction_noise_filter"
-    if "ner" in nlp.pipe_names:
-        if not nlp.has_pipe(COMPONENT_NAME):
-            nlp.add_pipe(COMPONENT_NAME, after="ner")
-            logger.info(
-                f"spaCy model '{SPA_MODEL_NAME}' loaded and '{COMPONENT_NAME}' added after ner."
-            )
-        else:
-            logger.info(f"'{COMPONENT_NAME}' already in spaCy pipeline (after ner).")
-    else:
-        if not nlp.has_pipe(COMPONENT_NAME):
-            nlp.add_pipe(COMPONENT_NAME, last=True)
-            logger.warning(
-                f"spaCy 'ner' component not found. Added '{COMPONENT_NAME}' last."
-            )
-        else:
-            logger.warning(f"'{COMPONENT_NAME}' already in spaCy pipeline (last).")
+def remove_bank_codes(text: str) -> str:
+    """Remove bank-specific codes and identifiers."""
+    patterns = [
+        # ANZ ATM codes
+        r'\banz\s+s\d[a-z]\d+\b',
+        r'\bs\d[a-z]\d+\b',
+        
+        # Generic bank location codes
+        r'\b(?:br|branch)\s*\d+\b',
+        r'\b[A-Z]{2,}\s+\d+\b',
+        
+        # Currency conversion indicators
+        r'\bconverted\s+at\s+[\d.]+\b',
+        r'\bincludes?\s+.*?conversion\s+charge\b',
+        
+        # International codes
+        r'\b[A-Z]{3}\s+[\d.]+\s+converted\b',
+    ]
+    
+    for pattern in patterns:
+        text = re.sub(pattern, ' ', text, flags=re.IGNORECASE)
+    
+    return text
 
-    logger.info(f"Pipeline components: {nlp.pipe_names}")
+def remove_merchant_codes(text: str) -> str:
+    """Remove merchant-specific codes and identifiers."""
+    patterns = [
+        # Store numbers and branch codes
+        r'\b(?:store|branch|outlet|location)\s*#?\d+\b',
+        r'\b#\d{3,}\b',
+        r'\b-\s*\d{3,5}$',  # Trailing store numbers
+        r'\b[A-Z]+\s*\d{3,5}$',  # e.g., "BAYF 123"
+        
+        # Location suffixes that are likely codes
+        r'\b[A-Z]{2,4}$',  # e.g., "Mt", "Bl", "Ra" at end
+        r'\b[A-Z]\s*\d+[A-Z]?$',  # e.g., "P", "O", "N" at end
+        
+        # Generic merchant identifiers
+        r'\b\d{4,8}[A-Z]*\b',  # Long numbers (SKUs, etc.)
+    ]
+    
+    for pattern in patterns:
+        text = re.sub(pattern, ' ', text, flags=re.IGNORECASE)
+    
+    return text
 
-    # --- Load NZ Business Data After NLP Model ---
-    if USE_NZ_BUSINESS_DATA_MATCHING:  # Conditional loading
-        load_nz_business_data()
-    else:
-        logger.info(
-            "USE_NZ_BUSINESS_DATA_MATCHING is False. Skipping NZ business data load."
-        )
-    # ---
-
-except OSError as e:
-    logger.error(f"OSError loading spaCy model '{SPA_MODEL_NAME}' by name. Error: {e}")
-    logger.error(
-        f"Ensure '{SPA_MODEL_NAME}' was downloaded and installed correctly in the Dockerfile."
-    )
-    raise
-except Exception as e:
-    logger.error(f"Error adding custom component to spaCy pipeline: {e}")
-    # nlp remains None, functions below will handle this
-
-
-# --- Define Other Global Variables (e.g., company_suffixes) ---
-company_suffixes = {
-    "inc",
-    "ltd",
-    "llc",
-    "pty",
-    "corp",
-    "gmbh",
-    "ag",
-    "bv",
-    "co",
-    "limited",
-    "corporation",
-}
-
-
-# --- Feature Extraction and Cleaning Functions ---
-def extract_nlp_features(text: str, config: CleaningConfig = None) -> str:
-    """Extracts the most likely merchant name using spaCy NER, POS, Matchers, and heuristics."""
-    if not config:  # Default config if none provided for direct calls to this function
-        config = CleaningConfig()
-
+def extract_merchant_name(text: str) -> str:
+    """Extract the most likely merchant name using NLP and heuristics."""
     if not nlp or not text:
         return text
+    
+    # Check for quoted text first (highest priority)
+    quoted_match = re.search(r'"([^"]+)"', text)
+    if quoted_match:
+        return quoted_match.group(1).strip()
+    
+    # Process with spaCy
+    doc = nlp(text)
+    
+    # Collect organization entities
+    org_entities = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
+    if org_entities:
+        # Return the longest organization entity
+        return max(org_entities, key=len)
+    
+    # Fallback: extract meaningful tokens
+    meaningful_tokens = []
+    for token in doc:
+        # Skip noise tokens
+        if token._.is_transaction_noise:
+            continue
+        if token.is_punct or token.is_space or token.is_stop:
+            continue
+        if token.pos_ in {"PROPN", "NOUN", "X"}:  # Proper nouns, nouns, other
+            meaningful_tokens.append(token.text)
+    
+    if meaningful_tokens:
+        return " ".join(meaningful_tokens)
+    
+    return text
 
-    text_for_spacy_pipeline = text  # Default to the input text
-
-    # --- Step -1: Aho-Corasick Matching for NZ Businesses (PRIORITY) ---
-    if USE_NZ_BUSINESS_DATA_MATCHING:  # Conditional matching
-        # Match against the lowercased version of the input text
-        text_to_match_lower = text.lower()
-        longest_match_original_casing = None
-        longest_match_len = 0
-
-        # Check if automaton has words before iterating
-        if (
-            NZ_BUSINESS_AUTOMATON.kind != ahocorasick.EMPTY
-        ):  # kind should be ahocorasick.AHOCORASICK
-            try:  # make_automaton might not have been called if file was empty or error
-                for (
-                    end_index_in_lower,
-                    matched_value_lower,
-                ) in NZ_BUSINESS_AUTOMATON.iter(text_to_match_lower):
-                    start_index_in_lower = (
-                        end_index_in_lower - len(matched_value_lower) + 1
-                    )
-                    current_match_len = len(matched_value_lower)
-                    if current_match_len > longest_match_len:
-                        longest_match_len = current_match_len
-                        # Extract the original cased substring from the input 'text'
-                        longest_match_original_casing = text[
-                            start_index_in_lower : end_index_in_lower + 1
-                        ]
-            except Exception as e:
-                logger.error(f"Error during Aho-Corasick matching: {e}", exc_info=True)
-
-        if longest_match_original_casing:
-            text_for_spacy_pipeline = longest_match_original_casing
-            logger.debug(
-                f"Prioritized NZ Business Match (Aho-Corasick): '{text_for_spacy_pipeline}' from '{text}'"
-            )
-        else:
-            # --- Step 0: Check for Quoted Text (Fallback if no NZ Biz Match or if feature is off) ---
-            quoted_match = re.search(r'"(.+?)"', text)  # text is pre_cleaned_text
-            if quoted_match:
-                extracted_name = quoted_match.group(1).strip()
-                extracted_name = re.sub(r"\\s+", " ", extracted_name).strip()
-                if extracted_name:
-                    text_for_spacy_pipeline = extracted_name
-                    logger.debug(
-                        f"Prioritized Quoted Text (NZ Biz Feature OFF): '{text_for_spacy_pipeline}' from '{text}'"
-                    )
-    else:
-        # --- Step 0: Check for Quoted Text (Fallback if NZ Biz Match feature is off) ---
-        logger.debug(
-            "USE_NZ_BUSINESS_DATA_MATCHING is False. Skipping Aho-Corasick, proceeding to quoted text check."
-        )
-        quoted_match = re.search(r'"(.+?)"', text)
-        if quoted_match:
-            extracted_name = quoted_match.group(1).strip()
-            extracted_name = re.sub(r"\\s+", " ", extracted_name).strip()
-            if extracted_name:
-                text_for_spacy_pipeline = extracted_name
-                logger.debug(
-                    f"Prioritized Quoted Text (NZ Biz Feature OFF): '{text_for_spacy_pipeline}' from '{text}'"
-                )
-    # If neither Aho-Corasick (if enabled) nor quoted text match, text_for_spacy_pipeline remains the original 'text'
-
-    # --- Process with spaCy Pipeline (NER + Transaction Noise Matcher) ---
-    # --- Disable only \"lemmatizer\" as \"parser\" is needed for noun_chunks fallback ---
-    doc = nlp(text_for_spacy_pipeline, disable=["lemmatizer"])
-
-    # --- Define POS tags to generally keep ---
-    KEEP_POS = {"PROPN", "NOUN", "SYM"}  # Keep Proper Nouns, Nouns, Symbols
-
-    # --- Step 1: Identify ORG entities via NER (for protection) ---
-    org_indices = set()
-
-    for ent in doc.ents:
-        if ent.label_ == "ORG":
-            for i in range(ent.start, ent.end):
-                org_indices.add(i)
-            logger.debug(f"NER identified ORG: '{ent.text}'")
-        # else: We don't primarily filter based on other NER labels now
-
-    # --- Step 2: Identify Generic Location Noise with dedicated Matcher ---
-    location_matcher = Matcher(doc.vocab)
-    location_matcher.add("LOCATION_NOISE", location_noise_patterns)
-    location_matches = location_matcher(doc)
-    location_noise_indices = set()
-    for match_id, start, end in location_matches:
-        # Mark indices for potential removal, check ORG overlap later
-        for i in range(start, end):
-            location_noise_indices.add(i)
-        logger.debug(
-            f"Location Matcher identified potential noise: '{doc[start:end].text}'"
-        )
-
-    # --- Step 3: Build Filtered List (Prioritize Noise Removal) ---
-    initial_filtered_tokens = []  # List of Token objects
-    transaction_noise_indices = {
-        i for i, token in enumerate(doc) if token._.is_transaction_noise
+def normalize_merchant_name(text: str) -> str:
+    """Normalize merchant names for better grouping."""
+    if not text:
+        return ""
+    
+    # Common merchant normalizations
+    normalizations = {
+        # Remove common prefixes/suffixes
+        r'\b(?:the|a|an)\s+': '',
+        r'\s+(?:inc|ltd|llc|corp|co|limited|corporation)\b': '',
+        r'\s+(?:pty|gmbh|ag|bv)\b': '',
+        
+        # Normalize common variations
+        r'\bst\b': 'street',
+        r'\brd\b': 'road',
+        r'\bave?\b': 'avenue',
+        r'\bdr\b': 'drive',
+        r'\bmt\b': 'mount',
+        
+        # Remove asterisks and special characters
+        r'[*#@$%&]': '',
+        r'\.com\b': '',
+        
+        # Normalize spacing
+        r'\s+': ' ',
     }
+    
+    text_lower = text.lower()
+    for pattern, replacement in normalizations.items():
+        text_lower = re.sub(pattern, replacement, text_lower, flags=re.IGNORECASE)
+    
+    return text_lower.strip()
 
-    for i, token in enumerate(doc):
-        # Skip punctuation unless it's part of a number/currency or hyphenated word
-        # Let's keep hyphens if they connect alphanumeric chars, otherwise discard.
-        is_hyphen_ok = (
-            token.text == "-"
-            and i > 0
-            and i < len(doc) - 1
-            and doc[i - 1].is_alpha
-            and doc[i + 1].is_alpha
-        )
-        if token.is_punct and not is_hyphen_ok:
-            logger.debug(f"Removing '{token.text}' (POS: {token.pos_}) - Punctuation")
+def clean_transaction_text(text: str, config: Optional[CleaningConfig] = None) -> str:
+    """Main function to clean transaction text generically."""
+    if not config:
+        config = CleaningConfig()
+    
+    if not text or not isinstance(text, str):
+        return ""
+    
+    original_text = text
+    
+    # Step 1: Remove URLs and emails
+    if config.remove_urls_emails:
+        text = re.sub(r'https?://\S+', '', text)
+        text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '', text)
+    
+    # Step 2: Remove card numbers
+    if config.remove_card_numbers:
+        text = remove_card_numbers(text)
+    
+    # Step 3: Remove reference codes
+    if config.remove_reference_codes:
+        text = remove_reference_codes(text)
+    
+    # Step 4: Remove bank codes
+    if config.remove_bank_codes:
+        text = remove_bank_codes(text)
+    
+    # Step 5: Remove merchant codes
+    if config.remove_merchant_codes:
+        text = remove_merchant_codes(text)
+    
+    # Step 6: Normalize whitespace
+    if config.normalize_whitespace:
+        text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Step 7: Extract merchant name using NLP
+    if config.use_nlp_extraction and nlp:
+        text = extract_merchant_name(text)
+    
+    # Step 8: Normalize merchant name
+    if config.normalize_merchant_names:
+        text = normalize_merchant_name(text)
+    
+    # Step 9: Convert to lowercase
+    if config.to_lowercase:
+        text = text.lower()
+    
+    # Final cleanup
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # If result is empty or too short, fall back to a simpler clean
+    if not text or len(text) < 2:
+        # Simple fallback: just remove obvious noise and normalize
+        fallback = original_text
+        fallback = remove_card_numbers(fallback)
+        fallback = re.sub(r'\b[A-Z]{1,3}\s*\d+\b', '', fallback)  # Remove codes
+        fallback = re.sub(r'\s+', ' ', fallback).strip()
+        if fallback and len(fallback) >= 2:
+            text = fallback.lower() if config.to_lowercase else fallback
+    
+    return text
+
+def group_similar_merchants(cleaned_names: List[str], threshold: float = 0.85) -> Dict[str, str]:
+    """Group merchants with similar names using fuzzy matching."""
+    groups = {}
+    canonical_names = {}
+    
+    for name in cleaned_names:
+        if not name:
             continue
-
-        # Skip stop words unless part of an ORG/PRODUCT entity
-        # (Entities like "Bank of America" should keep "of")
-        is_entity_part = token.ent_iob_ != "O" and token.ent_type_ in {
-            "ORG",
-            "PRODUCT",
-        }
-        if token.is_stop and not is_entity_part:
-            logger.debug(f"Removing '{token.text}' (Stop word, not in ORG/PRODUCT)")
-            continue
-
-        # Check noise flags
-        is_loc_match = i in location_noise_indices
-        is_txn_noise = i in transaction_noise_indices  # Check the set
-        is_noise = is_loc_match or is_txn_noise
-
-        # Keep token if it's not noise
-        if not is_noise:
-            initial_filtered_tokens.append(token)
+            
+        best_match = name
+        highest_score = 0.0
+        
+        for canonical in canonical_names.keys():
+            score = Levenshtein.ratio(name, canonical)
+            if score >= threshold and score > highest_score:
+                highest_score = score
+                best_match = canonical
+        
+        if highest_score < threshold:
+            # This is a new canonical name
+            canonical_names[name] = True
+            groups[name] = name
         else:
-            noise_type = "Location Matcher" if is_loc_match else "Transaction Matcher"
-            logger.debug(f"Removing '{token.text}' ({noise_type})")
+            # This belongs to an existing group
+            groups[name] = best_match
+    
+    return groups
 
-    # --- Step 3.5: Refine Tokens - Discard GPE if ORG/PRODUCT appears first ---
-    refined_filtered_tokens = []
-    min_org_prod_token_idx = None
-    min_gpe_token_idx = None
+# --- Embedding-based Grouping Functions ---
 
-    # Find the first occurrence index *within initial_filtered_tokens*
-    for idx, token in enumerate(initial_filtered_tokens):
-        if token.ent_type_ in {"ORG", "PRODUCT"} and min_org_prod_token_idx is None:
-            min_org_prod_token_idx = idx
-        if token.ent_type_ == "GPE" and min_gpe_token_idx is None:
-            min_gpe_token_idx = idx
-        # Optimization: stop if both found
-        if min_org_prod_token_idx is not None and min_gpe_token_idx is not None:
-            break
-
-    discard_gpe = False
-    if (
-        min_org_prod_token_idx is not None
-        and min_gpe_token_idx is not None
-        and min_org_prod_token_idx < min_gpe_token_idx
-    ):
-        discard_gpe = True
-        logger.debug(
-            f"Primary entity (ORG/PRODUCT at index {min_org_prod_token_idx}) found before location (GPE at index {min_gpe_token_idx}). Discarding GPE tokens."
-        )
-
-    if discard_gpe:
-        for token in initial_filtered_tokens:
-            if token.ent_type_ == "GPE":
-                logger.debug(f"Discarding '{token.text}' (GPE after primary entity)")
-                continue
-            refined_filtered_tokens.append(token)
-    else:
-        # If not discarding GPE, use the initial list
-        refined_filtered_tokens = initial_filtered_tokens
-
-    # If all tokens were filtered out, return original text after basic regex
-    if not refined_filtered_tokens:
-        logger.warning(
-            f"All tokens filtered out for '{text}'. Returning basic cleaned: '{text}'"
-        )
-        return text
-
-    # --- Step 4: Build Contiguous Text Spans from Refined Tokens ---
-    contiguous_token_texts = []
-    current_span = []
-    if refined_filtered_tokens:
-        last_token_index = refined_filtered_tokens[0].i - 1
-        for token in refined_filtered_tokens:
-            # If current token does not follow the last one, start a new span
-            if token.i != last_token_index + 1 and current_span:
-                contiguous_token_texts.append(" ".join(current_span))
-                current_span = []
-            current_span.append(token.text)
-            last_token_index = token.i
-        # Add the last span
-        if current_span:
-            contiguous_token_texts.append(" ".join(current_span))
-
-    if not contiguous_token_texts:
-        logger.warning(
-            f"No contiguous text spans formed for '{text}'. Returning basic cleaned: '{text}'"
-        )
-        return text
-
-    # --- Step 5: Select Best Text Span (longest is usually best) ---
-    # We primarily care about the main entity description
-    final_tokens_text = max(contiguous_token_texts, key=len)
-    logger.debug(f"Text after POS/Matcher/GPE filtering: '{final_tokens_text}'")
-
-    # --- Noun Chunk Augmentation Logic (NEW) ---
-    initial_derived_text = final_tokens_text
-    # Define very common, usually noisy, leading/trailing stop words for noun chunks
-    common_leading_trailing_stopwords = {"a", "an", "the"}
-
-    # Only attempt noun chunk augmentation if initial result is short (e.g., 1 or 2 words)
-    # and if the original text processed by spaCy (text_for_spacy_pipeline) wasn't extremely short itself.
-    # This avoids unnecessary processing or over-augmentation of already specific short inputs.
-    if len(initial_derived_text.split()) <= 2 and len(
-        text_for_spacy_pipeline.split()
-    ) > len(initial_derived_text.split()):
-        candidate_chunks = []
-        # Ensure doc (the spaCy processed document) is available
-        if "doc" in locals() and doc is not None and doc.has_annotation("PARSER"):
-            for chunk in doc.noun_chunks:
-                # Check if the initial result is a substring of the chunk (case-insensitive)
-                if initial_derived_text.lower() in chunk.text.lower():
-                    # Lightly clean the chunk:
-                    # 1. Strip common leading/trailing punctuation and digits
-                    cleaned_chunk_text = chunk.text.strip(
-                        " .,;:!?-()[]{}/\\\\\\\"'`0123456789"
-                    )  # Escaped backslash and quote
-
-                    # 2. Conservatively strip common leading/trailing stopwords
-                    temp_chunk_words = cleaned_chunk_text.split()
-                    if (
-                        len(temp_chunk_words) > 1
-                    ):  # Only if more than one word after initial strip
-                        # Leading
-                        if (
-                            temp_chunk_words[0].lower()
-                            in common_leading_trailing_stopwords
-                        ):
-                            temp_chunk_words = temp_chunk_words[1:]
-                        # Trailing (check again if list is not empty)
-                        if (
-                            temp_chunk_words
-                            and temp_chunk_words[-1].lower()
-                            in common_leading_trailing_stopwords
-                        ):
-                            temp_chunk_words = temp_chunk_words[:-1]
-                        cleaned_chunk_text = " ".join(temp_chunk_words)
-
-                    # Further strip any remaining leading/trailing punctuation that might have been exposed
-                    cleaned_chunk_text = cleaned_chunk_text.strip(
-                        " .,;:!?-()[]{}/\\\\\\\"'`"
-                    )  # Escaped backslash and quote
-
-                    if cleaned_chunk_text:  # Ensure chunk is not empty after cleaning
-                        candidate_chunks.append(cleaned_chunk_text)
+def group_merchants_with_embeddings(
+    cleaned_names: List[str], 
+    config: Optional[CleaningConfig] = None
+) -> Dict[str, str]:
+    """
+    Group merchants using embedding-based similarity and clustering.
+    
+    Args:
+        cleaned_names: List of cleaned merchant names
+        config: Configuration for embedding grouping
+        
+    Returns:
+        Dictionary mapping each merchant name to its canonical group name
+    """
+    if not config:
+        config = CleaningConfig()
+    
+    if not EMBEDDINGS_AVAILABLE:
+        logger.warning("Embeddings not available, falling back to fuzzy matching")
+        if config.embedding_fallback_to_fuzzy:
+            return group_similar_merchants(cleaned_names, config.similarity_threshold)
         else:
-            logger.debug(
-                "Skipping noun chunk augmentation as 'doc' is not available or lacks parser annotation."
-            )
-
-        if candidate_chunks:
-            # Prefer the longest valid candidate chunk
-            best_chunk = max(candidate_chunks, key=len)
-
-            # Use the chunk if it's meaningfully longer or provides more context
-            # than the initial POS/Matcher derived text.
-            # Avoid replacing if the chunk is just the same as initial text or shorter.
-            if (
-                len(best_chunk) > len(initial_derived_text)
-                and best_chunk.lower() != initial_derived_text.lower()
-            ):
-                # Ensure we are actually augmenting, not just picking a random longer chunk.
-                # Check if the best_chunk largely contains the initial_derived_text (case-insensitive),
-                # OR if initial_derived_text is just a common word (e.g. "services", "on").
-                # This helps confirm the chunk is an expansion of the initial, often too short, merchant name.
-                if initial_derived_text.lower() in best_chunk.lower() or (
-                    len(initial_derived_text.split()) == 1
-                    and initial_derived_text.lower() not in company_suffixes
-                    and not any(char.isdigit() for char in initial_derived_text)
-                ):
-                    logger.debug(
-                        f"Noun chunk augmentation: Replacing '{initial_derived_text}' with '{best_chunk}'"
-                    )
-                    final_tokens_text = best_chunk  # Update with the augmented chunk
+            return {name: name for name in cleaned_names if name}
+    
+    # Filter out empty names
+    valid_names = [name for name in cleaned_names if name and name.strip()]
+    if len(valid_names) < 2:
+        return {name: name for name in valid_names}
+    
+    # For large datasets, process in batches to manage memory
+    if len(valid_names) > config.embedding_batch_size:
+        logger.info(f"Processing {len(valid_names)} names in batches of {config.embedding_batch_size}")
+        return _process_large_dataset_in_batches(valid_names, cleaned_names, config)
+    
+    # Check cache first (if enabled)
+    embeddings = None
+    if config.embedding_use_cache:
+        cached_embeddings = _get_cached_embeddings(valid_names)
+        if cached_embeddings is not None:
+            logger.info(f"Using cached embeddings for {len(valid_names)} merchant names")
+            embeddings = cached_embeddings
+    
+    # Generate embeddings if not found in cache
+    if embeddings is None:
+        try:
+            # Generate embeddings
+            logger.info(f"Generating embeddings for {len(valid_names)} merchant names")
+            embeddings = generate_embeddings(valid_names)
+            
+            if embeddings is None or embeddings.size == 0:
+                logger.warning("Failed to generate embeddings, falling back to fuzzy matching")
+                if config.embedding_fallback_to_fuzzy:
+                    return group_similar_merchants(cleaned_names, config.similarity_threshold)
                 else:
-                    logger.debug(
-                        f"Noun chunk '{best_chunk}' considered but not used as it doesn't clearly augment '{initial_derived_text}' in a related way."
-                    )
+                    return {name: name for name in valid_names}
+            
+            # Cache the generated embeddings (if caching enabled)
+            if config.embedding_use_cache:
+                _cache_embeddings(valid_names, embeddings)
+        
+        except Exception as e:
+            logger.error(f"Error in embedding-based grouping: {e}")
+            if config.embedding_fallback_to_fuzzy:
+                logger.info("Falling back to fuzzy matching")
+                return group_similar_merchants(cleaned_names, config.similarity_threshold)
             else:
-                logger.debug(
-                    f"Longest noun chunk '{best_chunk}' not chosen as it's not substantially better than initial '{initial_derived_text}'."
-                )
-        else:
-            logger.debug(
-                f"No suitable noun chunks found to augment '{initial_derived_text}'."
-            )
+                return {name: name for name in cleaned_names if name}
+    
+    # Perform clustering based on method
+    if config.embedding_clustering_method == "hdbscan":
+        groups = _cluster_with_hdbscan(valid_names, embeddings, config)
+    elif config.embedding_clustering_method == "dbscan":
+        groups = _cluster_with_dbscan(valid_names, embeddings, config)
+    elif config.embedding_clustering_method == "hierarchical":
+        groups = _cluster_with_hierarchical(valid_names, embeddings, config)
+    elif config.embedding_clustering_method == "similarity":
+        groups = _cluster_with_similarity(valid_names, embeddings, config)
     else:
-        logger.debug(
-            f"Skipping noun chunk augmentation for initial result '{initial_derived_text}' (either not short or input was already short)."
+        logger.warning(f"Unknown clustering method: {config.embedding_clustering_method}")
+        groups = _cluster_with_similarity(valid_names, embeddings, config)
+    
+    # Add back any empty names that were filtered out
+    for name in cleaned_names:
+        if not name or not name.strip():
+            groups[name] = name
+            
+    return groups
+
+def _cluster_with_hdbscan(names: List[str], embeddings: np.ndarray, config: CleaningConfig) -> Dict[str, str]:
+    """Cluster using HDBSCAN algorithm."""
+    if not HDBSCAN_AVAILABLE:
+        logger.warning("HDBSCAN not available, falling back to similarity clustering")
+        return _cluster_with_similarity(names, embeddings, config)
+    
+    try:
+        # Convert to distance metric (1 - cosine similarity)
+        similarity_matrix = cosine_similarity(embeddings)
+        distance_matrix = 1 - similarity_matrix
+        
+        # Optimize HDBSCAN parameters based on dataset size
+        min_cluster_size = max(2, min(config.embedding_min_cluster_size, len(names) // 10))
+        
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            metric='precomputed',
+            cluster_selection_epsilon=0.1  # Add parameter for better control
         )
-    # --- End Noun Chunk Augmentation ---
+        cluster_labels = clusterer.fit_predict(distance_matrix)
+        
+        # Log clustering results
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        n_noise = list(cluster_labels).count(-1)
+        logger.info(f"HDBSCAN clustering: {len(names)} names -> {n_clusters} clusters, {n_noise} noise points")
+        
+        return _create_groups_from_labels(names, cluster_labels)
+        
+    except Exception as e:
+        logger.error(f"Error in HDBSCAN clustering: {e}")
+        return _cluster_with_similarity(names, embeddings, config)
 
-    # --- Step 5.5: Remove Company Suffixes (NEW) ---
-    if config.perform_company_suffix_removal and final_tokens_text:
-        logger.debug(f"Attempting company suffix removal on: '{final_tokens_text}'")
-        words = final_tokens_text.split()
-        if words:
-            # Check last word
-            if words[-1].lower() in company_suffixes:
-                logger.debug(
-                    f"Removing company suffix '{words[-1]}' from '{final_tokens_text}'"
-                )
-                final_tokens_text = " ".join(words[:-1]).strip()
-            # Check last two words if they form a known suffix (e.g. "pty ltd") - less common for current list but good practice
-            elif (
-                len(words) > 1
-                and (words[-2].lower() + " " + words[-1].lower()) in company_suffixes
-            ):
-                logger.debug(
-                    f"Removing company suffix '{words[-2]} {words[-1]}' from '{final_tokens_text}'"
-                )
-                final_tokens_text = " ".join(words[:-2]).strip()
-
-    # --- Step 6: Final Cleanup on Selected Span ---
-    cleaned_span = final_tokens_text
-
-    # 6a. Remove standalone 3 or 4 digit numbers (potential store/branch codes)
-    if config.perform_aggressive_store_number_removal:
-        logger.debug(f"Attempting aggressive store number removal on: '{cleaned_span}'")
-        store_number_patterns = [
-            r"(?:(?<=^)|(?<=\s))#?\d{3,5}(?=\s|$)",  # Standalone 3-5 digit numbers
-            r"(?:store|branch|outlet)\s*#?\d+",  # "store 123" patterns
-            r"\b\d+[a-z]\b",  # "123a" style identifiers
-            r"[-\s]\d{3,4}$",  # Trailing store numbers
-        ]
-        for pattern in store_number_patterns:
-            cleaned_span = re.sub(
-                pattern, "", cleaned_span, flags=re.IGNORECASE
-            )  # Added IGNORECASE for robustness
-            logger.debug(
-                f"Step 6a - After applying store number pattern '{pattern}': '{cleaned_span}'"
-            )
-
-    # 6b. Remove leading/trailing hyphens and cleanup hyphens that might have become standalone
-    # Strip leading/trailing whitespace and hyphens iteratively.
-    # Handles cases like " - ", "word -", "- word"
-    temp_cleaned_span = cleaned_span.strip()
-    while temp_cleaned_span.startswith("-") or temp_cleaned_span.endswith("-"):
-        temp_cleaned_span = temp_cleaned_span.strip(
-            "-"
-        ).strip()  # Strip hyphens then whitespace
-    cleaned_span = temp_cleaned_span
-    logger.debug(f"Step 6b - After hyphen cleanup: '{cleaned_span}'")
-
-    # Normalize whitespace again (collapse multiple spaces, strip again)
-    final_cleaned_text = re.sub(r"\\s+", " ", cleaned_span).strip()
-    logger.debug(
-        f"Step 6c - After final whitespace normalization: '{final_cleaned_text}'"
-    )
-    # Original log for context, can be removed if new logs are sufficient
-    logger.debug(
-        f"Final extracted features (after step 6): '{final_cleaned_text}' from input to spaCy '{text_for_spacy_pipeline}' from original pre-cleaned '{text}'"
-    )
-
-    if not final_cleaned_text:
-        logger.warning(
-            f"Final cleaning resulted in empty string for original: '{text}'. Returning basic cleaned: '{text}'"
+def _cluster_with_dbscan(names: List[str], embeddings: np.ndarray, config: CleaningConfig) -> Dict[str, str]:
+    """Cluster using DBSCAN algorithm."""
+    try:
+        # Convert to distance metric (1 - cosine similarity)  
+        similarity_matrix = cosine_similarity(embeddings)
+        distance_matrix = 1 - similarity_matrix
+        
+        # Adaptive eps based on dataset size
+        adaptive_eps = min(config.embedding_eps, 0.5 - (len(names) / 1000) * 0.1)
+        adaptive_eps = max(0.1, adaptive_eps)  # Don't go below 0.1
+        
+        clusterer = DBSCAN(
+            eps=adaptive_eps,
+            min_samples=config.embedding_min_samples,
+            metric='precomputed'
         )
-        return text
+        cluster_labels = clusterer.fit_predict(distance_matrix)
+        
+        # Log clustering results
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        n_noise = list(cluster_labels).count(-1)
+        logger.info(f"DBSCAN clustering (eps={adaptive_eps:.3f}): {len(names)} names -> {n_clusters} clusters, {n_noise} noise points")
+        
+        return _create_groups_from_labels(names, cluster_labels)
+        
+    except Exception as e:
+        logger.error(f"Error in DBSCAN clustering: {e}")
+        return _cluster_with_similarity(names, embeddings, config)
 
-    return final_cleaned_text
+def _cluster_with_hierarchical(names: List[str], embeddings: np.ndarray, config: CleaningConfig) -> Dict[str, str]:
+    """Cluster using hierarchical clustering."""
+    try:
+        # Convert to distance metric (1 - cosine similarity)
+        similarity_matrix = cosine_similarity(embeddings)
+        distance_matrix = 1 - similarity_matrix
+        
+        # Perform hierarchical clustering
+        linkage_matrix = linkage(distance_matrix[np.triu_indices(len(distance_matrix), k=1)], method='average')
+        cluster_labels = fcluster(linkage_matrix, t=config.embedding_hierarchical_threshold, criterion='distance')
+        
+        # Convert to 0-based indexing
+        cluster_labels = cluster_labels - 1
+        
+        return _create_groups_from_labels(names, cluster_labels)
+        
+    except Exception as e:
+        logger.error(f"Error in hierarchical clustering: {e}")
+        return _cluster_with_similarity(names, embeddings, config)
 
+def _cluster_with_similarity(names: List[str], embeddings: np.ndarray, config: CleaningConfig) -> Dict[str, str]:
+    """Cluster using simple similarity threshold."""
+    try:
+        similarity_matrix = cosine_similarity(embeddings)
+        groups = {}
+        canonical_names = {}
+        
+        for i, name in enumerate(names):
+            best_match = name
+            highest_score = 0.0
+            
+            for j, canonical in enumerate(canonical_names.keys()):
+                canonical_idx = canonical_names[canonical]
+                score = similarity_matrix[i][canonical_idx]
+                if score >= config.embedding_similarity_threshold and score > highest_score:
+                    highest_score = score
+                    best_match = canonical
+            
+            if highest_score < config.embedding_similarity_threshold:
+                # This is a new canonical name
+                canonical_names[name] = i
+                groups[name] = name
+            else:
+                # This belongs to an existing group
+                groups[name] = best_match
+        
+        # Log clustering results
+        n_groups = len(set(groups.values()))
+        reduction = ((len(names) - n_groups) / len(names) * 100) if len(names) > 0 else 0
+        logger.info(f"Similarity clustering (threshold={config.embedding_similarity_threshold}): {len(names)} names -> {n_groups} groups ({reduction:.1f}% reduction)")
+        
+        return groups
+        
+    except Exception as e:
+        logger.error(f"Error in similarity clustering: {e}")
+        return {name: name for name in names}
 
-# --- NEW FUNCTION: Normalize Merchant Variations ---
+def _create_groups_from_labels(names: List[str], labels: np.ndarray) -> Dict[str, str]:
+    """Create grouping dictionary from cluster labels."""
+    groups = {}
+    cluster_representatives = {}
+    
+    for i, (name, label) in enumerate(zip(names, labels)):
+        if label == -1:  # Noise/outlier
+            groups[name] = name
+        else:
+            if label not in cluster_representatives:
+                # First name in this cluster becomes the representative
+                cluster_representatives[label] = name
+                groups[name] = name
+            else:
+                # Assign to existing representative
+                groups[name] = cluster_representatives[label]
+    
+    return groups
+
+# Caching for embeddings to improve performance
+_embedding_cache: Dict[str, np.ndarray] = {}
+_cache_max_size = 1000  # Maximum number of cached embeddings
+
+def _get_cache_key(texts: List[str]) -> str:
+    """Generate a cache key for a list of texts."""
+    combined = "|".join(sorted(texts))
+    return hashlib.md5(combined.encode()).hexdigest()
+
+def _get_cached_embeddings(texts: List[str]) -> Optional[np.ndarray]:
+    """Retrieve cached embeddings if available."""
+    cache_key = _get_cache_key(texts)
+    return _embedding_cache.get(cache_key)
+
+def _cache_embeddings(texts: List[str], embeddings: np.ndarray) -> None:
+    """Cache embeddings for future use."""
+    if len(_embedding_cache) >= _cache_max_size:
+        # Remove oldest entries (simple FIFO)
+        keys_to_remove = list(_embedding_cache.keys())[:len(_embedding_cache) - _cache_max_size + 1]
+        for key in keys_to_remove:
+            del _embedding_cache[key]
+    
+    cache_key = _get_cache_key(texts)
+    _embedding_cache[cache_key] = embeddings
+
+def clean_and_group_transactions(
+    texts: List[str], 
+    config: Optional[CleaningConfig] = None
+) -> Tuple[List[str], Dict[str, str]]:
+    """
+    Clean transaction texts and group similar merchants.
+    
+    Args:
+        texts: List of transaction texts to clean and group
+        config: Configuration for cleaning and grouping
+        
+    Returns:
+        Tuple of (cleaned_texts, grouping_dict)
+    """
+    if not config:
+        config = CleaningConfig()
+    
+    # Clean all texts
+    cleaned_texts = [clean_transaction_text(text, config) for text in texts]
+    
+    # Group similar merchants
+    if config.use_embedding_grouping and EMBEDDINGS_AVAILABLE:
+        grouping_dict = group_merchants_with_embeddings(cleaned_texts, config)
+    elif config.use_fuzzy_matching:
+        grouping_dict = group_similar_merchants(cleaned_texts, config.similarity_threshold)
+    else:
+        grouping_dict = {text: text for text in cleaned_texts}
+    
+    return cleaned_texts, grouping_dict
+
+# --- Legacy Functions for Backward Compatibility ---
+
+company_suffixes = {
+    "inc", "ltd", "llc", "pty", "corp", "gmbh", "ag", "bv", "co", "limited", "corporation",
+}
+
+MERCHANT_CATEGORIES = {
+    "supermarkets": ["woolworths", "pak n save", "new world", "four square", "freshchoice"],
+    "fuel": ["z energy", "bp", "mobil", "caltex", "gull", "rd petroleum", "kiwi fuel"],
+    "retail": ["kmart", "warehouse", "farmers", "cotton on", "noel leeming"],
+    "health": ["chemist warehouse", "life pharmacy", "unichem"],
+    "food": ["uber eats", "menulog", "pizza", "burger", "coffee", "cafe"],
+}
+
+MERCHANT_ALIASES = {
+    "woolworths": ["woolworths n", "woolworths o", "woolies"],
+    "pak n save": ["pak n save p", "pak n save fuel"],
+    "new world": ["new world mt", "new world bl", "new world ra"],
+    "four square": ["four square"],
+    "warehouse": ["the warehous", "warehouse st"],
+    "anz atm": ["anz s3d7741", "anz s3c7711", "anz s3a1490"],
+}
+
+def extract_nlp_features(text: str, config: CleaningConfig = None) -> str:
+    """Legacy function - now calls the generic clean_transaction_text."""
+    if not config:
+        config = CleaningConfig()
+    return clean_transaction_text(text, config)
+
 def normalize_merchant_variants(text: str) -> str:
     """Normalize common merchant name variations."""
-    if not text:  # Added a check for empty input
+    if not text:
         return ""
-
-    # Create a mapping of variations to canonical forms
+    
     merchant_normalizations = {
-        # Supermarkets
         r"woolworths?\s*[a-z]?": "woolworths",
         r"woolies?\s*[a-z]?": "woolworths",
         r"pak\s*n\s*save\s*[a-z]?": "pak n save",
         r"new\s*world\s*[a-z]{2}": "new world",
-        # Common patterns
-        r"^the\s+": "",  # Remove leading "the"
-        r"\s+the$": "",  # Remove trailing "the"
-        r"anz\s+s\d[a-z]\d+": "anz atm",  # ANZ ATM codes
+        r"^the\s+": "",
+        r"\s+the$": "",
+        r"anz\s+s\d[a-z]\d+": "anz atm",
         r"kiwi\s+fuels?": "kiwi fuel",
         r"four\s+square": "four square",
     }
-
-    text_lower = text.lower()  # Operate on lowercase text as patterns are lowercase
+    
+    text_lower = text.lower()
     for pattern, replacement in merchant_normalizations.items():
-        text_lower = re.sub(
-            pattern, replacement, text_lower, flags=re.IGNORECASE
-        )  # Added IGNORECASE for robustness
-
+        text_lower = re.sub(pattern, replacement, text_lower, flags=re.IGNORECASE)
+    
     return text_lower.strip()
 
+def resolve_merchant_alias(cleaned_name: str) -> str:
+    """Resolve merchant name to its canonical form using aliases."""
+    if not cleaned_name:
+        return ""
+    
+    cleaned_name_lower = cleaned_name.lower()
+    for canonical, aliases in MERCHANT_ALIASES.items():
+        for alias in aliases:
+            if alias in cleaned_name_lower:
+                return canonical
+    return cleaned_name
 
-# --- NEW FUNCTION: Group Similar Merchants (Fuzzy Matching) ---
-def group_similar_merchants(
-    cleaned_names: List[str], similarity_threshold: float = 0.85
-) -> dict:
-    """Group merchants with similar names using Levenshtein distance."""
-    groups = {}  # Maps a name to its canonical name
-    # Stores the canonical names found so far, mapping to True (or a count, or list of members)
-    canonical_names_map = {}
-
-    # Sort names to make matching more consistent, e.g., shorter names processed first
-    # or just alphabetically. For now, using the order they come in.
-    for name in cleaned_names:
-        if not name:  # Skip empty names
-            continue
-
-        best_match_canonical = name  # Default to itself if no better match found
-        highest_score = 1.0  # Score for matching itself
-
-        found_match = False
-        for canonical_key in canonical_names_map.keys():
-            score = Levenshtein.ratio(name, canonical_key)
-            if score >= similarity_threshold and score > highest_score:
-                # This check (score > highest_score) is a bit redundant if highest_score starts at a value
-                # that any valid match for another canonical name would beat.
-                # Let's refine to: if it's a good enough match to an *existing* canonical name
-                highest_score = score
-                best_match_canonical = canonical_key
-                found_match = (
-                    True  # Mark that we found a match to an existing canonical
-                )
-            elif (
-                score >= similarity_threshold and not found_match
-            ):  # If it's a good match but not better than current best (itself initially)
-                # This ensures that if a name is similar to multiple canonicals, it picks one.
-                # The first one it meets the threshold for, or could be the one with highest score.
-                # Let's stick to highest score for now.
-                # The logic for best_match_canonical and highest_score needs to be clear.
-                pass  # Covered by the above condition if we want the absolute best score.
-
-        # Refined logic for finding the best match:
-        current_best_match = name  # Assume it's its own canonical form
-        current_highest_score = 0.0  # Start with 0, so any valid match is better
-
-        is_new_canonical = True
-        for existing_canonical in canonical_names_map.keys():
-            score = Levenshtein.ratio(name, existing_canonical)
-            if score >= similarity_threshold and score > current_highest_score:
-                current_highest_score = score
-                current_best_match = existing_canonical
-                is_new_canonical = False  # It matched an existing one
-
-        if is_new_canonical:
-            # This name establishes a new canonical group
-            groups[name] = name
-            canonical_names_map[name] = True  # Add to our set of known canonicals
-        else:
-            # This name belongs to an existing canonical group
-            groups[name] = current_best_match
-
-    return groups
-
-
-# --- END NEW FUNCTION ---
-
-# --- NEW CONSTANT: Merchant Categories ---
-MERCHANT_CATEGORIES = {
-    "supermarkets": [
-        "woolworths",
-        "pak n save",
-        "new world",
-        "four square",
-        "freshchoice",
-    ],
-    "fuel": ["z energy", "bp", "mobil", "caltex", "gull", "rd petroleum", "kiwi fuel"],
-    "retail": ["kmart", "warehouse", "farmers", "cotton on", "noel leeming"],
-    "health": ["chemist warehouse", "life pharmacy", "unichem"],
-    "food": [
-        "uber eats",
-        "menulog",
-        "pizza",
-        "burger",
-        "coffee",
-        "cafe",
-    ],  # Added common food terms
-}
-# --- END NEW CONSTANT ---
-
-
-# --- NEW FUNCTION: Categorize Merchant ---
 def categorize_merchant(cleaned_name: str) -> str:
     """Assign a category to a merchant based on keywords."""
-    if not cleaned_name:  # Added a check for empty input
+    if not cleaned_name:
         return "other"
-
-    cleaned_name_lower = cleaned_name.lower()  # Ensure case-insensitive matching
+    
+    cleaned_name_lower = cleaned_name.lower()
     for category, keywords in MERCHANT_CATEGORIES.items():
         for keyword in keywords:
             if keyword in cleaned_name_lower:
                 return category
     return "other"
 
-
-# --- END NEW FUNCTION ---
-
-# --- NEW CONSTANT: Merchant Aliases ---
-MERCHANT_ALIASES = {
-    "woolworths": ["woolworths n", "woolworths o", "woolies"],
-    "pak n save": ["pak n save p", "pak n save fuel"],
-    "new world": ["new world mt", "new world bl", "new world ra"],
-    "four square": ["four square"],  # Already mostly canonical, but good to have
-    "warehouse": ["the warehous", "warehouse st"],
-    "anz atm": ["anz s3d7741", "anz s3c7711", "anz s3a1490"],  # Specific ANZ ATM codes
-}
-# --- END NEW CONSTANT ---
-
-
-# --- NEW FUNCTION: Resolve Merchant Alias ---
-def resolve_merchant_alias(cleaned_name: str) -> str:
-    """Resolve merchant name to its canonical form using aliases."""
-    if not cleaned_name:  # Added a check for empty input
-        return ""
-
-    cleaned_name_lower = cleaned_name.lower()  # Ensure case-insensitive matching
-    for canonical, aliases in MERCHANT_ALIASES.items():
-        for alias in aliases:
-            if alias in cleaned_name_lower:  # Check if the alias is a substring
-                return canonical  # Return the canonical name
-    return cleaned_name  # Return original cleaned_name if no alias found
-
-
-# --- END NEW FUNCTION ---
-
-
-# --- NEW FUNCTION: Enhanced Clean Text (orchestrator) ---
 def enhanced_clean_text(text: str, config: CleaningConfig = None) -> str:
-    """Enhanced cleaning with multiple strategies, driven by config."""
-    if not config:  # Default config if none provided
+    """Legacy function - now calls the generic clean_transaction_text."""
+    if not config:
         config = CleaningConfig()
+    return clean_transaction_text(text, config)
 
-    if not text or not isinstance(text, str):  # Ensure text is a non-empty string
-        return ""
-
-    logger.debug(f"Enhanced cleaning input: '{text}' with config: {config.to_dict()}")
-
-    cleaned_text = text
-    if config.remove_card_numbers:
-        logger.debug("Applying card number removal rules...")
-        # Step 1: Basic direct pattern cleaning (more aggressive card/specific prefixes)
-        cleaned_text = re.sub(
-            r"4835-\*{4}-\*{4}-\d{4}\s*[DI]f\b", "", cleaned_text, flags=re.IGNORECASE
-        )
-        logger.debug(f"After specific card (4835...) removal: '{cleaned_text}'")
-
-        cleaned_text = re.sub(
-            r"\banz\s+s\d[a-z]\d+\b", "anz atm", cleaned_text, flags=re.IGNORECASE
-        )
-        logger.debug(f"After ANZ ATM normalization: '{cleaned_text}'")
-
-        card_pattern_1 = r"\b\d{4}-[*xX]{4}-[*xX]{4}-\d{4}\s*(?:[A-Za-z]{1,3}\b)?"
-        cleaned_text = re.sub(card_pattern_1, " ", cleaned_text, flags=re.IGNORECASE)
-
-        card_pattern_2 = r"\b(?:card\s*)?(?:\d{4}[- ]?[*xX]{4}[- ]?[*xX]{4}[- ]?\d{4}|\d{4}[- ]?\d{2}[*xX]{2}[- ]?[*xX]{4}[- ]?\d{4}|[*xX]{4}[- ]?[*xX]{4}[- ]?[*xX]{4}[- ]?\d{4})\s*(?:[A-Za-z]{1,3}\b)?"
-        cleaned_text = re.sub(card_pattern_2, " ", cleaned_text, flags=re.IGNORECASE)
-
-        card_pattern_3 = r"\b(?:card\s*)?xx\d+\b"
-        cleaned_text = re.sub(card_pattern_3, " ", cleaned_text, flags=re.IGNORECASE)
-        logger.debug(f"After generic card pattern removal: '{cleaned_text}'")
-
-    # Basic pre-cleaning (always apply these for general hygiene before NLP)
-    cleaned_text = re.sub(r"https?://\S+", "", cleaned_text)  # Remove URLs
-    cleaned_text = re.sub(
-        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "", cleaned_text
-    )  # Remove emails
-    cleaned_text = re.sub(r"\s+", " ", cleaned_text).strip()  # Normalize spaces
-    logger.debug(f"After basic pre-cleaning (URL, email, spaces): '{cleaned_text}'")
-
-    if not cleaned_text:
-        logger.debug("Text empty after initial cleaning. Returning empty.")
-        return ""
-
-    # Initialize with potentially already cleaned text if NLP is skipped
-    nlp_extracted_text = cleaned_text
-    if config.apply_nlp_features_extraction:
-        logger.debug("Applying NLP feature extraction...")
-        # Pass the config to extract_nlp_features as well
-        nlp_extracted_text = extract_nlp_features(cleaned_text, config)
-        logger.debug(f"After extract_nlp_features: '{nlp_extracted_text}'")
-
-    normalized_text = nlp_extracted_text
-    if config.apply_merchant_variants_normalization:
-        logger.debug("Applying merchant variants normalization...")
-        normalized_text = normalize_merchant_variants(nlp_extracted_text)
-        logger.debug(f"After normalize_merchant_variants: '{normalized_text}'")
-
-    alias_resolved_text = normalized_text
-    if config.apply_alias_resolution:
-        logger.debug("Applying alias resolution...")
-        alias_resolved_text = resolve_merchant_alias(normalized_text)
-        logger.debug(f"After resolve_merchant_alias: '{alias_resolved_text}'")
-
-    # Step 5: Final cleanup (ensure lowercase, collapse multiple spaces, strip)
-    final_text = re.sub(r"\s+", " ", alias_resolved_text).strip().lower()
-    logger.debug(f"Final output of enhanced_clean_text: '{final_text}'")
-
-    if not final_text:
-        logger.warning(
-            f"Enhanced cleaning resulted in empty string for original input '{text}'. Check steps."
-        )
-        # Fallback strategy: could return a placeholder or re-evaluate logic for such cases.
-        # For now, returning empty if all steps lead to it.
-
-    return final_text
-
-
-# --- END NEW FUNCTION ---
-
-
-def clean_text(
-    texts: Union[str, List[str]], config: CleaningConfig = None
-) -> Union[str, List[str]]:
-    """Cleans a single text string or a list of text strings using the enhanced pipeline."""
-    if not config:  # Default config if none provided
+# Main function for backward compatibility
+def clean_text(texts: Union[str, List[str]], config: Optional[CleaningConfig] = None) -> Union[str, List[str], Tuple[List[str], Dict[str, str]]]:
+    """
+    Clean transaction text(s) generically.
+    
+    Args:
+        texts: Single text string or list of text strings
+        config: Configuration for cleaning and grouping
+        
+    Returns:
+        - If input is string: cleaned string
+        - If input is list and grouping disabled: list of cleaned strings
+        - If input is list and grouping enabled: tuple of (cleaned_list, grouping_dict)
+    """
+    if not config:
         config = CleaningConfig()
-
-    if not nlp:
-        logger.error(
-            "spaCy model not loaded. Returning original text(s) without full cleaning."
-        )
-        # Fallback to a very basic regex clean if spaCy is unavailable for some reason
-        if isinstance(texts, str):
-            # Apply only the most basic regex steps from enhanced_clean_text if NLP can't run
-            temp_text = re.sub(
-                r"4835-\*{4}-\*{4}-\d{4}\s*[DI]f\b", "", texts, flags=re.IGNORECASE
-            )
-            temp_text = re.sub(
-                r"\banz\s+s\d[a-z]\d+\b", "anz atm", temp_text, flags=re.IGNORECASE
-            )
-            temp_text = re.sub(r"\s+", " ", temp_text).strip().lower()
-            return temp_text
-        elif isinstance(texts, list):
-            results = []
-            for text_item in texts:
-                if isinstance(text_item, str):
-                    temp_text = re.sub(
-                        r"4835-\*{4}-\*{4}-\d{4}\s*[DI]f\b",
-                        "",
-                        text_item,
-                        flags=re.IGNORECASE,
-                    )
-                    temp_text = re.sub(
-                        r"\banz\s+s\d[a-z]\d+\b",
-                        "anz atm",
-                        temp_text,
-                        flags=re.IGNORECASE,
-                    )
-                    temp_text = re.sub(r"\s+", " ", temp_text).strip().lower()
-                    results.append(temp_text)
-                else:
-                    results.append("")  # Or handle non-strings as appropriate
-            return results
-        return texts  # Should not happen if types are correct
-
-    # --- Define the core cleaning logic for a single string using the new enhanced_clean_text --- (This replaces _clean_single_text)
-    def _dispatch_cleaning(original_text: any) -> str:
-        if not isinstance(original_text, str):
-            logger.debug(
-                f"Input to _dispatch_cleaning is not a string ({type(original_text)}): '{original_text}'. Will be processed as empty string."
-            )
-            return enhanced_clean_text("")  # Process as empty string
-
-        return enhanced_clean_text(original_text, config)  # Pass config
-
-    # --- Handle input type ---
+    
     if isinstance(texts, str):
-        # Input is a single string
-        return _dispatch_cleaning(texts)
+        return clean_transaction_text(texts, config)
     elif isinstance(texts, list):
-        # Input is a list of strings
-        # Original code had a critical length mismatch check, which is good.
-        # Let's ensure progress logging for large lists if possible, or ensure it's efficient.
-        cleaned_texts = [_dispatch_cleaning(text) for text in texts]
-
-        # This check is important if any step could fail and return None or unexpected types
-        if len(cleaned_texts) != len(texts):
-            logger.error(
-                f"CRITICAL: Length mismatch after loop in clean_text! Input: {len(texts)}, Output: {len(cleaned_texts)}"
-            )
-            # Fallback: return original texts (or partially cleaned) to avoid crashing downstream
-            # This requires careful thought on what `texts` contains at this point.
-            # For now, assuming _dispatch_cleaning always returns a string.
-            # A more robust fallback might be to return the original `texts` list.
-            # Reverting to return original `texts` for safety in case of unexpected issues.
-            return texts
-
-        return cleaned_texts
-    else:
-        # Handle unexpected input type for `texts`
-        logger.warning(
-            f"Unexpected input type for clean_text: {type(texts)}. Returning as is."
+        # Check if we should perform grouping
+        should_group = (
+            config.use_embedding_grouping or 
+            config.use_fuzzy_matching or 
+            config.use_fuzzy_matching_post_clean
         )
-        return texts  # Or raise TypeError
+        
+        if should_group:
+            # Return both cleaned texts and grouping
+            cleaned_texts, grouping_dict = clean_and_group_transactions(texts, config)
+            
+            if len(cleaned_texts) != len(texts):
+                logger.error(f"CRITICAL: Length mismatch after cleaning! Input: {len(texts)}, Output: {len(cleaned_texts)}")
+                return texts
+            
+            return cleaned_texts, grouping_dict
+        else:
+            # Just clean, no grouping
+            cleaned_texts = [clean_transaction_text(text, config) for text in texts]
+            
+            if len(cleaned_texts) != len(texts):
+                logger.error(f"CRITICAL: Length mismatch after cleaning! Input: {len(texts)}, Output: {len(cleaned_texts)}")
+                return texts
+            
+            return cleaned_texts
+    else:
+        logger.warning(f"Unexpected input type for clean_text: {type(texts)}. Returning as is.")
+        return texts
 
-
-# === Old Regex-based clean_text (for reference, can be removed later) ===
-# def clean_text_regex(text: str) -> str:
-# ...
+def _process_large_dataset_in_batches(
+    valid_names: List[str], 
+    all_names: List[str], 
+    config: CleaningConfig
+) -> Dict[str, str]:
+    """
+    Process large datasets in batches to manage memory efficiently.
+    
+    Args:
+        valid_names: List of non-empty merchant names
+        all_names: Original list including empty names
+        config: Configuration for embedding grouping
+        
+    Returns:
+        Dictionary mapping each merchant name to its canonical group name
+    """
+    batch_size = config.embedding_batch_size
+    all_groups = {}
+    canonical_mapping = {}
+    
+    # Process in batches
+    for i in range(0, len(valid_names), batch_size):
+        batch_names = valid_names[i:i + batch_size]
+        logger.info(f"Processing batch {i//batch_size + 1}: {len(batch_names)} names")
+        
+        # Get embeddings for this batch
+        try:
+            if config.embedding_use_cache:
+                cached_embeddings = _get_cached_embeddings(batch_names)
+                if cached_embeddings is not None:
+                    embeddings = cached_embeddings
+                else:
+                    embeddings = generate_embeddings(batch_names)
+                    if embeddings is not None:
+                        _cache_embeddings(batch_names, embeddings)
+            else:
+                embeddings = generate_embeddings(batch_names)
+                
+            if embeddings is None or embeddings.size == 0:
+                # Fallback for this batch
+                for name in batch_names:
+                    all_groups[name] = name
+                continue
+                
+        except Exception as e:
+            logger.error(f"Error processing batch {i//batch_size + 1}: {e}")
+            # Fallback for this batch
+            for name in batch_names:
+                all_groups[name] = name
+            continue
+        
+        # Cluster this batch
+        if config.embedding_clustering_method == "similarity":
+            batch_groups = _cluster_with_similarity(batch_names, embeddings, config)
+        else:
+            # For other clustering methods, use similarity as it's more suitable for batches
+            batch_groups = _cluster_with_similarity(batch_names, embeddings, config)
+        
+        # Merge with existing groups and resolve conflicts
+        for name, group_rep in batch_groups.items():
+            # Check if this group representative already exists in our global mapping
+            existing_canonical = canonical_mapping.get(group_rep)
+            if existing_canonical:
+                all_groups[name] = existing_canonical
+            else:
+                # Check if we have a similar canonical name from previous batches
+                best_match = group_rep
+                best_score = 0.0
+                
+                for canonical in canonical_mapping.values():
+                    # Use simple string similarity for cross-batch matching
+                    score = Levenshtein.ratio(group_rep, canonical)
+                    if score >= config.embedding_similarity_threshold and score > best_score:
+                        best_score = score
+                        best_match = canonical
+                
+                if best_score >= config.embedding_similarity_threshold:
+                    all_groups[name] = best_match
+                    canonical_mapping[group_rep] = best_match
+                else:
+                    all_groups[name] = group_rep
+                    canonical_mapping[group_rep] = group_rep
+    
+    # Add back any empty names that were filtered out
+    for name in all_names:
+        if not name or not name.strip():
+            all_groups[name] = name
+    
+    logger.info(f"Batch processing complete. {len(valid_names)} names -> {len(set(all_groups.values()))} groups")
+    return all_groups
