@@ -69,6 +69,7 @@ const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
 const RUN_TRAINING = !process.argv.includes("--cat-only");
 const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
 const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
+const TEST_BULK_CLEAN_GROUP = process.argv.includes("--bulk-clean-group"); // New flag
 
 // Log the actual values being used
 logInfo(`Using TEST_USER_ID: ${TEST_USER_ID}`);
@@ -220,6 +221,7 @@ const loadCategorizationData = (file_name) => {
     let headersProcessed = false;
     let descriptionIndex = -1;
     let amountIndex = -1;
+    let codeIndex = -1; // Added for Code column
 
     logDebug(`Loading categorization data from ${file_name}...`);
 
@@ -229,32 +231,39 @@ const loadCategorizationData = (file_name) => {
         csv({
           mapHeaders: ({ header, index }) => {
             const lowerHeader = header.toLowerCase().trim();
-            // Allow for variations like 'Description' or 'Narrative'
-            if (["description", "narrative"].includes(lowerHeader)) {
+            if (["description", "narrative", "details"].includes(lowerHeader)) {
               return "description";
             }
-            // Allow 'Amount' or 'Amount Spent'
             if (["amount", "amount spent"].includes(lowerHeader)) {
               return "amount";
             }
-            return null; // Ignore other headers
+            if (["code"].includes(lowerHeader)) {
+              // Added mapping for "Code"
+              return "code";
+            }
+            return null;
           },
         })
       )
       .on("headers", (headers) => {
         descriptionIndex = headers.indexOf("description");
         amountIndex = headers.indexOf("amount");
+        codeIndex = headers.indexOf("code"); // Get index for Code
         headersProcessed = true;
 
-        logDebug(`Header indices found: Description=${descriptionIndex}, Amount=${amountIndex}`);
+        logDebug(`Header indices found: Description=${descriptionIndex}, Amount=${amountIndex}, Code=${codeIndex}`);
 
-        // Validate required headers
         if (descriptionIndex === -1) {
           stream.destroy();
-          return reject(new Error("Categorization CSV must contain a header named 'Description' or 'Narrative'"));
+          return reject(
+            new Error("Categorization CSV must contain a header named 'Description', 'Narrative', or 'Details'")
+          );
         }
         if (amountIndex === -1) {
           logInfo("Optional 'Amount' or 'Amount Spent' header not found. Proceeding without amount/money_in data.");
+        }
+        if (codeIndex === -1) {
+          logInfo("Optional 'Code' header not found. Proceeding without code data for combining descriptions.");
         }
       })
       .on("data", (row) => {
@@ -262,54 +271,61 @@ const loadCategorizationData = (file_name) => {
 
         const description = row.description;
         const amountValue = amountIndex !== -1 ? row.amount : undefined;
+        const codeValue = codeIndex !== -1 ? row.code : undefined; // Get code value
 
         if (description) {
           let parsedAmount = null;
           let money_in = null;
 
-          // Check if we have a valid amount to determine money_in
           if (amountIndex !== -1 && amountValue !== undefined && amountValue !== null) {
-            // Clean and parse the amount
             const cleanAmount = String(amountValue).replace(/[^\d.-]/g, "");
             parsedAmount = parseFloat(cleanAmount);
-
             if (!isNaN(parsedAmount)) {
               money_in = parsedAmount >= 0;
             } else {
               logDebug(`Could not parse amount: "${amountValue}" for description: "${description}"`);
-              parsedAmount = null; // Ensure null if parsing failed
+              parsedAmount = null;
             }
           }
 
-          // Create a TransactionInput object, including amount/money_in if available
           transactions.push({
-            description: description,
-            money_in: money_in, // Will be null if amount wasn't found or parsed
-            amount: parsedAmount, // Will be null if amount wasn't found or parsed
+            description: description, // Original description (from Details, Narrative, etc.)
+            money_in: money_in,
+            amount: parsedAmount,
+            code: codeValue, // Add code to transaction object
           });
-          logDebug(`Added transaction: desc="${description}", money_in=${money_in}, amount=${parsedAmount}`);
+          logDebug(
+            `Added transaction: desc="${description}", code="${codeValue}", money_in=${money_in}, amount=${parsedAmount}`
+          );
         } else {
           logDebug(`Skipping row with missing description: ${JSON.stringify(row)}`);
         }
       })
       .on("end", () => {
-        // Count how many transactions have money_in flag
         const transactionObjects = transactions.filter((t) => typeof t === "object");
         logInfo(`Loaded ${transactions.length} descriptions from ${file_name}`);
-        logInfo(`${transactionObjects.length} of ${transactions.length} have money_in flag set`);
+        logInfo(
+          `${transactionObjects.filter((t) => t.money_in !== null).length} of ${
+            transactions.length
+          } have money_in flag set`
+        );
+        logInfo(
+          `${transactionObjects.filter((t) => t.amount !== null).length} of ${
+            transactions.length
+          } have amount field set`
+        );
+        logInfo(
+          `${transactionObjects.filter((t) => t.code !== undefined).length} of ${
+            transactions.length
+          } have code field set`
+        );
 
-        // Count how many transactions have amount
-        const withAmount = transactions.filter((t) => typeof t === "object" && t.amount !== undefined).length;
-        logInfo(`${withAmount} of ${transactions.length} have amount field set`);
-
-        // Print some sample transactions for debugging
         if (transactions.length > 0) {
-          logInfo("Sample transactions:");
+          logInfo("Sample transactions (first 3):");
           for (let i = 0; i < Math.min(3, transactions.length); i++) {
             logInfo(`  ${i + 1}: ${JSON.stringify(transactions[i])}`);
           }
         }
-
         resolve(transactions);
       })
       .on("error", (error) => {
@@ -1106,6 +1122,140 @@ const testCleanText = async (apiUrl) => {
   }
 };
 
+// New function for bulk cleaning and grouping
+const runBulkCleanAndGroupTest = async (config) => {
+  logInfo("\n=== Starting Bulk Clean and Group Test ===\n");
+  const BULK_CSV_FILE = "ANZ Transactions Nov 2024 to May 2025.csv";
+
+  try {
+    logInfo(`1. Loading transaction data from ${BULK_CSV_FILE}...`);
+    const allTransactions = await loadCategorizationData(BULK_CSV_FILE);
+    if (!allTransactions || allTransactions.length === 0) {
+      logError(
+        `No transactions loaded from ${BULK_CSV_FILE}. Ensure the file exists in 'tests/test_data/' and is readable.`
+      );
+      return false;
+    }
+    logInfo(`   Loaded ${allTransactions.length} transactions.`);
+
+    // Combine Details (as t.description) and Code for cleaning
+    const descriptionsToClean = allTransactions
+      .map((t) => {
+        let combinedDesc = t.description || "";
+        if (t.code && String(t.code).trim() !== "") {
+          combinedDesc = combinedDesc ? `${combinedDesc} ${t.code}` : t.code;
+        }
+        return combinedDesc.trim();
+      })
+      .filter((d) => d);
+
+    if (descriptionsToClean.length === 0) {
+      logError("No valid descriptions (after combining Details and Code) found in the loaded transactions.");
+      return false;
+    }
+    logInfo(`   Prepared ${descriptionsToClean.length} combined descriptions for cleaning.`);
+    logDebug(`   Sample combined descriptions: ${JSON.stringify(descriptionsToClean.slice(0, 3))}`);
+
+    logInfo("2. Cleaning descriptions via /clean_text API...");
+    const batchSize = 100;
+    const allCleanedDescriptions = [];
+    let processedCount = 0;
+
+    for (let i = 0; i < descriptionsToClean.length; i += batchSize) {
+      const batch = descriptionsToClean.slice(i, i + batchSize);
+      logDebug(`   Cleaning batch: ${i / batchSize + 1} (size: ${batch.length})`);
+
+      const response = await fetch(`${config.serviceUrl}/clean_text`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": config.apiKey || TEST_API_KEY,
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ descriptions: batch }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logError(`Failed to clean text batch: ${response.status} - ${errorText}`);
+        allCleanedDescriptions.push(...batch);
+        logWarning(`   Using original combined descriptions for failed batch ${i / batchSize + 1}.`);
+        continue;
+      }
+
+      const result = await response.json();
+      if (
+        result.cleaned_descriptions &&
+        Array.isArray(result.cleaned_descriptions) &&
+        result.cleaned_descriptions.length === batch.length
+      ) {
+        allCleanedDescriptions.push(...result.cleaned_descriptions);
+      } else {
+        logError(
+          `   Error in cleaned_descriptions response for batch ${i / batchSize + 1}. Expected ${
+            batch.length
+          } items, got ${result.cleaned_descriptions ? result.cleaned_descriptions.length : "undefined"}.`
+        );
+        allCleanedDescriptions.push(...batch);
+        logWarning(`   Using original combined descriptions for malformed batch ${i / batchSize + 1}.`);
+      }
+      processedCount += batch.length;
+      logInfo(`   Processed ${processedCount}/${descriptionsToClean.length} descriptions for cleaning.`);
+    }
+
+    if (allCleanedDescriptions.length !== descriptionsToClean.length) {
+      logError(
+        `Mismatch in cleaned descriptions count. Expected ${descriptionsToClean.length}, got ${allCleanedDescriptions.length}. Aborting grouping.`
+      );
+      return false;
+    }
+
+    logInfo("\n3. Grouping transactions by cleaned descriptions...");
+    const groups = {};
+
+    allTransactions.forEach((transaction, index) => {
+      const cleanedDetail = allCleanedDescriptions[index] || descriptionsToClean[index];
+      const originalCombinedDescription = descriptionsToClean[index];
+
+      if (!groups[cleanedDetail]) {
+        groups[cleanedDetail] = {
+          count: 0,
+          totalAmount: 0,
+          originalCombinedDescriptions: new Set(),
+        };
+      }
+      groups[cleanedDetail].count++;
+      if (typeof transaction.amount === "number" && !isNaN(transaction.amount)) {
+        groups[cleanedDetail].totalAmount += transaction.amount;
+      }
+      if (groups[cleanedDetail].originalCombinedDescriptions.size < 5) {
+        groups[cleanedDetail].originalCombinedDescriptions.add(originalCombinedDescription);
+      }
+    });
+
+    logInfo("\n--- Transaction Grouping Results (Sorted by Count) ---");
+    const sortedGroups = Object.entries(groups).sort(([, a], [, b]) => b.count - a.count);
+
+    for (const [cleanedName, data] of sortedGroups) {
+      console.log(`\nCleaned Name: "${cleanedName}"`);
+      console.log(`  Count: ${data.count}`);
+      console.log(`  Total Amount: ${data.totalAmount.toFixed(2)}`);
+      if (data.originalCombinedDescriptions.size > 0) {
+        console.log(`  Example Original Combined Descriptions (Details + Code) (up to 5 unique):`);
+        Array.from(data.originalCombinedDescriptions).forEach((desc) => console.log(`    - "${desc}"`));
+      }
+    }
+    logInfo("\n========================================================");
+
+    logInfo("\n=== Bulk Clean and Group Test Completed Successfully ===\n");
+    return true;
+  } catch (error) {
+    logError(`\nBulk Clean and Group Test failed: ${error.message}`);
+    logDebug(error.stack);
+    return false;
+  }
+};
+
 // Main function
 const main = async () => {
   let trainingResult, categorizationResult; // Store results for performance summary
@@ -1151,17 +1301,37 @@ const main = async () => {
       console.log("   WARNING: Continuing with tests despite health check failure\n");
     }
 
+    // Create test configuration used by multiple tests
+    // Moved up to be available for all test modes
+    const config = {
+      userId: TEST_USER_ID,
+      apiKey: TEST_API_KEY,
+      serviceUrl: apiUrl,
+      // trainingDataFile and categorizationDataFile will be loaded per test if needed
+    };
+
     // 4. Run specific test mode if selected
     if (TEST_CLEAN_TEXT) {
-      const success = await testCleanText(apiUrl);
+      logInfo("Running Clean Text test mode...");
+      const success = await testCleanText(config.serviceUrl); // Pass serviceUrl from config
       if (!success) {
         throw new Error("clean_text test failed");
       }
-      return;
+      process.exit(0); // Exit after this specific test
     }
 
-    // 5. Load Test Data
-    console.log("5. Loading Test Data...");
+    if (TEST_BULK_CLEAN_GROUP) {
+      // New test mode
+      logInfo("Running Bulk Clean and Group test mode...");
+      const success = await runBulkCleanAndGroupTest(config); // Pass the shared config
+      if (!success) {
+        throw new Error("Bulk Clean and Group test failed");
+      }
+      process.exit(0); // Exit after this specific test
+    }
+
+    // 5. Load Test Data (for standard train/categorize tests)
+    console.log("5. Loading Test Data (for standard train/categorize flow)...");
     // const trainingData = await loadTrainingData("training_test.csv");
     // const trainingData = await loadTrainingData("full_train.csv");
     const { transactions: trainingData, uniqueCategories: uniqueTrainingCategories } = await loadTrainingData(
@@ -1177,19 +1347,14 @@ const main = async () => {
     console.log(`   Found ${uniqueTrainingCategories.length} unique categories in training data.`); // Log category count
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
 
-    // Create test configuration
-    const config = {
-      userId: TEST_USER_ID,
-      apiKey: TEST_API_KEY,
-      serviceUrl: apiUrl,
-      trainingDataFile: trainingData,
-      categorizationDataFile: categorizationData,
-    };
+    // Update config with specific data files for the standard flow
+    config.trainingDataFile = trainingData;
+    config.categorizationDataFile = categorizationData;
 
     // 6. Run Training (if enabled)
     if (RUN_TRAINING) {
       console.log("6. Running Training...");
-      trainingResult = await trainModel(config); // Store result
+      trainingResult = await trainModel(config);
 
       if (trainingResult.status !== "completed") {
         throw new Error(`Training failed: ${trainingResult.error || "Unknown error"}`);
