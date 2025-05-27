@@ -115,6 +115,8 @@ def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
         logger.warning("generate_embeddings called with empty list of texts.")
         return np.empty((0, 1))  # Return empty array with placeholder dim
 
+    logger.info(f"generate_embeddings called with {len(texts)} texts: {texts}")
+
     # Strategy 1: Try sentence-transformers first (most reliable)
     if SENTENCE_TRANSFORMERS_AVAILABLE:
         try:
@@ -151,11 +153,37 @@ def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
                 embeddings = []
                 for doc in docs:
                     if hasattr(doc._, "trf_data") and doc._.trf_data is not None:
-                        # Use mean pooling of transformer outputs
-                        token_embeddings = doc._.trf_data.tensors[0]
-                        # Simple mean pooling
-                        doc_embedding = np.mean(token_embeddings, axis=0)
-                        embeddings.append(doc_embedding)
+                        try:
+                            # Get the transformer outputs
+                            trf_tensors = doc._.trf_data.tensors
+                            if len(trf_tensors) > 0:
+                                # Usually the last tensor contains the token embeddings
+                                # Shape is typically (num_tokens, hidden_dim)
+                                token_embeddings = trf_tensors[-1]
+                                
+                                # Ensure we have the right shape
+                                if len(token_embeddings.shape) >= 2:
+                                    # Apply mean pooling across tokens to get document embedding
+                                    # If shape is (num_tokens, hidden_dim), mean across axis 0
+                                    # If shape is (batch, num_tokens, hidden_dim), mean across axis -2 (tokens)
+                                    if len(token_embeddings.shape) == 3:
+                                        # Shape: (batch, tokens, hidden) - take first batch item and mean over tokens
+                                        doc_embedding = np.mean(token_embeddings[0], axis=0)
+                                    else:
+                                        # Shape: (tokens, hidden) - mean over tokens
+                                        doc_embedding = np.mean(token_embeddings, axis=0)
+                                    
+                                    embeddings.append(doc_embedding)
+                                    logger.debug(f"Document embedding shape: {doc_embedding.shape}, token_embeddings shape: {token_embeddings.shape}")
+                                else:
+                                    logger.warning(f"Unexpected token embeddings shape: {token_embeddings.shape}")
+                                    return None
+                            else:
+                                logger.warning("No tensors found in transformer data")
+                                return None
+                        except Exception as e:
+                            logger.warning(f"Error extracting transformer data for document: {e}")
+                            return None
                     else:
                         logger.warning("No transformer data available for document")
                         return None
@@ -204,64 +232,6 @@ def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
         
     except Exception as e:
         logger.error(f"All embedding strategies failed: {e}")
-        return None
-
-        # Strategy 2: Extracting from transformer data (doc._.trf_data)
-        # This is common for many HuggingFace models integrated via spacy-transformers
-        # We typically need to pool the token embeddings (e.g., mean pooling of last hidden state)
-        if all(
-            hasattr(doc._, "trf_data") and doc._.trf_data is not None for doc in docs
-        ):
-            # Example: Mean pooling of the last hidden layer outputs
-            # The exact structure of trf_data can vary, inspect it if needed
-            # This assumes trf_data has tensors attribute with last_hidden_state
-            embeddings_list = []
-            for i, doc in enumerate(docs):
-                # Check if tensors and last_hidden_state are available
-                if (
-                    hasattr(doc._, "trf_data")
-                    and doc._.trf_data is not None
-                    and hasattr(doc._.trf_data, "tensors")
-                    and len(doc._.trf_data.tensors) > 0
-                ):
-                    # Shape: (num_layers, batch_size=1, num_tokens, hidden_dim)
-                    # We want the last layer: [-1], squeeze batch dim: [0]
-                    last_hidden_state = doc._.trf_data.tensors[-1][0]
-
-                    # For sentence-transformers, last_hidden_state often contains the pooled output directly
-                    doc_embedding = last_hidden_state
-
-                    # --- DEBUG LOGGING ---
-                    if i == 0:  # Log only for the first doc
-                        logger.debug(
-                            f"Shape of doc_embedding for first doc: {doc_embedding.shape}"
-                        )
-                    # --- END DEBUG ---
-
-                    embeddings_list.append(doc_embedding)
-                else:
-                    logger.error(
-                        f"Transformer data for doc '{doc.text[:50]}...' does not contain expected tensors."
-                    )
-                    return None  # Fail if we can't extract consistently
-
-            if not embeddings_list:
-                logger.error("Failed to extract any embeddings from transformer data.")
-                return None
-
-            embeddings = np.array(embeddings_list)
-            logger.info(
-                f"Extracted embeddings using mean pooling of transformer data (shape: {embeddings.shape})"
-            )
-            return embeddings
-        else:
-            logger.error(
-                "Cannot extract embeddings: Neither doc.vector nor doc._.trf_data available or suitable."
-            )
-            return None
-
-    except Exception as e:
-        logger.error(f"Error generating embeddings: {e}", exc_info=True)
         return None
 
 

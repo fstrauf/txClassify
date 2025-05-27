@@ -55,13 +55,13 @@ class CleaningConfig:
         self.normalize_merchant_names = True
         
         # Grouping options
-        self.use_fuzzy_matching = True
+        self.use_fuzzy_matching = False  # Disable old algorithm in favor of embedding-based grouping
         self.similarity_threshold = 0.85
         
         # Embedding-based grouping options
-        self.use_embedding_grouping = False
+        self.use_embedding_grouping = True  # Enable by default to use improved algorithm
         self.embedding_clustering_method = "similarity"  # "hdbscan", "dbscan", "hierarchical", "similarity"
-        self.embedding_similarity_threshold = 0.8  # Optimized default
+        self.embedding_similarity_threshold = 0.85  # Conservative threshold to prevent false groupings
         self.embedding_min_cluster_size = 2
         self.embedding_eps = 0.25  # Optimized for merchant names (lower = tighter clusters)
         self.embedding_min_samples = 2  # For DBSCAN
@@ -297,8 +297,9 @@ def remove_merchant_codes(text: str) -> str:
         r'\b-\s*\d{3,5}$',  # Trailing store numbers
         r'\b[A-Z]+\s*\d{3,5}$',  # e.g., "BAYF 123"
         
-        # Location suffixes that are likely codes
-        r'\b[A-Z]{2,4}$',  # e.g., "Mt", "Bl", "Ra" at end
+        # More specific location suffixes (common NZ location codes)
+        # Only remove these specific known location codes, not all 2-4 letter combinations
+        r'\b(?:mt|bl|ra|pt|rd|st|av|pk|sh|ctr|ct)\b$',  # Known location abbreviations
         r'\b[A-Z]\s*\d+[A-Z]?$',  # e.g., "P", "O", "N" at end
         
         # Generic merchant identifiers
@@ -309,6 +310,20 @@ def remove_merchant_codes(text: str) -> str:
         text = re.sub(pattern, ' ', text, flags=re.IGNORECASE)
     
     return text
+
+def remove_transaction_prefixes(text: str) -> str:
+    """Remove common transaction type prefixes that appear before merchant names."""
+    patterns = [
+        # Common bank transaction prefixes
+        r'^\s*[A-Z]{1,4}\s+',  # Remove 1-4 letter prefixes at start like "DF ", "IF ", "SP "
+        r'^\s*(?:debit|credit|visa|eftpos|mastercard)\s+',  # Explicit payment type prefixes
+        r'^\s*\d{4}-\*+\s*',  # Remove remaining card number fragments
+    ]
+    
+    for pattern in patterns:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+    
+    return text.strip()
 
 def extract_merchant_name(text: str) -> str:
     """Extract the most likely merchant name using NLP and heuristics."""
@@ -329,19 +344,24 @@ def extract_merchant_name(text: str) -> str:
         # Return the longest organization entity
         return max(org_entities, key=len)
     
-    # Fallback: extract meaningful tokens
+    # Fallback: extract meaningful tokens - be more inclusive
     meaningful_tokens = []
     for token in doc:
         # Skip noise tokens
-        if token._.is_transaction_noise:
+        if hasattr(token._, 'is_transaction_noise') and token._.is_transaction_noise:
             continue
-        if token.is_punct or token.is_space or token.is_stop:
+        if token.is_punct or token.is_space:
             continue
-        if token.pos_ in {"PROPN", "NOUN", "X"}:  # Proper nouns, nouns, other
+        # Be more inclusive - include more token types and don't skip stop words that might be part of brand names
+        if token.pos_ in {"PROPN", "NOUN", "X", "ADJ", "NUM"} or not token.is_stop:
             meaningful_tokens.append(token.text)
     
     if meaningful_tokens:
-        return " ".join(meaningful_tokens)
+        result = " ".join(meaningful_tokens)
+        # If result is very short (2 characters or less), return original text instead
+        if len(result.strip()) <= 2:
+            return text
+        return result
     
     return text
 
@@ -393,50 +413,59 @@ def clean_transaction_text(text: str, config: Optional[CleaningConfig] = None) -
         text = re.sub(r'https?://\S+', '', text)
         text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '', text)
     
-    # Step 2: Remove card numbers
+    # Step 2: Remove transaction type prefixes (before detailed cleaning)
+    text = remove_transaction_prefixes(text)
+    
+    # Step 3: Remove card numbers
     if config.remove_card_numbers:
         text = remove_card_numbers(text)
     
-    # Step 3: Remove reference codes
+    # Step 4: Remove reference codes
     if config.remove_reference_codes:
         text = remove_reference_codes(text)
     
-    # Step 4: Remove bank codes
+    # Step 5: Remove bank codes
     if config.remove_bank_codes:
         text = remove_bank_codes(text)
     
-    # Step 5: Remove merchant codes
+    # Step 6: Remove merchant codes
     if config.remove_merchant_codes:
         text = remove_merchant_codes(text)
     
-    # Step 6: Normalize whitespace
+    # Step 7: Normalize whitespace
     if config.normalize_whitespace:
         text = re.sub(r'\s+', ' ', text).strip()
     
-    # Step 7: Extract merchant name using NLP
+    # Step 8: Extract merchant name using NLP
     if config.use_nlp_extraction and nlp:
         text = extract_merchant_name(text)
     
-    # Step 8: Normalize merchant name
+    # Step 9: Normalize merchant name
     if config.normalize_merchant_names:
         text = normalize_merchant_name(text)
     
-    # Step 9: Convert to lowercase
+    # Step 10: Convert to lowercase
     if config.to_lowercase:
         text = text.lower()
     
     # Final cleanup
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # If result is empty or too short, fall back to a simpler clean
-    if not text or len(text) < 2:
+    # If result is empty or too short (likely over-cleaned), fall back to a simpler clean
+    if not text or len(text) <= 3:  # Increased threshold from 2 to 3
         # Simple fallback: just remove obvious noise and normalize
         fallback = original_text
         fallback = remove_card_numbers(fallback)
-        fallback = re.sub(r'\b[A-Z]{1,3}\s*\d+\b', '', fallback)  # Remove codes
+        fallback = re.sub(r'\b\d{4,}\b', '', fallback)  # Remove long numbers only
         fallback = re.sub(r'\s+', ' ', fallback).strip()
-        if fallback and len(fallback) >= 2:
+        if fallback and len(fallback) > 3:  # Only use fallback if it's longer than 3 chars
             text = fallback.lower() if config.to_lowercase else fallback
+        elif original_text:
+            # Last resort: use a very minimal clean of original text
+            minimal = re.sub(r'\d{4}-\*{4}-\*{4}-\d{4}', '', original_text)  # Remove card pattern
+            minimal = re.sub(r'\s+', ' ', minimal).strip()
+            if minimal and len(minimal) > 3:
+                text = minimal.lower() if config.to_lowercase else minimal
     
     return text
 
@@ -472,37 +501,38 @@ def group_similar_merchants(cleaned_names: List[str], threshold: float = 0.85) -
 
 def compute_similarity_score(text1: str, text2: str, config: CleaningConfig) -> float:
     """
-    Compute similarity score between two text strings using embeddings.
+    Compute similarity between two texts using embedding similarity if available,
+    falling back to Levenshtein similarity if embeddings fail.
     
     Args:
-        text1: First text string
-        text2: Second text string
-        config: Configuration for embedding generation
+        text1: First text
+        text2: Second text
+        config: Cleaning configuration
         
     Returns:
         Similarity score between 0 and 1
     """
-    if not EMBEDDINGS_AVAILABLE:
-        # Fallback to Levenshtein similarity if embeddings not available
-        return Levenshtein.ratio(text1, text2)
+    logger.debug(f"compute_similarity_score called with: '{text1}' vs '{text2}'")
     
-    try:
-        # Generate embeddings for both texts
-        embeddings = generate_embeddings([text1, text2])
-        if embeddings is None or embeddings.shape[0] != 2:
-            # Fallback to Levenshtein if embedding generation fails
-            return Levenshtein.ratio(text1, text2)
-        
-        # Compute cosine similarity
-        similarity_matrix = cosine_similarity(embeddings)
-        similarity_score = similarity_matrix[0, 1]
-        
-        return float(similarity_score)
-        
-    except Exception as e:
-        logger.warning(f"Error computing embedding similarity between '{text1}' and '{text2}': {e}")
-        # Fallback to Levenshtein similarity
-        return Levenshtein.ratio(text1, text2)
+    if config.use_embedding_grouping:
+        try:
+            # Generate embeddings for both texts
+            embeddings = generate_embeddings([text1, text2])
+            if embeddings is not None and len(embeddings) == 2:
+                # Compute cosine similarity
+                similarity_matrix = cosine_similarity([embeddings[0]], [embeddings[1]])
+                similarity = similarity_matrix[0, 0]
+                logger.debug(f"Embedding similarity between '{text1}' and '{text2}': {similarity:.4f}")
+                return float(similarity)
+            else:
+                logger.warning(f"Failed to generate embeddings for similarity computation: embeddings shape = {embeddings.shape if embeddings is not None else None}")
+        except Exception as e:
+            logger.warning(f"Error computing embedding similarity: {e}")
+    
+    # Fallback to Levenshtein similarity
+    levenshtein_score = Levenshtein.ratio(text1, text2)
+    logger.debug(f"Levenshtein similarity between '{text1}' and '{text2}': {levenshtein_score:.4f}")
+    return levenshtein_score
 
 def group_merchants_with_embeddings(
     cleaned_names: List[str], 
@@ -573,7 +603,11 @@ def group_merchants_with_embeddings(
                 return {name: name for name in cleaned_names if name}
     
     # Perform clustering based on method
-    if config.embedding_clustering_method == "hdbscan":
+    # For very small datasets, use similarity clustering regardless of method
+    if len(valid_names) <= 5:
+        logger.info(f"Small dataset ({len(valid_names)} items), using similarity clustering")
+        groups = _cluster_with_similarity(valid_names, embeddings, config)
+    elif config.embedding_clustering_method == "hdbscan":
         groups = _cluster_with_hdbscan(valid_names, embeddings, config)
     elif config.embedding_clustering_method == "dbscan":
         groups = _cluster_with_dbscan(valid_names, embeddings, config)
@@ -674,35 +708,64 @@ def _cluster_with_hierarchical(names: List[str], embeddings: np.ndarray, config:
         return _cluster_with_similarity(names, embeddings, config)
 
 def _cluster_with_similarity(names: List[str], embeddings: np.ndarray, config: CleaningConfig) -> Dict[str, str]:
-    """Cluster using simple similarity threshold."""
+    """Cluster using simple similarity threshold with proper transitive grouping prevention."""
     try:
+        logger.info(f"_cluster_with_similarity called with {len(names)} names and threshold {config.embedding_similarity_threshold}")
         similarity_matrix = cosine_similarity(embeddings)
+        logger.info(f"Similarity matrix shape: {similarity_matrix.shape}")
+        
+        # Log the similarity matrix for debugging
+        for i, name1 in enumerate(names):
+            for j, name2 in enumerate(names):
+                if i < j:  # Only log upper triangle to avoid duplicates
+                    logger.info(f"Similarity between '{name1}' and '{name2}': {similarity_matrix[i][j]:.4f}")
+        
         groups = {}
-        canonical_names = {}
+        group_members = {}  # Track all members of each group
         
         for i, name in enumerate(names):
-            best_match = name
-            highest_score = 0.0
+            logger.debug(f"Processing name {i}: '{name}'")
+            best_group = None
+            best_min_similarity = 0.0  # Track the best minimum similarity to group members
             
-            for j, canonical in enumerate(canonical_names.keys()):
-                canonical_idx = canonical_names[canonical]
-                score = similarity_matrix[i][canonical_idx]
-                if score >= config.embedding_similarity_threshold and score > highest_score:
-                    highest_score = score
-                    best_match = canonical
+            # Check against all existing groups
+            for canonical, members in group_members.items():
+                # For this name to join a group, it must be similar to ALL existing members
+                similarities_to_group = []
+                for member_name in members:
+                    member_idx = names.index(member_name)
+                    score = similarity_matrix[i][member_idx]
+                    similarities_to_group.append(score)
+                    logger.debug(f"  Similarity to group member '{member_name}': {score:.4f}")
+                
+                # Check if similar to ALL members in the group
+                min_similarity = min(similarities_to_group)
+                logger.debug(f"  Min similarity to group '{canonical}': {min_similarity:.4f}")
+                
+                if min_similarity >= config.embedding_similarity_threshold:
+                    # This name can join this group - pick the group with highest minimum similarity
+                    if min_similarity > best_min_similarity:
+                        best_min_similarity = min_similarity
+                        best_group = canonical
+                        logger.debug(f"    New best group candidate: '{best_group}' with min similarity {best_min_similarity:.4f}")
             
-            if highest_score < config.embedding_similarity_threshold:
-                # This is a new canonical name
-                canonical_names[name] = i
+            if best_group is None:
+                # This is a new group - no existing group had ALL members similar enough
+                logger.info(f"'{name}' becomes new group canonical (no group had all members >= threshold {config.embedding_similarity_threshold})")
                 groups[name] = name
+                group_members[name] = [name]
             else:
                 # This belongs to an existing group
-                groups[name] = best_match
+                logger.info(f"'{name}' grouped with '{best_group}' (min group similarity {best_min_similarity:.4f} >= threshold {config.embedding_similarity_threshold})")
+                groups[name] = best_group
+                group_members[best_group].append(name)
         
         # Log clustering results
         n_groups = len(set(groups.values()))
         reduction = ((len(names) - n_groups) / len(names) * 100) if len(names) > 0 else 0
         logger.info(f"Similarity clustering (threshold={config.embedding_similarity_threshold}): {len(names)} names -> {n_groups} groups ({reduction:.1f}% reduction)")
+        logger.info(f"Final groups: {groups}")
+        logger.info(f"Group members: {group_members}")
         
         return groups
         
@@ -934,6 +997,7 @@ def _process_large_dataset_in_batches(
     batch_size = config.embedding_batch_size
     all_groups = {}
     canonical_mapping = {}
+    canonical_embeddings = {}  # Cache embeddings for canonical names
     
     # Process in batches
     for i in range(0, len(valid_names), batch_size):
@@ -973,7 +1037,15 @@ def _process_large_dataset_in_batches(
             # For other clustering methods, use similarity as it's more suitable for batches
             batch_groups = _cluster_with_similarity(batch_names, embeddings, config)
         
-        # Merge with existing groups and resolve conflicts
+        # Extract group representatives and their embeddings from this batch
+        group_rep_to_embedding = {}
+        for name, group_rep in batch_groups.items():
+            if group_rep not in group_rep_to_embedding:
+                # Find the embedding for this group representative
+                group_rep_idx = batch_names.index(group_rep)
+                group_rep_to_embedding[group_rep] = embeddings[group_rep_idx]
+        
+        # Merge with existing groups and resolve conflicts using efficient embedding comparison
         for name, group_rep in batch_groups.items():
             # Check if this group representative already exists in our global mapping
             existing_canonical = canonical_mapping.get(group_rep)
@@ -984,12 +1056,24 @@ def _process_large_dataset_in_batches(
                 best_match = group_rep
                 best_score = 0.0
                 
-                for canonical in canonical_mapping.values():
-                    # Use embedding similarity for cross-batch matching
-                    score = compute_similarity_score(group_rep, canonical, config)
-                    if score >= config.embedding_similarity_threshold and score > best_score:
-                        best_score = score
-                        best_match = canonical
+                if canonical_embeddings:
+                    # Use efficient embedding similarity computation
+                    group_rep_embedding = group_rep_to_embedding[group_rep]
+                    
+                    # Compute similarities to all existing canonicals in batch
+                    canonical_names = list(canonical_embeddings.keys())
+                    canonical_emb_matrix = np.array(list(canonical_embeddings.values()))
+                    
+                    if len(canonical_names) > 0:
+                        # Compute cosine similarity between group_rep and all canonicals
+                        group_rep_emb_matrix = np.array([group_rep_embedding])
+                        similarity_scores = cosine_similarity(group_rep_emb_matrix, canonical_emb_matrix)[0]
+                        
+                        for j, canonical in enumerate(canonical_names):
+                            score = similarity_scores[j]
+                            if score >= config.embedding_similarity_threshold and score > best_score:
+                                best_score = score
+                                best_match = canonical
                 
                 if best_score >= config.embedding_similarity_threshold:
                     all_groups[name] = best_match
@@ -997,6 +1081,8 @@ def _process_large_dataset_in_batches(
                 else:
                     all_groups[name] = group_rep
                     canonical_mapping[group_rep] = group_rep
+                    # Cache embedding for this new canonical
+                    canonical_embeddings[group_rep] = group_rep_to_embedding[group_rep]
     
     # Add back any empty names that were filtered out
     for name in all_names:
