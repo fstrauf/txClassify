@@ -70,6 +70,7 @@ const RUN_TRAINING = !process.argv.includes("--cat-only");
 const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
 const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
 const TEST_BULK_CLEAN_GROUP = process.argv.includes("--bulk-clean-group"); // New flag
+const TEST_UNIVERSAL_CATEGORIZATION = process.argv.includes("--test-universal-cat"); // Universal categorization test
 const DEBUG_SIMILARITY = process.argv.includes("--debug-similarity"); // Debug similarity grouping
 
 // Log the actual values being used
@@ -1627,6 +1628,107 @@ const debugSimilarityGrouping = async (config) => {
   return true;
 };
 
+// Test universal categorization flow (no training required)
+const testUniversalCategorization = async (config) => {
+  const operationStartTime = Date.now();
+
+  try {
+    logInfo("Starting universal categorization test...");
+    
+    // Use all loaded categorization data for testing
+    const testTransactions = config.categorizationDataFile;
+    logInfo(`Testing universal categorization with ${testTransactions.length} transactions`);
+
+    // Prepare request data - no user categories needed for universal categorization
+    const requestData = {
+      transactions: testTransactions
+    };
+
+    const serviceUrl = config.serviceUrl;
+    logInfo(`Sending universal categorization request to ${serviceUrl}/categorize`);
+
+    // Make API call to the universal categorization endpoint
+    const apiKey = config.apiKey || TEST_API_KEY;
+    const response_fetch = await fetch(`${serviceUrl}/categorize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": apiKey,
+        Accept: "application/json",
+      },
+      body: JSON.stringify(requestData),
+    });
+
+    if (!response_fetch.ok) {
+      const statusCode = response_fetch.status;
+      const responseText = await response_fetch.text();
+      throw new Error(`Universal categorization failed: ${statusCode}, message: ${responseText}`);
+    }
+
+    const responseData = await response_fetch.json();
+    logInfo("Universal categorization completed successfully!");
+
+    // Validate response structure
+    if (!responseData.results || !Array.isArray(responseData.results)) {
+      throw new Error("Invalid response format: missing results array");
+    }
+
+    const results = responseData.results;
+    logInfo(`Found ${results.length} categorized transactions`);
+
+    // Display results for verification
+    logInfo("\n===== UNIVERSAL CATEGORIZATION RESULTS ======");
+    logInfo(`Total transactions categorized: ${results.length}`);
+
+    results.forEach((result, index) => {
+      const narrative = result.narrative || result.description || "N/A";
+      const category = result.predicted_category || result.category || "Unknown";
+      const confidence = result.confidence_score || result.similarity_score || 0;
+      const confidencePercent = (confidence * 100).toFixed(2);
+      
+      let logLine = `${index + 1}. "${narrative}" → ${category} (${confidencePercent}%)`;
+      
+      // Add processing method if available
+      if (responseData.processing_info?.method) {
+        logLine += ` [${responseData.processing_info.method}]`;
+      }
+      
+      console.log(logLine);
+    });
+    console.log("=====================================\n");
+
+    // Log processing information if available
+    if (responseData.processing_info) {
+      const info = responseData.processing_info;
+      logInfo("Processing Info:");
+      if (info.total_transactions) logInfo(`  Total transactions: ${info.total_transactions}`);
+      if (info.unique_groups) logInfo(`  Unique groups: ${info.unique_groups}`);
+      if (info.processing_time_seconds) logInfo(`  Processing time: ${info.processing_time_seconds}s`);
+      if (info.categories_used) logInfo(`  Categories used: ${info.categories_used}`);
+      if (info.method) logInfo(`  Method: ${info.method}`);
+    }
+
+    const durationMs = Date.now() - operationStartTime;
+    return { 
+      status: "completed", 
+      results, 
+      durationMs: durationMs,
+      usedPolling: false, // Universal categorization is synchronous
+      processing_info: responseData.processing_info
+    };
+
+  } catch (error) {
+    logError(`Universal categorization test failed: ${error.message}`);
+    logDebug(`Error stack: ${error.stack}`);
+    const durationMs = Date.now() - operationStartTime;
+    return {
+      error: `Universal categorization test failed: ${error.toString()}`,
+      status: "failed",
+      durationMs: durationMs,
+    };
+  }
+};
+
 // Main function
 const main = async () => {
   let trainingResult, categorizationResult; // Store results for performance summary
@@ -1708,6 +1810,33 @@ const main = async () => {
       if (!success) {
         throw new Error("Similarity grouping debug test failed");
       }
+      process.exit(0); // Exit after this specific test
+    }
+
+    if (TEST_UNIVERSAL_CATEGORIZATION) {
+      // Universal categorization test mode
+      logInfo("Running Universal Categorization test mode...");
+      
+      // Load categorization data for universal test
+      console.log("Loading categorization data for universal test...");
+      const categorizationData = await loadCategorizationData("categorise_full.csv");
+      config.categorizationDataFile = categorizationData;
+      
+      const result = await testUniversalCategorization(config);
+      if (result.status !== "completed") {
+        throw new Error(`Universal categorization test failed: ${result.error || "Unknown error"}`);
+      }
+      console.log("   Universal categorization test completed successfully\n");
+      
+      // Print test summary
+      console.log("\n=== Universal Categorization Test Summary ===");
+      const durationSec = (result.durationMs / 1000).toFixed(2);
+      console.log(`   Test took: ${durationSec}s`);
+      if (result.processing_info) {
+        console.log(`   Processing info: ${JSON.stringify(result.processing_info)}`);
+      }
+      console.log("===============================================\n");
+      
       process.exit(0); // Exit after this specific test
     }
 

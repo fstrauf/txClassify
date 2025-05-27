@@ -32,6 +32,7 @@ from utils.request_utils import (
 from services.training_service import process_training_request
 from services.classification_service import process_classification_request
 from services.status_service import get_and_process_status
+from services.universal_categorization_service import process_universal_categorization_request
 
 # Configure logging
 logging.basicConfig(
@@ -157,6 +158,7 @@ def ensure_db_connection():
                         "version": "1.0.0",
                         "endpoints": [
                             "/classify",
+                            "/categorize",
                             "/train",
                             "/health",
                             "/status/:prediction_id",
@@ -176,6 +178,7 @@ def home():
             "version": "1.0.0",
             "endpoints": [
                 "/classify",
+                "/categorize",
                 "/train",
                 "/health",
                 "/status/:prediction_id",
@@ -723,6 +726,185 @@ def classify_transactions_async():
         )
         return create_error_response(
             f"Server error in classification endpoint: {str(route_err)}", 500
+        )
+
+
+@app.route("/categorize", methods=["POST"])
+@require_api_key
+@swag_from(
+    {
+        "tags": ["Universal Categorization"],
+        "summary": "Categorize transactions using universal categories",
+        "description": (
+            "Categorizes transactions using improved text cleaning, grouping, and LLM-based categorization "
+            "with predefined categories. This endpoint bypasses user training data and provides immediate "
+            "categorization using a comprehensive set of predefined transaction categories. "
+            "The process includes advanced text cleaning, similarity-based grouping of similar merchants, "
+            "and AI-powered categorization."
+        ),
+        "parameters": [
+            {
+                "name": "X-API-Key",
+                "in": "header",
+                "type": "string",
+                "required": True,
+                "description": "API Key for authentication.",
+            },
+            {
+                "name": "body",
+                "in": "body",
+                "required": True,
+                "schema": {
+                    "type": "object",
+                    "required": ["transactions"],
+                    "properties": {
+                        "transactions": {
+                            "type": "array",
+                            "items": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {
+                                        "type": "object",
+                                        "required": ["description"],
+                                        "properties": {
+                                            "description": {
+                                                "type": "string",
+                                                "description": "Transaction description text",
+                                                "example": "UBER EATS SYDNEY NSW"
+                                            },
+                                            "money_in": {
+                                                "type": "boolean",
+                                                "description": "Whether this is an incoming transaction (credit)",
+                                                "example": False
+                                            },
+                                            "amount": {
+                                                "type": "number",
+                                                "description": "Transaction amount (positive number)",
+                                                "example": 25.50
+                                            }
+                                        }
+                                    }
+                                ]
+                            },
+                            "description": "List of transaction descriptions or transaction objects to categorize",
+                            "example": [
+                                "UBER EATS SYDNEY NSW",
+                                {
+                                    "description": "SALARY DEPOSIT",
+                                    "money_in": True,
+                                    "amount": 2500.00
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        ],
+        "responses": {
+            200: {
+                "description": "Universal categorization completed successfully",
+                "examples": {
+                    "application/json": {
+                        "status": "completed",
+                        "message": "Universal categorization completed successfully",
+                        "results": [
+                            {
+                                "narrative": "UBER EATS SYDNEY NSW",
+                                "cleaned_narrative": "uber eats sydney",
+                                "predicted_category": "FOOD_AND_DRINK",
+                                "similarity_score": 1.0,
+                                "second_predicted_category": None,
+                                "second_similarity_score": 0.0,
+                                "money_in": False,
+                                "amount": 25.50,
+                                "adjustment_info": {
+                                    "universal_categorization": True,
+                                    "group_representative": "uber eats sydney",
+                                    "llm_assisted": True,
+                                    "llm_model": "gpt-4.1-2025-04-14",
+                                    "bypassed_training_data": True
+                                },
+                                "debug_info": {
+                                    "method": "universal_categorization",
+                                    "group_size": 1,
+                                    "predefined_categories_count": 16
+                                }
+                            },
+                            {
+                                "narrative": "SALARY DEPOSIT",
+                                "cleaned_narrative": "salary deposit",
+                                "predicted_category": "INCOME",
+                                "similarity_score": 1.0,
+                                "second_predicted_category": None,
+                                "second_similarity_score": 0.0,
+                                "money_in": True,
+                                "amount": 2500.00,
+                                "adjustment_info": {
+                                    "universal_categorization": True,
+                                    "group_representative": "salary deposit",
+                                    "llm_assisted": True,
+                                    "llm_model": "gpt-4.1-2025-04-14",
+                                    "bypassed_training_data": True
+                                },
+                                "debug_info": {
+                                    "method": "universal_categorization",
+                                    "group_size": 1,
+                                    "predefined_categories_count": 16
+                                }
+                            }
+                        ],
+                        "processing_info": {
+                            "total_transactions": 2,
+                            "unique_groups": 2,
+                            "processing_time_seconds": 1.23,
+                            "categories_used": 16,
+                            "method": "universal_categorization"
+                        }
+                    }
+                }
+            },
+            400: {"description": "Invalid request data"},
+            401: {"description": "Invalid or missing API key"},
+            500: {"description": "Server error"},
+            503: {"description": "LLM categorization service unavailable"}
+        }
+    }
+)
+def categorize_transactions_universal():
+    """Universal categorization using predefined categories and LLM."""
+    try:
+        user_id = request.user_id  # Get user_id associated with the API key
+        data = request.get_json()
+        if not data:
+            return create_error_response("Missing request data", 400)
+
+        # Validate request data using same model as classify endpoint
+        try:
+            validated_data = ClassifyRequest(**data)
+        except ValidationError as e:
+            logger.error(f"Validation error for /categorize: {e.json()}")
+            error_details = e.errors()
+            first_error = error_details[0]["msg"] if error_details else "Invalid data"
+            return create_error_response(f"Validation error: {first_error}", 400)
+
+        # Process universal categorization (synchronous only)
+        result_dict = process_universal_categorization_request(validated_data, user_id)
+
+        # Determine status code based on result
+        status_code = 200
+        if result_dict.get("status") == "error":
+            status_code = result_dict.get("error_code", 500)
+
+        logger.info(f"Universal categorization completed for user {user_id}. Returning {status_code}.")
+        return jsonify(result_dict), status_code
+
+    except Exception as route_err:
+        logger.error(
+            f"Error in /categorize route for user {request.user_id if hasattr(request, 'user_id') else 'Unknown'}: {route_err}",
+            exc_info=True,
+        )
+        return create_error_response(
+            f"Server error in universal categorization endpoint: {str(route_err)}", 500
         )
 
 

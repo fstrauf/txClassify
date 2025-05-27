@@ -12,6 +12,7 @@
     "test:dev": "node tests/test-api-endpoints.js --use-dev-api",
     "test:docker": "TEST_TARGET_API_URL=http://localhost node tests/test-api-endpoints.js --verbose",
     "test:bulk-clean-group": "TEST_TARGET_API_URL=http://localhost node tests/test-api-endpoints.js --bulk-clean-group --verbose",
+    "test:universal-cat": "TEST_TARGET_API_URL=http://localhost node tests/test-api-endpoints.js --test-universal-cat --verbose",
     "test-db": "node test-db-connection.js",
     "test:clean_text": "pythonHandler/.venv/bin/python tests/test_clean_text.py",
     "debug-test": "NODE_OPTIONS='--inspect' node tests/test-api-endpoints.js --verbose",
