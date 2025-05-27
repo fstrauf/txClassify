@@ -1127,10 +1127,10 @@ const runBulkCleanAndGroupTest = async (config) => {
   const testStartTime = new Date();
   const timestamp = testStartTime.toISOString().replace(/[:.]/g, '-').split('T');
   const logFileName = `bulk_clean_group_${timestamp[0]}_${timestamp[1].split('.')[0]}.log`;
-  const logFilePath = path.join(__dirname, '..', 'logs', logFileName);
+  const logFilePath = path.join(__dirname, 'logs', logFileName); // Changed to tests/logs folder
   
-  // Create logs directory if it doesn't exist
-  const logsDir = path.join(__dirname, '..', 'logs');
+  // Create logs directory if it doesn't exist (in tests folder)
+  const logsDir = path.join(__dirname, 'logs');
   if (!fs.existsSync(logsDir)) {
     fs.mkdirSync(logsDir, { recursive: true });
   }
@@ -1142,7 +1142,7 @@ const runBulkCleanAndGroupTest = async (config) => {
   };
   
   logInfo("\n=== Starting Bulk Clean and Group Test with Embedding Optimization ===\n");
-  logInfo(`📁 Detailed logs will be saved to: ${logFilePath}`);
+  logInfo(`📁 Detailed logs will be saved to: tests/logs/${logFileName}`);
   const BULK_CSV_FILE = "ANZ Transactions Nov 2024 to May 2025.csv";
 
   try {
@@ -1413,10 +1413,11 @@ const runBulkCleanAndGroupTest = async (config) => {
 
     logInfo("\n--- Transaction Grouping Results (Sorted by Count) ---");
     
-    // Log all detailed results to file
-    logToFile(`DETAILED GROUPING RESULTS (Top 50):`);
-    sortedGroups.slice(0, 50).forEach(([cleanedName, data], index) => {
-      logToFile(`${index + 1}. "${cleanedName}" - Count: ${data.count}, Amount: ${data.totalAmount.toFixed(2)}`);
+    // Log ALL detailed results to file (changed from top 50 to ALL groups)
+    logToFile(`DETAILED GROUPING RESULTS (ALL ${sortedGroups.length} GROUPS):`);
+    sortedGroups.forEach(([cleanedName, data], index) => {
+      const groupSizeIcon = data.count >= 10 ? '🔥' : data.count >= 5 ? '📈' : data.count >= 3 ? '📊' : '🔹';
+      logToFile(`${index + 1}. ${groupSizeIcon} "${cleanedName}" - Count: ${data.count}, Amount: ${data.totalAmount.toFixed(2)}`);
       if (data.originalCombinedDescriptions.size > 0) {
         logToFile(`   Original variations (up to 10):`);
         Array.from(data.originalCombinedDescriptions).forEach((desc) => {
@@ -1425,16 +1426,19 @@ const runBulkCleanAndGroupTest = async (config) => {
       }
     });
 
-    // Console output (limited for readability)
-    console.log(`\n🏆 TOP 15 GROUPS BY TRANSACTION COUNT:`);
-    for (const [cleanedName, data] of sortedGroups.slice(0, 15)) {
-      console.log(`\n"${cleanedName}"`);
+    // Console output - show ALL groups for complete analysis
+    console.log(`\n🏆 ALL GROUPS BY TRANSACTION COUNT (${sortedGroups.length} total):`);
+    
+    // Show all groups in console (with different styling for different sizes)
+    for (const [cleanedName, data] of sortedGroups) {
+      const groupSizeIcon = data.count >= 10 ? '🔥' : data.count >= 5 ? '📈' : data.count >= 3 ? '📊' : '🔹';
+      console.log(`\n${groupSizeIcon} "${cleanedName}"`);
       console.log(`  📊 Count: ${data.count} | 💰 Amount: ${data.totalAmount.toFixed(2)}`);
       if (data.originalCombinedDescriptions.size > 1) {
         console.log(`  🔄 Variations (${data.originalCombinedDescriptions.size}):`);
-        Array.from(data.originalCombinedDescriptions).slice(0, 3).forEach((desc) => console.log(`    - "${desc}"`));
-        if (data.originalCombinedDescriptions.size > 3) {
-          console.log(`    ... and ${data.originalCombinedDescriptions.size - 3} more`);
+        Array.from(data.originalCombinedDescriptions).slice(0, 5).forEach((desc) => console.log(`    - "${desc}"`));
+        if (data.originalCombinedDescriptions.size > 5) {
+          console.log(`    ... and ${data.originalCombinedDescriptions.size - 5} more`);
         }
       }
     }
@@ -1457,7 +1461,7 @@ const runBulkCleanAndGroupTest = async (config) => {
     
     // Console final summary
     console.log(`\n✅ TEST COMPLETED SUCCESSFULLY`);
-    console.log(`📁 Detailed analysis saved to: ${logFileName}`);
+    console.log(`📁 Detailed analysis saved to: tests/logs/${logFileName}`);
     console.log(`⏱️  Total time: ${(totalTestTime/1000).toFixed(1)}s | 🚀 Avg batch: ${avgBatchTime.toFixed(0)}ms`);
     console.log(`📉 Grouping efficiency: ${totalGroups} groups from ${descriptionsToClean.length} transactions (${((totalGroups / descriptionsToClean.length) * 100).toFixed(1)}%)`);
     

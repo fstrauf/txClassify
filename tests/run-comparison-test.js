@@ -4,7 +4,7 @@
 const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
-const { runBulkCleanAndGroupComparison } = require('./test-bulk-comparison');
+const { runBulkCleanAndGroupComparison } = require('../debug/test-bulk-comparison');
 
 // Logging setup (simplified from main test file)
 const LOG_LEVELS = {

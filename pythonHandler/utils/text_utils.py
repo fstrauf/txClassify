@@ -470,6 +470,40 @@ def group_similar_merchants(cleaned_names: List[str], threshold: float = 0.85) -
 
 # --- Embedding-based Grouping Functions ---
 
+def compute_similarity_score(text1: str, text2: str, config: CleaningConfig) -> float:
+    """
+    Compute similarity score between two text strings using embeddings.
+    
+    Args:
+        text1: First text string
+        text2: Second text string
+        config: Configuration for embedding generation
+        
+    Returns:
+        Similarity score between 0 and 1
+    """
+    if not EMBEDDINGS_AVAILABLE:
+        # Fallback to Levenshtein similarity if embeddings not available
+        return Levenshtein.ratio(text1, text2)
+    
+    try:
+        # Generate embeddings for both texts
+        embeddings = generate_embeddings([text1, text2])
+        if embeddings is None or embeddings.shape[0] != 2:
+            # Fallback to Levenshtein if embedding generation fails
+            return Levenshtein.ratio(text1, text2)
+        
+        # Compute cosine similarity
+        similarity_matrix = cosine_similarity(embeddings)
+        similarity_score = similarity_matrix[0, 1]
+        
+        return float(similarity_score)
+        
+    except Exception as e:
+        logger.warning(f"Error computing embedding similarity between '{text1}' and '{text2}': {e}")
+        # Fallback to Levenshtein similarity
+        return Levenshtein.ratio(text1, text2)
+
 def group_merchants_with_embeddings(
     cleaned_names: List[str], 
     config: Optional[CleaningConfig] = None
@@ -951,8 +985,8 @@ def _process_large_dataset_in_batches(
                 best_score = 0.0
                 
                 for canonical in canonical_mapping.values():
-                    # Use simple string similarity for cross-batch matching
-                    score = Levenshtein.ratio(group_rep, canonical)
+                    # Use embedding similarity for cross-batch matching
+                    score = compute_similarity_score(group_rep, canonical, config)
                     if score >= config.embedding_similarity_threshold and score > best_score:
                         best_score = score
                         best_match = canonical
