@@ -38,13 +38,13 @@ jobs:
             git pull origin main
             
             echo "Stopping current running containers (if any)..."
-            docker-compose down
+            docker compose down
             
             echo "Building and starting new containers in detached mode..."
-            docker-compose up -d --build
+            docker compose up -d --build
             
             echo "Displaying recent logs for the backend service..."
-            docker-compose logs --tail=50 backend # 'backend' is your service name from docker-compose.yml
+            docker compose logs --tail=50 backend # 'backend' is your service name from docker-compose.yml
             
             echo "Cleaning up unused Docker images to save space..."
             docker image prune -af
