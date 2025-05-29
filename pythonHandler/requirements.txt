@@ -24,3 +24,4 @@ yarl==1.18.3
 PyYAML==6.0.2
 openai
 pyahocorasick>=1.4.4
+python-Levenshtein
