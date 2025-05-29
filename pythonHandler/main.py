@@ -158,7 +158,7 @@ def ensure_db_connection():
                         "version": "1.0.0",
                         "endpoints": [
                             "/classify",
-                            "/categorize",
+                            "/auto-classify",
                             "/train",
                             "/health",
                             "/status/:prediction_id",
@@ -178,7 +178,7 @@ def home():
             "version": "1.0.0",
             "endpoints": [
                 "/classify",
-                "/categorize",
+                "/auto-classify",
                 "/train",
                 "/health",
                 "/status/:prediction_id",
@@ -729,16 +729,16 @@ def classify_transactions_async():
         )
 
 
-@app.route("/categorize", methods=["POST"])
+@app.route("/auto-classify", methods=["POST"])
 @require_api_key
 @swag_from(
     {
         "tags": ["Universal Categorization"],
-        "summary": "Categorize transactions using universal categories",
+        "summary": "Auto-classify transactions using universal categories",
         "description": (
-            "Categorizes transactions using improved text cleaning, grouping, and LLM-based categorization "
+            "Auto-classifies transactions using improved text cleaning, grouping, and LLM-based categorization "
             "with predefined categories. This endpoint bypasses user training data and provides immediate "
-            "categorization using a comprehensive set of predefined transaction categories. "
+            "auto-classification using a comprehensive set of predefined transaction categories. "
             "The process includes advanced text cleaning, similarity-based grouping of similar merchants, "
             "and AI-powered categorization."
         ),
@@ -786,7 +786,7 @@ def classify_transactions_async():
                                     }
                                 ]
                             },
-                            "description": "List of transaction descriptions or transaction objects to categorize",
+                            "description": "List of transaction descriptions or transaction objects to auto-classify",
                             "example": [
                                 "UBER EATS SYDNEY NSW",
                                 {
@@ -870,8 +870,8 @@ def classify_transactions_async():
         }
     }
 )
-def categorize_transactions_universal():
-    """Universal categorization using predefined categories and LLM."""
+def auto_classify_transactions_universal():
+    """Universal auto-classification using predefined categories and LLM."""
     try:
         user_id = request.user_id  # Get user_id associated with the API key
         data = request.get_json()
@@ -882,12 +882,12 @@ def categorize_transactions_universal():
         try:
             validated_data = ClassifyRequest(**data)
         except ValidationError as e:
-            logger.error(f"Validation error for /categorize: {e.json()}")
+            logger.error(f"Validation error for /auto-classify: {e.json()}")
             error_details = e.errors()
             first_error = error_details[0]["msg"] if error_details else "Invalid data"
             return create_error_response(f"Validation error: {first_error}", 400)
 
-        # Process universal categorization (synchronous only)
+        # Process universal auto-classification (synchronous only)
         result_dict = process_universal_categorization_request(validated_data, user_id)
 
         # Determine status code based on result
@@ -900,11 +900,11 @@ def categorize_transactions_universal():
 
     except Exception as route_err:
         logger.error(
-            f"Error in /categorize route for user {request.user_id if hasattr(request, 'user_id') else 'Unknown'}: {route_err}",
+            f"Error in /auto-classify route for user {request.user_id if hasattr(request, 'user_id') else 'Unknown'}: {route_err}",
             exc_info=True,
         )
         return create_error_response(
-            f"Server error in universal categorization endpoint: {str(route_err)}", 500
+            f"Server error in universal auto-classification endpoint: {str(route_err)}", 500
         )
 
 
