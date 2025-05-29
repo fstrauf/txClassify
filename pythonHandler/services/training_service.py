@@ -40,7 +40,14 @@ def process_training_request(validated_data, user_id):
 
         original_descriptions = df["description"].astype(str).tolist()  # Ensure strings
         try:
-            cleaned_descriptions = clean_text(original_descriptions)
+            # Use simple text cleaning without grouping for training (1:1 mapping required)
+            from utils.text_utils import CleaningConfig
+            config = CleaningConfig()
+            config.use_embedding_grouping = False
+            config.use_fuzzy_matching = False
+            config.use_fuzzy_matching_post_clean = False
+            
+            cleaned_descriptions = clean_text(original_descriptions, config)
             if len(cleaned_descriptions) != len(original_descriptions):
                 logger.error(
                     f"Training Clean Error: Length mismatch for user {user_id}. Input {len(original_descriptions)}, Output {len(cleaned_descriptions)}"
