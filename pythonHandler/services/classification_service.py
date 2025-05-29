@@ -25,6 +25,10 @@ from utils.local_embedding_utils import generate_embeddings  # Import local util
 # Import the new OpenAI utility function
 from utils.openai_utils import categorize_with_openai, client as openai_client, DEFAULT_OPENAI_MODEL # Import client and model constant
 
+# Custom thresholds for classification endpoint (more lenient than universal categorization)
+CLASSIFY_MIN_ABSOLUTE_CONFIDENCE = 0.6   # 60% - more practical for user-trained data
+CLASSIFY_MIN_RELATIVE_CONFIDENCE_DIFF = 0.05  # 5% - slightly higher to avoid very close matches
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,8 +66,14 @@ def process_classification_request(validated_data, user_id):
 
         # --- Clean Descriptions ---
         try:
-            # Use the imported clean_text function
-            cleaned_descriptions = clean_text(original_descriptions)
+            # Use simple text cleaning without grouping for classification (1:1 mapping required)
+            from utils.text_utils import CleaningConfig
+            config = CleaningConfig()
+            config.use_embedding_grouping = False
+            config.use_fuzzy_matching = False
+            config.use_fuzzy_matching_post_clean = False
+            
+            cleaned_descriptions = clean_text(original_descriptions, config)
             if len(cleaned_descriptions) != len(original_descriptions):
                 logger.error(
                     f"Mismatch in length after cleaning: {len(original_descriptions)} vs {len(cleaned_descriptions)}"
@@ -414,10 +424,10 @@ def _apply_initial_categorization(
             human_readable_reason = ""  # NEW variable for user-facing reason
 
             # --- Refined Decision Logic (Calculate Reason Only) ---
-            meets_absolute_confidence = best_score >= MIN_ABSOLUTE_CONFIDENCE
+            meets_absolute_confidence = best_score >= CLASSIFY_MIN_ABSOLUTE_CONFIDENCE
             meets_relative_confidence = (
                 best_score - second_best_score
-            ) >= MIN_RELATIVE_CONFIDENCE_DIFF
+            ) >= CLASSIFY_MIN_RELATIVE_CONFIDENCE_DIFF
             neighbors_are_consistent = not has_conflicting_neighbors
 
             # Original logic preserved here to determine the *reason* for potential low confidence
@@ -432,7 +442,7 @@ def _apply_initial_categorization(
                     debug_details = {
                         "reason_code": "LOW_ABS_CONF",
                         "best_score": best_score,
-                        "threshold": MIN_ABSOLUTE_CONFIDENCE,
+                        "threshold": CLASSIFY_MIN_ABSOLUTE_CONFIDENCE,
                         "evaluated_category": best_category,  # Note: this category *was* returned
                         "neighbor_categories": neighbor_categories[:NEIGHBOR_COUNT],
                         "neighbor_cleaned_descs": cleaned_descs[:NEIGHBOR_COUNT],
@@ -452,7 +462,7 @@ def _apply_initial_categorization(
                                 "best_score": best_score,
                                 "second_best_score": second_best_score,
                                 "difference": best_score - second_best_score,
-                                "rel_threshold": MIN_RELATIVE_CONFIDENCE_DIFF,
+                                "rel_threshold": CLASSIFY_MIN_RELATIVE_CONFIDENCE_DIFF,
                                 "neighbor_categories": neighbor_categories[
                                     :NEIGHBOR_COUNT
                                 ],
@@ -478,7 +488,7 @@ def _apply_initial_categorization(
                                 "best_score": best_score,
                                 "second_best_score": second_best_score,
                                 "difference": best_score - second_best_score,
-                                "threshold": MIN_RELATIVE_CONFIDENCE_DIFF,
+                                "threshold": CLASSIFY_MIN_RELATIVE_CONFIDENCE_DIFF,
                                 "evaluated_category": best_category,
                                 "neighbor_categories": neighbor_categories[
                                     :NEIGHBOR_COUNT
