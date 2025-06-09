@@ -9,5 +9,22 @@
     "https://www.googleapis.com/auth/script.external_request",
     "https://www.googleapis.com/auth/script.container.ui",
     "https://www.googleapis.com/auth/userinfo.email"
-  ]
+  ],
+  "urlFetchWhitelist": [
+    "https://api.expensesorted.com/*",
+    "https://txclassify.onrender.com/*"
+  ],
+  "addOns": {
+    "common": {
+      "name": "ExpenseSorted",
+      "logoUrl": "https://www.gstatic.com/images/icons/material/system/1x/receipt_long_black_24dp.png",
+      "layoutProperties": {
+        "primaryColor": "#4285F4"
+      },
+      "homepageTrigger": {
+        "runFunction": "onHomepage"
+      }
+    },
+    "sheets": {}
+  }
 } 
