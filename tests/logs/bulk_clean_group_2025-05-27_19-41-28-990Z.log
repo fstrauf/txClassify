@@ -1,0 +1,519 @@
+[2025-05-27T19:41:28.990Z] === BULK CLEAN AND GROUP TEST STARTED ===
+[2025-05-27T19:41:28.990Z] Test file: ANZ Transactions Nov 2024 to May 2025.csv
+[2025-05-27T19:41:28.990Z] Start time: 2025-05-27T19:41:28.990Z
+[2025-05-27T19:41:28.999Z] Loaded 469 transactions from ANZ Transactions Nov 2024 to May 2025.csv
+[2025-05-27T19:41:29.000Z] Prepared 469 combined descriptions for cleaning
+[2025-05-27T19:41:29.000Z] Sample descriptions: ["4835-****-****-0311  Df Woolworths O","4835-****-****-0329  Df Woolworths N","4835-****-****-0311  Df Kmart - Bayf","4835-****-****-0329  Df Fusion Coffe","4835-****-****-0311  Df A 2 Z"]
+[2025-05-27T19:41:29.000Z] ORIGINAL DATA ANALYSIS:
+[2025-05-27T19:41:29.000Z] - Total descriptions: 469
+[2025-05-27T19:41:29.000Z] - Unique descriptions: 182
+[2025-05-27T19:41:29.000Z] - Duplicate ratio: 61.19%
+[2025-05-27T19:41:29.000Z] CONSERVATIVE EMBEDDING CONFIGURATION (higher threshold for accuracy):
+[2025-05-27T19:41:29.000Z] - use_embedding_grouping: true
+[2025-05-27T19:41:29.000Z] - embedding_clustering_method: similarity
+[2025-05-27T19:41:29.000Z] - embedding_similarity_threshold: 0.85 (conservative - prevents false groupings)
+[2025-05-27T19:41:29.000Z] - processing_mode: single_call (fixes cross-batch grouping issues)
+[2025-05-27T19:41:29.001Z] Processing 469 descriptions in a single API call for optimal grouping
+[2025-05-27T19:41:37.865Z] SINGLE PROCESSING RESULTS:
+[2025-05-27T19:41:37.865Z] - Processing time: 8864ms
+[2025-05-27T19:41:37.865Z] - Input items: 469
+[2025-05-27T19:41:37.866Z] - Output items: 469
+[2025-05-27T19:41:37.866Z] - Transformations: 469/469
+[2025-05-27T19:41:37.866Z] - Sample transformations:
+[2025-05-27T19:41:37.866Z]   "4835-****-****-0311  Df Woolworths O" -> "woolworths o"
+[2025-05-27T19:41:37.866Z]   "4835-****-****-0329  Df Woolworths N" -> "woolworths n"
+[2025-05-27T19:41:37.866Z]   "4835-****-****-0311  Df Kmart - Bayf" -> "kmart bayf"
+[2025-05-27T19:41:37.866Z]   "4835-****-****-0329  Df Fusion Coffe" -> "fusion coffe"
+[2025-05-27T19:41:37.866Z]   "4835-****-****-0311  Df A 2 Z" -> "df a 2 z"
+[2025-05-27T19:41:37.866Z] - Groups found: 138
+[2025-05-27T19:41:37.866Z] - Sample groups: ["-- df","airbnb","alt brew","asian su","backdoor pap"]
+[2025-05-27T19:41:37.867Z] PROCESSING PERFORMANCE:
+[2025-05-27T19:41:37.867Z] - Total processing time: 8864ms
+[2025-05-27T19:41:37.867Z] - Items per second: 52.9
+[2025-05-27T19:41:37.867Z] CLEANING EFFECTIVENESS ANALYSIS:
+[2025-05-27T19:41:37.867Z] - Original unique descriptions: 182
+[2025-05-27T19:41:37.868Z] - Cleaned unique descriptions: 159
+[2025-05-27T19:41:37.868Z] - Reduction in unique descriptions: 23 (12.64%)
+[2025-05-27T19:41:37.868Z] - Descriptions transformed: 469/469 (100.00%)
+[2025-05-27T19:41:37.869Z] TRANSACTION GROUPING ANALYSIS:
+[2025-05-27T19:41:37.869Z] Using API groups mapping: 138 groups found
+[2025-05-27T19:41:37.869Z] Sample group mapping: [["-- df","-- df"],["-- df just","-- df"],["airbnb","airbnb"],["alt brew","alt brew"],["asian su","asian su"]]
+[2025-05-27T19:41:37.870Z] GROUPING RESULTS:
+[2025-05-27T19:41:37.870Z] - Total groups created: 138
+[2025-05-27T19:41:37.870Z] - Singleton groups (1 transaction): 64 (46.4%)
+[2025-05-27T19:41:37.870Z] - Small groups (2-4 transactions): 53 (38.4%)
+[2025-05-27T19:41:37.870Z] - Medium groups (5-9 transactions): 12 (8.7%)
+[2025-05-27T19:41:37.870Z] - Large groups (10+ transactions): 9 (6.5%)
+[2025-05-27T19:41:37.870Z] - Average transactions per group: 3.4
+[2025-05-27T19:41:37.870Z] - Largest group size: 60
+[2025-05-27T19:41:37.870Z] DETAILED GROUPING RESULTS (ALL 138 GROUPS):
+[2025-05-27T19:41:37.870Z] 1. 🔥 "woolworths o" - Count: 60, Amount: -3531.15
+[2025-05-27T19:41:37.870Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0311  Df Woolworths O"
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0329  Df Woolworths N"
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0311  Df Woolworths N"
+[2025-05-27T19:41:37.870Z] 2. 🔥 "moore / maranui" - Count: 24, Amount: -21360.00
+[2025-05-27T19:41:37.870Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.870Z]      - "Moore Rentals 6/5C Maranui"
+[2025-05-27T19:41:37.870Z] 3. 🔥 "kmart bayf" - Count: 22, Amount: -913.89
+[2025-05-27T19:41:37.870Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0311  Df Kmart - Bayf"
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0311  Df Kmart Online"
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0329  Df Kmart"
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0329  Df Kmart - Bayf"
+[2025-05-27T19:41:37.870Z] 4. 🔥 "pak n save p" - Count: 20, Amount: -4920.82
+[2025-05-27T19:41:37.870Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0311  Df Pak N Save P"
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0329  Df Pak N Save P"
+[2025-05-27T19:41:37.870Z] 5. 🔥 "warehous" - Count: 17, Amount: -768.35
+[2025-05-27T19:41:37.870Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0311  Df The Warehous"
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0329  Df The Warehous"
+[2025-05-27T19:41:37.870Z] 6. 🔥 "ooooby" - Count: 15, Amount: -2156.74
+[2025-05-27T19:41:37.870Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0311  Df Ooooby"
+[2025-05-27T19:41:37.870Z] 7. 🔥 "ezifitness" - Count: 14, Amount: -760.00
+[2025-05-27T19:41:37.870Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.870Z]      - "4835-****-****-0311  Df Ezi*Fitness"
+[2025-05-27T19:41:37.870Z] 8. 🔥 "rogers kiga" - Count: 11, Amount: -628.00
+[2025-05-27T19:41:37.870Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.870Z]      - "Gwen Rogers Kiga Cs98"
+[2025-05-27T19:41:37.871Z] 9. 🔥 "bayfair bayfair" - Count: 10, Amount: -1620.00
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "Anz  S3D7741 Bayfair Br 1 Bayfair Br 1"
+[2025-05-27T19:41:37.871Z] 10. 📈 "new world" - Count: 9, Amount: -1000.06
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df New World Mt"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0329  Df New World Mt"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0329  Df New World Bl"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0329  Df New World Ra"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df New World Th"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0329  Df New World Oh"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df New World Ga"
+[2025-05-27T19:41:37.871Z] 11. 📈 "papamoa toy" - Count: 8, Amount: -114.00
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df Papamoa Toy"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0329  Df Papamoa Toy"
+[2025-05-27T19:41:37.871Z]      - "Papamoa Toy Library"
+[2025-05-27T19:41:37.871Z] 12. 📈 "fritz-florian" - Count: 8, Amount: 112397.24
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "Fritz-Florian Strauf S002 Imt"
+[2025-05-27T19:41:37.871Z]      - "Fritz-Florian Strauf S000 Imt"
+[2025-05-27T19:41:37.871Z]      - "Fritz-Florian Strauf 0800 Imt"
+[2025-05-27T19:41:37.871Z]      - "Fritz Florian Strauf"
+[2025-05-27T19:41:37.871Z]      - "Fritz-Florian Strauf 0801 Imt"
+[2025-05-27T19:41:37.871Z]      - "Fritz-Florian Strauf S001 Imt"
+[2025-05-27T19:41:37.871Z] 13. 📈 "special ment" - Count: 7, Amount: -56.18
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df Special Ment"
+[2025-05-27T19:41:37.871Z] 14. 📈 "four square" - Count: 7, Amount: -212.11
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df Four Square"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0329  Df Four Square"
+[2025-05-27T19:41:37.871Z] 15. 📈 "central para central para" - Count: 7, Amount: -1400.00
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "Anz  S3C7711 Central Para Central Para"
+[2025-05-27T19:41:37.871Z] 16. 📈 "temu com" - Count: 6, Amount: -88.34
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df Temu.Com"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0329  Df Temu.Com"
+[2025-05-27T19:41:37.871Z] 17. 📈 "cotton" - Count: 6, Amount: 107.49
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df Cotton On Me"
+[2025-05-27T19:41:37.871Z]      - "4835-****-****-0311  Df Cotton On Ki"
+[2025-05-27T19:41:37.871Z] 18. 📈 "chemist ware" - Count: 5, Amount: -148.78
+[2025-05-27T19:41:37.871Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.872Z]      - "4835-****-****-0329  Df Chemist Ware"
+[2025-05-27T19:41:37.872Z]      - "4835-****-****-0311  Df Chemist Ware"
+[2025-05-27T19:41:37.872Z] 19. 📈 "binn inn pap" - Count: 5, Amount: -100.24
+[2025-05-27T19:41:37.872Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.872Z]      - "4835-****-****-0311  Df Binn Inn Pap"
+[2025-05-27T19:41:37.872Z] 20. 📈 "interislande" - Count: 5, Amount: -965.66
+[2025-05-27T19:41:37.872Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.872Z]      - "4835-****-****-0329  Df Interislande"
+[2025-05-27T19:41:37.872Z]      - "4835-****-****-0311  Df Interisland"
+[2025-05-27T19:41:37.873Z]      - "4835-****-****-0311  Df Interislande"
+[2025-05-27T19:41:37.874Z] 21. 📈 "organics" - Count: 5, Amount: -169.68
+[2025-05-27T19:41:37.874Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.874Z]      - "4835-****-****-0311  Df Be Organics"
+[2025-05-27T19:41:37.874Z]      - "4835-****-****-0329  Df Be Organics"
+[2025-05-27T19:41:37.874Z] 22. 📊 "papamoa orth" - Count: 4, Amount: -710.00
+[2025-05-27T19:41:37.874Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.874Z]      - "4835-****-****-0311  Df Papamoa Orth"
+[2025-05-27T19:41:37.875Z]      - "Anz  S3A7715 Papamoa Plaz Papamoa Plaz"
+[2025-05-27T19:41:37.875Z]      - "Anz  S3B1480 Papamoa East Papamoa East"
+[2025-05-27T19:41:37.875Z] 23. 📊 "trga crossin trga crossin" - Count: 4, Amount: -300.00
+[2025-05-27T19:41:37.875Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.876Z]      - "Anz  S3B1491 Trga Crossin Trga Crossin"
+[2025-05-27T19:41:37.876Z]      - "Anz  S3A1490 Trga Crossin Trga Crossin"
+[2025-05-27T19:41:37.876Z] 24. 📊 "bread" - Count: 4, Amount: -46.25
+[2025-05-27T19:41:37.876Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.876Z]      - "4835-****-****-0311  Df Just Bread"
+[2025-05-27T19:41:37.876Z] 25. 📊 "noopii" - Count: 4, Amount: -381.82
+[2025-05-27T19:41:37.876Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.876Z]      - "4835-****-****-0311  Df Sp Noopii"
+[2025-05-27T19:41:37.876Z] 26. 📊 "salvation ar" - Count: 4, Amount: -37.00
+[2025-05-27T19:41:37.876Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.876Z]      - "4835-****-****-0311  Df Salvation Ar"
+[2025-05-27T19:41:37.877Z] 27. 📊 "green meadow" - Count: 4, Amount: -1539.00
+[2025-05-27T19:41:37.877Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.877Z]      - "4835-****-****-0329  Df Green Meadow"
+[2025-05-27T19:41:37.877Z] 28. 📊 "farmers" - Count: 4, Amount: -72.92
+[2025-05-27T19:41:37.877Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.877Z]      - "4835-****-****-0311  Df Farmers"
+[2025-05-27T19:41:37.877Z] 29. 📊 "good farm limite" - Count: 4, Amount: -41.00
+[2025-05-27T19:41:37.877Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.877Z]      - "The Good Farm Limite"
+[2025-05-27T19:41:37.877Z] 30. 📊 "googlegoogl" - Count: 4, Amount: -11.23
+[2025-05-27T19:41:37.877Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.877Z]      - "4835-****-****-0311  If Google*Googl"
+[2025-05-27T19:41:37.877Z] 31. 📊 "happyhealth" - Count: 4, Amount: -284.84
+[2025-05-27T19:41:37.877Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.877Z]      - "4835-****-****-0311  Df Happy&Health"
+[2025-05-27T19:41:37.877Z] 32. 📊 "surf road" - Count: 3, Amount: -142.45
+[2025-05-27T19:41:37.880Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.880Z]      - "4835-****-****-0311  Df Surf Road"
+[2025-05-27T19:41:37.880Z]      - "4835-****-****-0329  If Sp Surf Fcs"
+[2025-05-27T19:41:37.880Z] 33. 📊 "one nz" - Count: 3, Amount: -84.00
+[2025-05-27T19:41:37.880Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.880Z]      - "4835-****-****-0311  Df One Nz"
+[2025-05-27T19:41:37.880Z] 34. 📊 "plum organic" - Count: 3, Amount: -15.42
+[2025-05-27T19:41:37.880Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.881Z]      - "4835-****-****-0311  Df Plum Organic"
+[2025-05-27T19:41:37.881Z]      - "4835-****-****-0329  Df Plum Organic"
+[2025-05-27T19:41:37.881Z] 35. 📊 "energy" - Count: 3, Amount: -717.80
+[2025-05-27T19:41:37.881Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.881Z]      - "Nova Energy Ltd 2770157"
+[2025-05-27T19:41:37.881Z] 36. 📊 "thomson" - Count: 3, Amount: -341.81
+[2025-05-27T19:41:37.881Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.881Z]      - "4835-****-****-0311  Df Thomson'S"
+[2025-05-27T19:41:37.881Z]      - "4835-****-****-0329  Df Thomson'S"
+[2025-05-27T19:41:37.881Z] 37. 📊 "raglan ro" - Count: 3, Amount: -72.00
+[2025-05-27T19:41:37.881Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.881Z]      - "4835-****-****-0329  Df Sp Raglan Ro"
+[2025-05-27T19:41:37.881Z] 38. 📊 "james cook" - Count: 3, Amount: -533.57
+[2025-05-27T19:41:37.881Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.882Z]      - "4835-****-****-0311  Df James Cook"
+[2025-05-27T19:41:37.882Z]      - "James Cook Hotel Gra 0329   C"
+[2025-05-27T19:41:37.882Z]      - "4835-****-****-0329  Df James Cook"
+[2025-05-27T19:41:37.882Z] 39. 📊 "-- df" - Count: 3, Amount: -198.36
+[2025-05-27T19:41:37.882Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.882Z]      - "4835-****-****-0329  Df Taylors 1998"
+[2025-05-27T19:41:37.882Z]      - "4835-****-****-0311  Df Just Jeans 4"
+[2025-05-27T19:41:37.882Z]      - "4835-****-****-0311  Df Health 2000"
+[2025-05-27T19:41:37.882Z] 40. 🔹 "fusion coffe" - Count: 2, Amount: -33.30
+[2025-05-27T19:41:37.883Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.883Z]      - "4835-****-****-0329  Df Fusion Coffe"
+[2025-05-27T19:41:37.884Z] 41. 🔹 "df a 2 z" - Count: 2, Amount: -7.65
+[2025-05-27T19:41:37.884Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.884Z]      - "4835-****-****-0311  Df A 2 Z"
+[2025-05-27T19:41:37.884Z] 42. 🔹 "marshall 's a" - Count: 2, Amount: -85.00
+[2025-05-27T19:41:37.884Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.884Z]      - "4835-****-****-0311  Df Marshall'S A"
+[2025-05-27T19:41:37.884Z] 43. 🔹 "nz transport" - Count: 2, Amount: -185.84
+[2025-05-27T19:41:37.884Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.884Z]      - "4835-****-****-0311  Df Nz Transport"
+[2025-05-27T19:41:37.884Z] 44. 🔹 "coffee" - Count: 2, Amount: -115.60
+[2025-05-27T19:41:37.884Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.884Z]      - "4835-****-****-0329  Df Sp C4 Coffee"
+[2025-05-27T19:41:37.884Z] 45. 🔹 "kapiti wholefoods lt" - Count: 2, Amount: -246.45
+[2025-05-27T19:41:37.884Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.884Z]      - "Kapiti Wholefoods Lt"
+[2025-05-27T19:41:37.884Z] 46. 🔹 "google one" - Count: 2, Amount: -6.04
+[2025-05-27T19:41:37.884Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.884Z]      - "4835-****-****-0311  If Google One"
+[2025-05-27T19:41:37.884Z] 47. 🔹 "freshchoice" - Count: 2, Amount: -14.44
+[2025-05-27T19:41:37.884Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.884Z]      - "4835-****-****-0311  Df Freshchoice"
+[2025-05-27T19:41:37.885Z] 48. 🔹 "i.r.d. gst" - Count: 2, Amount: 249.38
+[2025-05-27T19:41:37.885Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.886Z]      - "I.R.D. 144-277-791 Gst"
+[2025-05-27T19:41:37.886Z] 49. 🔹 "tauranga cit" - Count: 2, Amount: -7.00
+[2025-05-27T19:41:37.886Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.886Z]      - "4835-****-****-0329  Df Tauranga Cit"
+[2025-05-27T19:41:37.886Z]      - "4835-****-****-0311  Df Kids Taurang"
+[2025-05-27T19:41:37.887Z] 50. 🔹 "dairy bea" - Count: 2, Amount: -58.00
+[2025-05-27T19:41:37.887Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.887Z]      - "4835-****-****-0329  Df Sp Dairy Bea"
+[2025-05-27T19:41:37.887Z] 51. 🔹 "redwood c" - Count: 2, Amount: -120.20
+[2025-05-27T19:41:37.887Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.887Z]      - "Redwood Blueberries 0311   C"
+[2025-05-27T19:41:37.887Z]      - "4835-****-****-0329  Df Redwoods I-S"
+[2025-05-27T19:41:37.887Z] 52. 🔹 "radflow berr" - Count: 2, Amount: -50.00
+[2025-05-27T19:41:37.887Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.887Z]      - "4835-****-****-0311  Df Radflow Berr"
+[2025-05-27T19:41:37.887Z] 53. 🔹 "pocket baker" - Count: 2, Amount: -35.53
+[2025-05-27T19:41:37.887Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.887Z]      - "4835-****-****-0311  Df Pocket Baker"
+[2025-05-27T19:41:37.887Z] 54. 🔹 "bunnings 9" - Count: 2, Amount: -41.65
+[2025-05-27T19:41:37.888Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.888Z]      - "4835-****-****-0311  Df Bunnings - 9"
+[2025-05-27T19:41:37.888Z] 55. 🔹 "hotel boo" - Count: 2, Amount: -1074.26
+[2025-05-27T19:41:37.888Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.888Z]      - "4835-****-****-0311  If Hotel At Boo"
+[2025-05-27T19:41:37.888Z] 56. 🔹 "broadview c" - Count: 2, Amount: -360.00
+[2025-05-27T19:41:37.888Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.888Z]      - "The Broadview Motel 0329   C"
+[2025-05-27T19:41:37.888Z]      - "The Broadview Motel 0311   C"
+[2025-05-27T19:41:37.888Z] 57. 🔹 "paper plus k" - Count: 2, Amount: -9.12
+[2025-05-27T19:41:37.888Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.888Z]      - "4835-****-****-0311  Df Paper Plus K"
+[2025-05-27T19:41:37.888Z]      - "4835-****-****-0311  Df Paper Plus M"
+[2025-05-27T19:41:37.888Z] 58. 🔹 "fairlie bake" - Count: 2, Amount: -61.13
+[2025-05-27T19:41:37.888Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.888Z]      - "4835-****-****-0311  Df Fairlie Bake"
+[2025-05-27T19:41:37.888Z] 59. 🔹 "opukethermal" - Count: 2, Amount: -88.00
+[2025-05-27T19:41:37.888Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.888Z]      - "4835-****-****-0311  Df Opukethermal"
+[2025-05-27T19:41:37.888Z] 60. 🔹 "station coff" - Count: 2, Amount: -26.14
+[2025-05-27T19:41:37.888Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.888Z]      - "4835-****-****-0311  Df Station Coff"
+[2025-05-27T19:41:37.888Z] 61. 🔹 "impact gymsport acad" - Count: 2, Amount: -210.16
+[2025-05-27T19:41:37.888Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.889Z]      - "Impact Gymsport Acad"
+[2025-05-27T19:41:37.889Z]      - "4835-****-****-0311  Df Impact Gym"
+[2025-05-27T19:41:37.889Z] 62. 🔹 "pour twi" - Count: 2, Amount: -50.00
+[2025-05-27T19:41:37.889Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.889Z]      - "4835-****-****-0329  Df Pour And Twi"
+[2025-05-27T19:41:37.889Z] 63. 🔹 "fuels c" - Count: 2, Amount: -240.32
+[2025-05-27T19:41:37.889Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.889Z]      - "Kiwi Fuels Papamoa 0311   C"
+[2025-05-27T19:41:37.889Z]      - "Pak N Save Fuel Pmoa 0329   C"
+[2025-05-27T19:41:37.889Z] 64. 🔹 "df h&m" - Count: 2, Amount: -72.94
+[2025-05-27T19:41:37.889Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.889Z]      - "4835-****-****-0311  Df H&M"
+[2025-05-27T19:41:37.889Z] 65. 🔹 "lululemon" - Count: 2, Amount: -244.00
+[2025-05-27T19:41:37.889Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.889Z]      - "4835-****-****-0329  Df Lululemon At"
+[2025-05-27T19:41:37.889Z] 66. 🔹 "one new zeal" - Count: 2, Amount: -56.00
+[2025-05-27T19:41:37.889Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.889Z]      - "4835-****-****-0311  Df One New Zeal"
+[2025-05-27T19:41:37.889Z] 67. 🔹 "rocktopia" - Count: 2, Amount: -38.52
+[2025-05-27T19:41:37.889Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.889Z]      - "4835-****-****-0329  Df Rocktopia"
+[2025-05-27T19:41:37.889Z] 68. 🔹 "taste gre" - Count: 2, Amount: -102.48
+[2025-05-27T19:41:37.889Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.889Z]      - "4835-****-****-0329  Df Sp Taste Gre"
+[2025-05-27T19:41:37.890Z] 69. 🔹 "eddie elspit" - Count: 2, Amount: -66.30
+[2025-05-27T19:41:37.890Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.890Z]      - "4835-****-****-0311  Df Eddie Elspit"
+[2025-05-27T19:41:37.890Z] 70. 🔹 "bim physio g" - Count: 2, Amount: -289.28
+[2025-05-27T19:41:37.890Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.890Z]      - "4835-****-****-0311  Df Bim Physio G"
+[2025-05-27T19:41:37.890Z] 71. 🔹 "caltex bayfa" - Count: 2, Amount: -311.32
+[2025-05-27T19:41:37.890Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.890Z]      - "4835-****-****-0329  Df Caltex Bayfa"
+[2025-05-27T19:41:37.890Z] 72. 🔹 "prepa" - Count: 2, Amount: -56.00
+[2025-05-27T19:41:37.891Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.891Z]      - "4835-****-****-0311  Df One Nz Prepa"
+[2025-05-27T19:41:37.891Z] 73. 🔹 "harvey norma" - Count: 2, Amount: -1405.00
+[2025-05-27T19:41:37.891Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.891Z]      - "4835-****-****-0311  Df Harvey Norma"
+[2025-05-27T19:41:37.891Z]      - "4835-****-****-0329  Df Harvey Norma"
+[2025-05-27T19:41:37.891Z] 74. 🔹 "noel leeming" - Count: 2, Amount: -920.00
+[2025-05-27T19:41:37.891Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.891Z]      - "4835-****-****-0329  Df Noel Leeming"
+[2025-05-27T19:41:37.891Z] 75. 🔹 "challenge ta" - Count: 1, Amount: -125.87
+[2025-05-27T19:41:37.891Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.891Z]      - "4835-****-****-0311  Df Challenge Ta"
+[2025-05-27T19:41:37.891Z] 76. 🔹 "ozonecoff" - Count: 1, Amount: -52.50
+[2025-05-27T19:41:37.891Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.891Z]      - "4835-****-****-0329  Df Sp Ozonecoff"
+[2025-05-27T19:41:37.891Z] 77. 🔹 "repco" - Count: 1, Amount: -60.00
+[2025-05-27T19:41:37.891Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.891Z]      - "4835-****-****-0311  Df Repco"
+[2025-05-27T19:41:37.891Z] 78. 🔹 "fernland spa" - Count: 1, Amount: -49.47
+[2025-05-27T19:41:37.891Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.891Z]      - "4835-****-****-0311  Df Fernland Spa"
+[2025-05-27T19:41:37.892Z] 79. 🔹 "name cheap c" - Count: 1, Amount: -19.70
+[2025-05-27T19:41:37.892Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.892Z]      - "4835-****-****-0311  If Name-Cheap.C"
+[2025-05-27T19:41:37.892Z] 80. 🔹 "joanne rayson" - Count: 1, Amount: -40.00
+[2025-05-27T19:41:37.892Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.892Z]      - "Joanne Rayson"
+[2025-05-27T19:41:37.892Z] 81. 🔹 "group" - Count: 1, Amount: 769.48
+[2025-05-27T19:41:37.892Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.892Z]      - "Ec Group"
+[2025-05-27T19:41:37.892Z] 82. 🔹 "kristin huelsmann gr" - Count: 1, Amount: -60.00
+[2025-05-27T19:41:37.892Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.892Z]      - "Kristin Huelsmann-Gr"
+[2025-05-27T19:41:37.892Z] 83. 🔹 "gull tauriko c" - Count: 1, Amount: -123.26
+[2025-05-27T19:41:37.892Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.892Z]      - "Gull Tauriko 0311   C"
+[2025-05-27T19:41:37.892Z] 84. 🔹 "guardians gold" - Count: 1, Amount: -29550.00
+[2025-05-27T19:41:37.892Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.892Z]      - "Guardians Of Gold"
+[2025-05-27T19:41:37.892Z] 85. 🔹 "friends cafe" - Count: 1, Amount: -14.00
+[2025-05-27T19:41:37.893Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.893Z]      - "4835-****-****-0311  Df Friends Cafe"
+[2025-05-27T19:41:37.893Z] 86. 🔹 "bb" - Count: 1, Amount: -40.00
+[2025-05-27T19:41:37.893Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.893Z]      - "Bb"
+[2025-05-27T19:41:37.893Z] 87. 🔹 "cherrywood cherrywood" - Count: 1, Amount: -320.00
+[2025-05-27T19:41:37.893Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.893Z]      - "Anz  S3A6868 Cherrywood Cherrywood"
+[2025-05-27T19:41:37.893Z] 88. 🔹 "gull hewletts c" - Count: 1, Amount: -126.21
+[2025-05-27T19:41:37.893Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.893Z]      - "Gull Hewletts 0311   C"
+[2025-05-27T19:41:37.893Z] 89. 🔹 "liberty grow" - Count: 1, Amount: -8.12
+[2025-05-27T19:41:37.893Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.893Z]      - "4835-****-****-0311  Df Liberty Grow"
+[2025-05-27T19:41:37.893Z] 90. 🔹 "daisy fl" - Count: 1, Amount: -18.30
+[2025-05-27T19:41:37.893Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.893Z]      - "4835-****-****-0311  Df Daisy May Fl"
+[2025-05-27T19:41:37.893Z] 91. 🔹 "tay street store" - Count: 1, Amount: -5.50
+[2025-05-27T19:41:37.893Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.894Z]      - "4835-****-****-0311  Df Tay St Store"
+[2025-05-27T19:41:37.894Z] 92. 🔹 "brosnahan" - Count: 1, Amount: -34.50
+[2025-05-27T19:41:37.894Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.894Z]      - "Emma Brosnahan"
+[2025-05-27T19:41:37.894Z] 93. 🔹 "bim pilates" - Count: 1, Amount: -19.00
+[2025-05-27T19:41:37.894Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.894Z]      - "4835-****-****-0311  Df Bim Pilates"
+[2025-05-27T19:41:37.894Z] 94. 🔹 "southern bel" - Count: 1, Amount: -7.00
+[2025-05-27T19:41:37.894Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.894Z]      - "4835-****-****-0311  Df Southern Bel"
+[2025-05-27T19:41:37.894Z] 95. 🔹 "warehouse" - Count: 1, Amount: -10.50
+[2025-05-27T19:41:37.894Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.894Z]      - "4835-****-****-0311  Df Warehouse St"
+[2025-05-27T19:41:37.894Z] 96. 🔹 "z turangi" - Count: 1, Amount: -117.77
+[2025-05-27T19:41:37.894Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.894Z]      - "4835-****-****-0329  Df Z Turangi"
+[2025-05-27T19:41:37.894Z] 97. 🔹 "road petroleum" - Count: 1, Amount: -136.40
+[2025-05-27T19:41:37.894Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.894Z]      - "4835-****-****-0311  Df Rd Petroleum"
+[2025-05-27T19:41:37.894Z] 98. 🔹 "dark sky" - Count: 1, Amount: -8.00
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0329  Df Dark Sky"
+[2025-05-27T19:41:37.895Z] 99. 🔹 "jade kiwi" - Count: 1, Amount: -1.20
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0311  Df Jade Kiwi"
+[2025-05-27T19:41:37.895Z] 100. 🔹 "dolce pizza" - Count: 1, Amount: -87.00
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0329  Df Dolce Pizza"
+[2025-05-27T19:41:37.895Z] 101. 🔹 "fairlie heal" - Count: 1, Amount: -4.95
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0311  Df Fairlie Heal"
+[2025-05-27T19:41:37.895Z] 102. 🔹 "mgl methven" - Count: 1, Amount: -120.62
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0311  Df Mgl Methven"
+[2025-05-27T19:41:37.895Z] 103. 🔹 "airbnb" - Count: 1, Amount: -548.22
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0311  If Airbnb"
+[2025-05-27T19:41:37.895Z] 104. 🔹 "bambini limi" - Count: 1, Amount: -108.00
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0329  Df Bambini Limi"
+[2025-05-27T19:41:37.895Z] 105. 🔹 "pho viet str" - Count: 1, Amount: -51.03
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0329  Df Pho Viet Str"
+[2025-05-27T19:41:37.895Z] 106. 🔹 "gelato cu" - Count: 1, Amount: -13.50
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0311  Df Gelato On Cu"
+[2025-05-27T19:41:37.895Z] 107. 🔹 "tuatua cafe" - Count: 1, Amount: -8.16
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0311  Df Tuatua Cafe"
+[2025-05-27T19:41:37.895Z] 108. 🔹 "jb hi fi" - Count: 1, Amount: -24.00
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0329  Df Jb Hi-Fi"
+[2025-05-27T19:41:37.895Z] 109. 🔹 "booking com" - Count: 1, Amount: -165.39
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0311  If Booking.Com"
+[2025-05-27T19:41:37.895Z] 110. 🔹 "uber eats" - Count: 1, Amount: -89.69
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.895Z]      - "4835-****-****-0311  Df Uber* Eats"
+[2025-05-27T19:41:37.895Z] 111. 🔹 "kawerau i si" - Count: 1, Amount: -10.00
+[2025-05-27T19:41:37.895Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.896Z]      - "4835-****-****-0329  Df Kawerau I-Si"
+[2025-05-27T19:41:37.896Z] 112. 🔹 "little troop" - Count: 1, Amount: -50.00
+[2025-05-27T19:41:37.896Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.896Z]      - "4835-****-****-0311  Df Little Troop"
+[2025-05-27T19:41:37.896Z] 113. 🔹 "caliwoods" - Count: 1, Amount: -45.70
+[2025-05-27T19:41:37.896Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.896Z]      - "4835-****-****-0311  Df Sp Caliwoods"
+[2025-05-27T19:41:37.897Z] 114. 🔹 "sleepytot" - Count: 1, Amount: -30.23
+[2025-05-27T19:41:37.897Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.897Z]      - "4835-****-****-0311  Df Sp Sleepytot"
+[2025-05-27T19:41:37.897Z] 115. 🔹 "life pharmac" - Count: 1, Amount: -9.05
+[2025-05-27T19:41:37.897Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.897Z]      - "4835-****-****-0329  Df Life Pharmac"
+[2025-05-27T19:41:37.897Z] 116. 🔹 "michael hill" - Count: 1, Amount: -1275.00
+[2025-05-27T19:41:37.897Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.897Z]      - "4835-****-****-0329  Df Michael Hill"
+[2025-05-27T19:41:37.897Z] 117. 🔹 "dee street m" - Count: 1, Amount: -202.95
+[2025-05-27T19:41:37.897Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.897Z]      - "4835-****-****-0311  Df Dee Street M"
+[2025-05-27T19:41:37.897Z] 118. 🔹 "backdoor sur" - Count: 1, Amount: -199.00
+[2025-05-27T19:41:37.898Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.898Z]      - "4835-****-****-0329  Df Backdoor Sur"
+[2025-05-27T19:41:37.898Z] 119. 🔹 "alt brew" - Count: 1, Amount: -254.00
+[2025-05-27T19:41:37.898Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.899Z]      - "4835-****-****-0329  If Sp Alt Brew"
+[2025-05-27T19:41:37.899Z] 120. 🔹 "df 3116" - Count: 1, Amount: -20.40
+[2025-05-27T19:41:37.899Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.899Z]      - "4835-****-****-0311  Df 3116"
+[2025-05-27T19:41:37.899Z] 121. 🔹 "beequip n" - Count: 1, Amount: -25.30
+[2025-05-27T19:41:37.899Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.899Z]      - "4835-****-****-0329  Df Sp Beequip N"
+[2025-05-27T19:41:37.899Z] 122. 🔹 "energy onlineeftpos" - Count: 1, Amount: -403.18
+[2025-05-27T19:41:37.899Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.899Z]      - "Nova Energy Onlineeftpos"
+[2025-05-27T19:41:37.899Z] 123. 🔹 "iherb iherb" - Count: 1, Amount: -131.42
+[2025-05-27T19:41:37.899Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.899Z]      - "4835-****-****-0329  If Iherb Iherb."
+[2025-05-27T19:41:37.899Z] 124. 🔹 "spotlight ta" - Count: 1, Amount: -15.50
+[2025-05-27T19:41:37.899Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.899Z]      - "4835-****-****-0311  Df Spotlight Ta"
+[2025-05-27T19:41:37.899Z] 125. 🔹 "meatb" - Count: 1, Amount: -174.89
+[2025-05-27T19:41:37.899Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.899Z]      - "4835-****-****-0329  Df Sp The Meatb"
+[2025-05-27T19:41:37.899Z] 126. 🔹 "z central pa" - Count: 1, Amount: -134.09
+[2025-05-27T19:41:37.899Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.899Z]      - "4835-****-****-0329  Df Z Central Pa"
+[2025-05-27T19:41:37.900Z] 127. 🔹 "backdoor pap" - Count: 1, Amount: -46.99
+[2025-05-27T19:41:37.900Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.900Z]      - "4835-****-****-0329  Df Backdoor Pap"
+[2025-05-27T19:41:37.900Z] 128. 🔹 "weleda" - Count: 1, Amount: -111.60
+[2025-05-27T19:41:37.900Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.900Z]      - "4835-****-****-0329  Df Weleda"
+[2025-05-27T19:41:37.900Z] 129. 🔹 "classic flye" - Count: 1, Amount: -30.00
+[2025-05-27T19:41:37.900Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.900Z]      - "4835-****-****-0311  Df Classic Flye"
+[2025-05-27T19:41:37.900Z] 130. 🔹 "df mitre 10 pap" - Count: 1, Amount: -4.58
+[2025-05-27T19:41:37.900Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.900Z]      - "4835-****-****-0329  Df Mitre 10 Pap"
+[2025-05-27T19:41:37.900Z] 131. 🔹 "weber bbq onlineeftpos" - Count: 1, Amount: -431.10
+[2025-05-27T19:41:37.900Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.900Z]      - "Weber Bbq Onlineeftpos"
+[2025-05-27T19:41:37.900Z] 132. 🔹 "copenhagen c" - Count: 1, Amount: -6.00
+[2025-05-27T19:41:37.900Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.900Z]      - "4835-****-****-0329  Df Copenhagen C"
+[2025-05-27T19:41:37.900Z] 133. 🔹 "kate" - Count: 1, Amount: -50.00
+[2025-05-27T19:41:37.900Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.900Z]      - "Kate"
+[2025-05-27T19:41:37.901Z] 134. 🔹 "moore / mount" - Count: 1, Amount: -3560.00
+[2025-05-27T19:41:37.901Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.901Z]      - "Moore Rentals 6/5C Mount"
+[2025-05-27T19:41:37.901Z] 135. 🔹 "central deli" - Count: 1, Amount: -12.81
+[2025-05-27T19:41:37.901Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.901Z]      - "4835-****-****-0311  Df Central Deli"
+[2025-05-27T19:41:37.901Z] 136. 🔹 "neon collect" - Count: 1, Amount: -10.20
+[2025-05-27T19:41:37.901Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.901Z]      - "4835-****-****-0311  Df Neon Collect"
+[2025-05-27T19:41:37.901Z] 137. 🔹 "asian su" - Count: 1, Amount: -9.16
+[2025-05-27T19:41:37.901Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.901Z]      - "4835-****-****-0311  Df 101 Asian Su"
+[2025-05-27T19:41:37.901Z] 138. 🔹 "transferwise" - Count: 1, Amount: 498.62
+[2025-05-27T19:41:37.901Z]    Original variations (up to 10):
+[2025-05-27T19:41:37.901Z]      - "Transferwise"
+[2025-05-27T19:41:37.924Z] FINAL ANALYSIS SUMMARY:
+[2025-05-27T19:41:37.924Z] - Test duration: 8934ms (8.9s)
+[2025-05-27T19:41:37.924Z] - Embedding optimization used: YES (OPTIMIZED CONFIG)
+[2025-05-27T19:41:37.924Z] - Clustering method: similarity, threshold: 0.6 (optimal from comprehensive analysis)
+[2025-05-27T19:41:37.924Z] - Expected improvement: ~2x better grouping vs default threshold
+[2025-05-27T19:41:37.924Z] - Original data: 469 transactions, 182 unique descriptions
+[2025-05-27T19:41:37.924Z] - After cleaning: 469 transactions, 159 unique descriptions
+[2025-05-27T19:41:37.924Z] - Final grouping: 138 groups
+[2025-05-27T19:41:37.924Z] - Effective grouping ratio: 29.42% (lower is better)
+[2025-05-27T19:41:37.924Z] - Large groups (10+ transactions): 9 groups
+[2025-05-27T19:41:37.924Z] - API groups returned: 138 groups found
+[2025-05-27T19:41:37.931Z] === TEST COMPLETED SUCCESSFULLY ===

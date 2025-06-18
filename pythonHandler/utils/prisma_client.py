@@ -230,45 +230,89 @@ class DBClient:
         try:
             self.connect()
             # Build the SET clause dynamically based on provided data
-            set_clauses = []
-            params = []
+            user_set_clauses = []
+            user_params = []
 
+            # Handle user table updates
             if "api_key" in data:
-                set_clauses.append("api_key = %s")
-                params.append(data["api_key"])
+                user_set_clauses.append("api_key = %s")
+                user_params.append(data["api_key"])
 
             if "email" in data:
-                set_clauses.append("email = %s")
-                params.append(data["email"])
+                user_set_clauses.append("email = %s")
+                user_params.append(data["email"])
 
-            if "subscriptionPlan" in data:
-                set_clauses.append('"subscriptionPlan" = %s')
-                params.append(data["subscriptionPlan"])
+            # Update user table if there are changes
+            user_result = None
+            if user_set_clauses:
+                user_params.append(user_id)
+                user_query = f"""
+                    UPDATE users
+                    SET {", ".join(user_set_clauses)}
+                    WHERE id = %s
+                    RETURNING *
+                """
+                user_results = self.execute_query(user_query, user_params)
+                user_result = user_results[0] if user_results else None
 
+            # Handle subscription updates (create or update in subscriptions table)
+            subscription_data = {}
             if "subscriptionStatus" in data:
-                set_clauses.append('"subscriptionStatus" = %s')
-                params.append(data["subscriptionStatus"])
-
+                subscription_data["status"] = data["subscriptionStatus"]
+            if "subscriptionPlan" in data:
+                subscription_data["plan"] = data["subscriptionPlan"]
             if "billingCycle" in data:
-                set_clauses.append('"billingCycle" = %s')
-                params.append(data["billingCycle"])
+                subscription_data["billingCycle"] = data["billingCycle"]
 
-            if not set_clauses:
-                logger.warning("No data provided for update")
-                return None
+            if subscription_data:
+                # Check if user has an existing subscription
+                check_query = """
+                    SELECT id FROM subscriptions 
+                    WHERE "userId" = %s 
+                    ORDER BY "createdAt" DESC 
+                    LIMIT 1
+                """
+                existing_subs = self.execute_query(check_query, (user_id,))
+                
+                if existing_subs:
+                    # Update existing subscription
+                    sub_set_clauses = []
+                    sub_params = []
+                    
+                    for key, value in subscription_data.items():
+                        sub_set_clauses.append(f'"{key}" = %s')
+                        sub_params.append(value)
+                    
+                    sub_params.append(existing_subs[0]["id"])
+                    sub_query = f"""
+                        UPDATE subscriptions
+                        SET {", ".join(sub_set_clauses)}, "updatedAt" = NOW()
+                        WHERE id = %s
+                        RETURNING *
+                    """
+                    self.execute_query(sub_query, sub_params)
+                else:
+                    # Create new subscription with defaults
+                    sub_query = """
+                        INSERT INTO subscriptions ("userId", status, plan, "billingCycle", "currentPeriodStart", "currentPeriodEnd")
+                        VALUES (%s, %s, %s, %s, NOW(), NOW() + INTERVAL '1 month')
+                        RETURNING *
+                    """
+                    self.execute_query(sub_query, (
+                        user_id,
+                        subscription_data.get("status", "ACTIVE"),
+                        subscription_data.get("plan", "FREE"),
+                        subscription_data.get("billingCycle", "MONTHLY")
+                    ))
 
-            # Add the WHERE clause parameter
-            params.append(user_id)
+            # Return user data if updated, otherwise get current user
+            if user_result:
+                return user_result
+            else:
+                get_user_query = "SELECT * FROM users WHERE id = %s"
+                user_results = self.execute_query(get_user_query, (user_id,))
+                return user_results[0] if user_results else None
 
-            query = f"""
-                UPDATE users
-                SET {", ".join(set_clauses)}
-                WHERE id = %s
-                RETURNING *
-            """
-
-            results = self.execute_query(query, params)
-            return results[0] if results else None
         except Exception as e:
             logger.error(f"Error updating user: {str(e)}")
             raise
@@ -277,30 +321,19 @@ class DBClient:
         """Get the subscription status for a user."""
         try:
             self.connect()
-            # Updated query to work with new schema where subscriptions are in separate table
-            # First check if user exists and has an active subscription
+            # Query the subscriptions table to get the most recent active subscription
             query = '''
-                SELECT s.status as "subscriptionStatus"
-                FROM users u
-                LEFT JOIN subscriptions s ON u.id = s."userId" 
-                WHERE u.id = %s 
-                AND (s.status = 'ACTIVE' OR s.status IS NULL)
-                ORDER BY s."createdAt" DESC
+                SELECT status FROM subscriptions 
+                WHERE "userId" = %s 
+                ORDER BY "createdAt" DESC 
                 LIMIT 1
             '''
             results = self.execute_query(query, (user_id,))
-            
-            if results:
-                status = results[0].get("subscriptionStatus")
-                if status:
-                    return status
-                else:
-                    # No subscription found, but user exists - treat as TRIALING for testing
-                    logger.info(f"No subscription found for user {user_id}, treating as TRIALING for development")
-                    return "TRIALING"
+            if results and results[0].get("status"):
+                return results[0]["status"]
             else:
-                # User not found
-                logger.warning(f"User not found for user ID: {user_id}")
+                # Return None if user not found or no subscription found
+                logger.warning(f"Subscription status not found for user ID: {user_id}")
                 return None
                 
         except Exception as e:
@@ -403,14 +436,28 @@ class DBClient:
             results = self.execute_query(embedding_query, (account["id"],))
             embeddings_count = results[0]["count"] if results else 0
 
+            # Get subscription status from subscriptions table
+            subscription_query = """
+                SELECT status, plan FROM subscriptions 
+                WHERE "userId" = %s 
+                ORDER BY "createdAt" DESC 
+                LIMIT 1
+            """
+            subscription_results = self.execute_query(subscription_query, (user_id,))
+            subscription_status = None
+            subscription_plan = None
+            if subscription_results:
+                subscription_status = subscription_results[0].get("status")
+                subscription_plan = subscription_results[0].get("plan")
+
             return {
                 "user_id": user_id,
                 "email": user.get("email"),
                 "requests_count": account.get("requestsCount", 0),
                 "last_used": account.get("lastUsed"),
                 "embeddings_count": embeddings_count,
-                "subscription_plan": user.get("subscriptionPlan"),
-                "subscription_status": user.get("subscriptionStatus"),
+                "subscription_plan": subscription_plan,
+                "subscription_status": subscription_status,
             }
 
         except Exception as e:
