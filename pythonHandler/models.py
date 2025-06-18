@@ -74,3 +74,32 @@ class UserConfigRequest(BaseModel):
 
     userId: str = Field(..., min_length=1)
     apiKey: Optional[str] = None
+
+
+class TransactionAnalyticsInput(BaseModel):
+    """Input model for transaction analytics."""
+    description: Optional[str] = None
+    Description: Optional[str] = None  # Alternative column name
+    amount: Optional[float] = None  # Negative for expenses, positive for income
+    Amount_Spent: Optional[float] = None  # Alternative column name (from CSV)
+    category: Optional[str] = None
+    Category: Optional[str] = None  # Alternative column name
+    date: Optional[str] = None  # ISO date string
+    Date: Optional[str] = None  # Alternative column name
+    money_in: Optional[bool] = None
+    Source: Optional[str] = None  # Bank source field
+
+
+class FinancialAnalyticsRequest(BaseModel):
+    """Request model for the /financial-analytics endpoint."""
+    
+    transactions: List[TransactionAnalyticsInput]
+    analysis_types: Optional[List[str]] = None  # Types of analysis to perform
+    excluded_categories: Optional[List[str]] = None  # Categories to exclude from all analytics
+    
+    @field_validator("transactions")
+    @classmethod
+    def transactions_not_empty(cls, v):
+        if not v:
+            raise ValueError("At least one transaction is required for analytics")
+        return v
