@@ -22,6 +22,7 @@ from models import (
     TrainRequest,
     ClassifyRequest,
     UserConfigRequest,
+    FinancialAnalyticsRequest,
 )
 from utils.text_utils import clean_text, clean_and_group_transactions
 from utils.request_utils import (
@@ -33,6 +34,7 @@ from services.training_service import process_training_request
 from services.classification_service import process_classification_request
 from services.status_service import get_and_process_status
 from services.universal_categorization_service import process_universal_categorization_request
+from services.financial_analytics_service import process_financial_analytics_request
 
 # Configure logging
 logging.basicConfig(
@@ -160,6 +162,7 @@ def ensure_db_connection():
                             "/classify",
                             "/auto-classify",
                             "/train",
+                            "/financial-analytics",
                             "/health",
                             "/status/:prediction_id",
                         ],
@@ -180,6 +183,7 @@ def home():
                 "/classify",
                 "/auto-classify",
                 "/train",
+                "/financial-analytics",
                 "/health",
                 "/status/:prediction_id",
             ],
@@ -1389,6 +1393,222 @@ def clean_text_endpoint():
     except Exception as e:
         logger.error(f"Error in clean_text endpoint: {str(e)}")
         return create_error_response(str(e), 500)
+
+
+@app.route("/financial-analytics", methods=["POST"])
+@require_api_key
+@swag_from(
+    {
+        "tags": ["Analytics"],
+        "summary": "Advanced financial analytics for transactions",
+        "description": (
+            "Provides comprehensive financial analytics including vendor intelligence, "
+            "spending patterns, anomaly detection, savings opportunities, and cash flow predictions. "
+            "Analyzes transaction data to generate actionable insights for personal finance management."
+        ),
+        "parameters": [
+            {
+                "name": "X-API-Key",
+                "in": "header",
+                "type": "string",
+                "required": True,
+                "description": "API Key for authentication",
+            },
+            {
+                "name": "body",
+                "in": "body",
+                "required": True,
+                "schema": {
+                    "type": "object",
+                    "required": ["transactions"],
+                    "properties": {
+                        "transactions": {
+                            "type": "array",
+                            "description": "List of transaction objects for analysis",
+                            "items": {
+                                "type": "object",
+                                "required": ["description", "amount", "category"],
+                                "properties": {
+                                    "description": {
+                                        "type": "string",
+                                        "description": "Transaction description",
+                                        "example": "UBER EATS SYDNEY"
+                                    },
+                                    "amount": {
+                                        "type": "number",
+                                        "description": "Transaction amount (negative for expenses, positive for income)",
+                                        "example": -25.50
+                                    },
+                                    "category": {
+                                        "type": "string",
+                                        "description": "Transaction category",
+                                        "example": "DinnerBars"
+                                    },
+                                    "date": {
+                                        "type": "string",
+                                        "description": "Transaction date (ISO format)",
+                                        "example": "2024-01-15T10:30:00Z"
+                                    },
+                                    "money_in": {
+                                        "type": "boolean",
+                                        "description": "Whether this is an income transaction",
+                                        "example": False
+                                    }
+                                }
+                            }
+                        },
+                        "analysis_types": {
+                            "type": "array",
+                            "description": "Types of analysis to perform (optional)",
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "vendor_intelligence",
+                                    "anomaly_detection",
+                                    "spending_patterns",
+                                    "savings_opportunities",
+                                    "cash_flow_prediction"
+                                ]
+                            },
+                            "example": ["vendor_intelligence", "anomaly_detection"]
+                        }
+                    },
+                    "example": {
+                        "transactions": [
+                            {
+                                "description": "UBER EATS SYDNEY",
+                                "amount": -25.50,
+                                "category": "DinnerBars",
+                                "date": "2024-01-15T10:30:00Z",
+                                "money_in": False
+                            },
+                            {
+                                "description": "SALARY DEPOSIT",
+                                "amount": 2500.00,
+                                "category": "Income",
+                                "date": "2024-01-01T09:00:00Z",
+                                "money_in": True
+                            }
+                        ]
+                    }
+                }
+            }
+        ],
+        "responses": {
+            200: {
+                "description": "Financial analytics completed successfully",
+                "examples": {
+                    "application/json": {
+                        "user_id": "user123",
+                        "analysis_period": {
+                            "start_date": "2024-01-01T09:00:00Z",
+                            "end_date": "2024-01-15T10:30:00Z",
+                            "total_transactions": 2
+                        },
+                        "insights": {
+                            "vendor_intelligence": {
+                                "vendors": [
+                                    {
+                                        "name": "UBER EATS",
+                                        "total_spent": 25.50,
+                                        "average_transaction": 25.50,
+                                        "visit_count": 1
+                                    }
+                                ],
+                                "insights": [
+                                    "You spent $26 at UBER EATS (1 visits, avg $25.50/visit)"
+                                ]
+                            },
+                            "anomaly_detection": {
+                                "anomalies": [],
+                                "insights": []
+                            },
+                            "spending_patterns": {
+                                "patterns": {
+                                    "day_of_week": {
+                                        "weekend_average": 0.0,
+                                        "weekday_average": 25.50
+                                    },
+                                    "category_distribution": {
+                                        "DinnerBars": {
+                                            "amount": 25.50,
+                                            "percentage": 100.0
+                                        }
+                                    }
+                                },
+                                "insights": []
+                            },
+                            "savings_opportunities": {
+                                "opportunities": [
+                                    {
+                                        "type": "category_reduction",
+                                        "category": "DinnerBars",
+                                        "current_spending": 25.50,
+                                        "potential_savings": 5.10,
+                                        "recommendation": "Reduce dinnerbars spending by 20%"
+                                    }
+                                ],
+                                "insights": [
+                                    "Reduce dinnerbars spending by 20% to save ~$5"
+                                ]
+                            },
+                            "cash_flow_prediction": {
+                                "predictions": {
+                                    "weekly_spending_estimate": 6.38,
+                                    "weekly_income_estimate": 625.00,
+                                    "weekly_net": 618.62
+                                },
+                                "insights": [
+                                    "You save approximately $619 per week"
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            400: {"description": "Invalid request data"},
+            401: {"description": "Invalid or missing API key"},
+            500: {"description": "Server error"}
+        }
+    }
+)
+def financial_analytics():
+    """Advanced financial analytics endpoint."""
+    try:
+        data = request.get_json()
+        if not data:
+            return create_error_response("No data provided", 400)
+
+        # Validate the request using Pydantic
+        try:
+            validated_data = FinancialAnalyticsRequest(**data)
+        except ValidationError as e:
+            logger.error(f"Validation error in financial analytics: {e}")
+            return create_error_response(f"Invalid request data: {e}", 400)
+
+        user_id = request.user_id
+        logger.info(f"Processing financial analytics for user {user_id} with {len(validated_data.transactions)} transactions")
+
+        # Convert Pydantic models to dictionaries for processing
+        transactions_dict = [tx.dict() for tx in validated_data.transactions]
+        
+        # Extract excluded categories from request data
+        excluded_categories = getattr(validated_data, 'excluded_categories', [])
+        
+        # Process the financial analytics
+        result = process_financial_analytics_request(transactions_dict, user_id, excluded_categories)
+        
+        if "error" in result:
+            logger.error(f"Financial analytics processing failed for user {user_id}: {result['error']}")
+            return create_error_response(result["error"], 500)
+        
+        logger.info(f"Financial analytics completed successfully for user {user_id}")
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in financial analytics endpoint: {str(e)}", exc_info=True)
+        return create_error_response(f"Financial analytics failed: {str(e)}", 500)
+
 
 # === Helper functions for background tasks ===
 def _run_training_task(job_id: str, user_id: str, validated_data: TrainRequest):
