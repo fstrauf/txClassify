@@ -25,3 +25,4 @@ PyYAML==6.0.2
 openai
 pyahocorasick>=1.4.4
 python-Levenshtein
+sentry-sdk[flask]==2.19.2

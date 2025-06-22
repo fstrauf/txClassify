@@ -21,6 +21,8 @@
     "start": "docker-compose up",
     "start:build": "docker-compose up --build",
     "prod:logs": "./scripts/follow_logs.sh",
+    "prod:analyze": "./scripts/analyze_logs.sh",
+    "prod:setup-ssh": "source ./scripts/setup_ssh.sh",
     "sheet:push": "cd sheetAddon && clasp push",
     "sheet:logs": "clasp logs --watch"
   },
