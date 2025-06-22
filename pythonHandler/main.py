@@ -21,8 +21,6 @@ sentry_sdk.init(
     send_default_pii=True,
 )
 
-if not os.getenv("SENTRY_DSN"):
-    logger.warning("SENTRY_DSN environment variable is not set. Sentry will not be initialized properly.")
 # Import from new modules
 from config import (
     REPLICATE_MODEL_NAME,
