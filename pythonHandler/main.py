@@ -15,12 +15,14 @@ from pydantic import ValidationError
 
 # Initialize Sentry
 sentry_sdk.init(
-    dsn="https://addc6de726ee12be878b9743541200af@o4509541240930304.ingest.us.sentry.io/4509541258821632",
+    dsn=os.getenv("SENTRY_DSN"),
     # Add data like request headers and IP for users,
     # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
     send_default_pii=True,
 )
 
+if not os.getenv("SENTRY_DSN"):
+    logger.warning("SENTRY_DSN environment variable is not set. Sentry will not be initialized properly.")
 # Import from new modules
 from config import (
     REPLICATE_MODEL_NAME,
