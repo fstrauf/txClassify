@@ -1,5 +1,6 @@
 import os
 import json
+import sentry_sdk
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
@@ -12,6 +13,16 @@ from utils.prisma_client import db_client
 from flasgger import Swagger, swag_from
 from pydantic import ValidationError
 
+# Initialize Sentry
+sentry_sdk.init(
+    dsn=os.getenv("SENTRY_DSN"),
+    # Add data like request headers and IP for users,
+    # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
+    send_default_pii=True,
+)
+
+if not os.getenv("SENTRY_DSN"):
+    logger.warning("SENTRY_DSN environment variable is not set. Sentry will not be initialized properly.")
 # Import from new modules
 from config import (
     REPLICATE_MODEL_NAME,
@@ -229,6 +240,13 @@ def health():
         health_status["status"] = "degraded"
         health_status["database_error"] = str(e)
     return jsonify(health_status)
+
+
+@app.route("/sentry-debug")
+def trigger_error():
+    """Test endpoint to verify Sentry error reporting"""
+    logger.info("Sentry debug endpoint accessed - triggering test error")
+    division_by_zero = 1 / 0
 
 
 @app.route("/train", methods=["POST"])
