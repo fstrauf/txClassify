@@ -23,6 +23,7 @@ jobs:
           fi
 
       - name: Deploy to Droplet via SSH
+        id: deploy
         uses: appleboy/ssh-action@v1.0.3 # Using a recent version of ssh-action
         with:
           host: ${{ secrets.DROPLET_HOST }}
@@ -30,23 +31,164 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22 # Default SSH port, change if yours is different
           script: |
+            set -e  # Exit on any error
+            
+            echo "=== DEPLOYMENT STARTED ==="
             echo "Navigating to project directory: ${{ secrets.PYTHON_HANDLER_PATH_ON_DROPLET }}"
             cd ${{ secrets.PYTHON_HANDLER_PATH_ON_DROPLET }}
             
+            echo "=== CHECKING DISK SPACE ==="
+            df -h | head -3
+            DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+            if [ "$DISK_USAGE" -gt 70 ]; then
+              echo "WARNING: Disk usage is ${DISK_USAGE}% - cleaning up Docker to prevent build failures"
+              echo "Cleaning up Docker images, containers, and build cache..."
+              docker system prune -af --volumes || true
+              echo "Cleaning up old logs..."
+              journalctl --vacuum-time=7d || true
+              echo "After cleanup:"
+              df -h | head -3
+            fi
+            
+            echo "=== GIT OPERATIONS ==="
             echo "Ensuring on the correct branch and pulling latest changes..."
             git checkout main # Or your default branch
             git pull origin main
             
+            echo "=== STOPPING CURRENT CONTAINERS ==="
             echo "Stopping current running containers (if any)..."
-            docker compose down
+            docker compose down || true  # Don't fail if no containers running
             
+            echo "=== BUILDING AND STARTING CONTAINERS ==="
             echo "Building and starting new containers in detached mode..."
-            docker compose up -d --build
+            if ! docker compose up -d --build; then
+              echo "ERROR: Docker compose build/start failed!"
+              echo "=== BUILD LOGS ==="
+              docker compose logs || true
+              echo "=== CONTAINER STATUS ==="
+              docker compose ps -a || true
+              exit 1
+            fi
             
-            echo "Displaying recent logs for the backend service..."
-            docker compose logs --tail=50 backend # 'backend' is your service name from docker-compose.yml
+            echo "=== WAITING FOR SERVICES TO START ==="
+            echo "Waiting 30 seconds for services to initialize..."
+            sleep 30
             
+            echo "=== CHECKING CONTAINER STATUS ==="
+            docker compose ps
+            
+            # Check if all services are running
+            FAILED_SERVICES=$(docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -v "Up" | tail -n +2 | wc -l)
+            if [ "$FAILED_SERVICES" -gt 0 ]; then
+              echo "ERROR: Some services failed to start!"
+              echo "=== FAILED SERVICES ==="
+              docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -v "Up" || true
+              echo "=== RECENT LOGS ==="
+              docker compose logs --tail=100
+              exit 1
+            fi
+            
+            echo "=== HEALTH CHECK ==="
+            echo "Testing health endpoint..."
+            if ! curl -f -s --max-time 10 https://api.expensesorted.com/health > /dev/null; then
+              echo "ERROR: Health check failed!"
+              echo "=== BACKEND LOGS ==="
+              docker compose logs --tail=50 backend
+              echo "=== CADDY LOGS ==="
+              docker compose logs --tail=50 caddy
+              exit 1
+            fi
+            echo "✅ Health check passed!"
+            
+            echo "=== DISPLAYING SERVICE LOGS ==="
+            echo "Recent backend logs:"
+            docker compose logs --tail=20 backend
+            
+            echo "=== CLEANUP ==="
             echo "Cleaning up unused Docker images to save space..."
             docker image prune -af
             
-            echo "Deployment process completed!"
+            echo "=== DEPLOYMENT COMPLETED SUCCESSFULLY ==="
+            echo "✅ All services are running and healthy"
+            docker compose ps --format "table {{.Service}}\t{{.Status}}\t{{.Ports}}"
+
+      - name: Get Deployment Logs on Failure
+        if: failure()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            echo "=== GATHERING FAILURE DIAGNOSTICS ==="
+            cd ${{ secrets.PYTHON_HANDLER_PATH_ON_DROPLET }}
+            
+            echo "=== DISK SPACE ==="
+            df -h
+            
+            echo "=== DOCKER SYSTEM INFO ==="
+            docker system df || true
+            
+            echo "=== ALL CONTAINER STATUS ==="
+            docker compose ps -a || true
+            
+            echo "=== RECENT LOGS (LAST 200 LINES) ==="
+            docker compose logs --tail=200 || true
+            
+            echo "=== SYSTEM RESOURCES ==="
+            free -h || true
+            top -bn1 | head -20 || true
+
+      - name: Create GitHub Issue on Failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `🚨 Deployment Failed - ${new Date().toISOString()}`;
+            const body = `
+            ## Deployment Failure Report
+            
+            **Repository:** ${{ github.repository }}
+            **Branch:** ${{ github.ref_name }}
+            **Commit:** ${{ github.sha }}
+            **Workflow:** ${{ github.workflow }}
+            **Run ID:** ${{ github.run_id }}
+            
+            ### Details
+            - **Trigger:** Push to \`${{ github.ref_name }}\` branch
+            - **Time:** ${new Date().toISOString()}
+            - **Actor:** ${{ github.actor }}
+            
+            ### Links
+            - [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            - [View Commit](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+            
+            ### Next Steps
+            1. Check the workflow logs for detailed error messages
+            2. SSH into the droplet to investigate: \`ssh -i ~/.ssh/id_ed25519_droplet root@${{ secrets.DROPLET_HOST }}\`
+            3. Check Docker logs: \`cd /opt/txClassify && docker compose logs\`
+            4. Check disk space: \`df -h\`
+            
+            ### Quick Fixes
+            - If disk space issue: \`docker system prune -af --volumes\`
+            - If service won't start: \`docker compose down && docker compose up -d --build\`
+            
+            ---
+            *This issue was automatically created by the deployment workflow.*
+            `;
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['deployment', 'bug', 'urgent']
+            });
+
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo "🚀 Services are running at: https://api.expensesorted.com"
+          echo "📊 View logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
