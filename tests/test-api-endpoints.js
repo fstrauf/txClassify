@@ -65,12 +65,34 @@ const API_PORT = process.env.API_PORT || 3005;
 const TEST_USER_ID = process.env.TEST_USER_ID || "test_user_fixed";
 const TEST_API_KEY = process.env.TEST_API_KEY || "test_api_key_fixed";
 
+// Test File Configuration - Centralized test data file names
+// 💡 To stress-test memory management and chunking, use larger files:
+//    - Change DEFAULT_TRAINING to TRAINING_LARGE for bigger training sets
+//    - Change DEFAULT_CATEGORIZATION to CATEGORIZATION_BULK for stress testing
+//    - Use CATEGORIZATION_BULK with bulk clean & group tests to trigger chunking
+const TEST_FILES = {
+  // Training data files
+  TRAINING_SMALL: "nz_train.csv",           // Small training set (302 transactions, 11 categories)
+  TRAINING_LARGE: "full_train.csv",         // Large training set (~400+ transactions)
+  TRAINING_BULK: "train_woolies_test.csv",  // Bulk test file for memory testing
+  
+  // Categorization test files  
+  CATEGORIZATION_SMALL: "categorise_test.csv",     // Small test set (4 transactions)
+  CATEGORIZATION_LARGE: "categorise_full.csv",     // Large test set (~400+ transactions)
+  CATEGORIZATION_BULK: "ANZ Transactions Nov 2024 to May 2025.csv", // Bulk file for stress testing
+  
+  // Default files for different test modes
+  DEFAULT_TRAINING: "full_train.csv",       // Default training file (good balance of size/diversity)
+  DEFAULT_CATEGORIZATION: "categorise_full.csv" // Default categorization file (larger for better testing)
+};
+
 // Check for test mode flags
 const RUN_TRAINING = !process.argv.includes("--cat-only");
 const RUN_CATEGORIZATION = !process.argv.includes("--train-only");
 const TEST_CLEAN_TEXT = process.argv.includes("--test-clean");
 const TEST_BULK_CLEAN_GROUP = process.argv.includes("--bulk-clean-group"); // New flag
 const TEST_UNIVERSAL_CATEGORIZATION = process.argv.includes("--test-universal-cat"); // Universal categorization test
+const TEST_FULL_PIPELINE = process.argv.includes("--test-full-pipeline"); // Complete pipeline test (train + categorize + universal)
 const DEBUG_SIMILARITY = process.argv.includes("--debug-similarity"); // Debug similarity grouping
 
 // Log the actual values being used
@@ -989,7 +1011,7 @@ const testCleanText = async (apiUrl) => {
   try {
     // 1. Load the training data
     console.log("1. Loading training data...");
-    const trainingDataResult = await loadTrainingData("train_woolies_test.csv");
+    const trainingDataResult = await loadTrainingData(TEST_FILES.TRAINING_BULK);
     const trainingData = trainingDataResult.transactions;
     const uniqueTrainingCategories = trainingDataResult.uniqueCategories; // Store unique categories
     console.log(`   Loaded ${trainingData.length} records`);
@@ -1142,7 +1164,7 @@ const runBulkCleanAndGroupTest = async (config) => {
   
   logInfo("\n=== Starting Bulk Clean and Group Test with Embedding Optimization ===\n");
   logInfo(`📁 Detailed logs will be saved to: tests/logs/${logFileName}`);
-  const BULK_CSV_FILE = "ANZ Transactions Nov 2024 to May 2025.csv";
+  const BULK_CSV_FILE = TEST_FILES.CATEGORIZATION_BULK;
 
   try {
     logToFile("=== BULK CLEAN AND GROUP TEST STARTED ===");
@@ -1645,11 +1667,11 @@ const testUniversalCategorization = async (config) => {
     };
 
     const serviceUrl = config.serviceUrl;
-    logInfo(`Sending universal categorization request to ${serviceUrl}/categorize`);
+    logInfo(`Sending universal categorization request to ${serviceUrl}/auto-classify`);
 
     // Make API call to the universal categorization endpoint
     const apiKey = config.apiKey || TEST_API_KEY;
-    const response_fetch = await fetch(`${serviceUrl}/categorize`, {
+    const response_fetch = await fetch(`${serviceUrl}/auto-classify`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1725,6 +1747,235 @@ const testUniversalCategorization = async (config) => {
       error: `Universal categorization test failed: ${error.toString()}`,
       status: "failed",
       durationMs: durationMs,
+    };
+  }
+};
+
+// Test full pipeline flow (train + categorize + universal)
+const testFullPipeline = async (config) => {
+  const pipelineStartTime = Date.now();
+  logInfo("\n=== COMPREHENSIVE PIPELINE TEST: Training → Categorization → Universal ===\n");
+  
+  const results = {
+    training: null,
+    categorization: null,
+    universal: null,
+    comparison: null
+  };
+  
+  try {
+    // Load test data
+    logInfo("1. Loading test data for comprehensive pipeline test...");
+    const { transactions: trainingData, uniqueCategories: uniqueTrainingCategories } = await loadTrainingData(TEST_FILES.DEFAULT_TRAINING);
+    const categorizationData = await loadCategorizationData(TEST_FILES.DEFAULT_CATEGORIZATION);
+    
+    logInfo(`   Training data: ${trainingData.length} transactions, ${uniqueTrainingCategories.length} categories`);
+    logInfo(`   Test data: ${categorizationData.length} transactions`);
+    
+    // Prepare user categories for API
+    const userCategoriesForApi = uniqueTrainingCategories.map((name) => ({
+      id: name,
+      name: name,
+    }));
+    
+    // Update config
+    const testConfig = {
+      ...config,
+      trainingDataFile: trainingData,
+      categorizationDataFile: categorizationData
+    };
+    
+    // === PHASE 1: TRAINING ===
+    logInfo("\n2. PHASE 1: Training custom model...");
+    const trainingStartTime = Date.now();
+    
+    results.training = await trainModel(testConfig);
+    
+    if (results.training.status !== "completed") {
+      throw new Error(`Training failed: ${results.training.error || "Unknown error"}`);
+    }
+    
+    const trainingDuration = Date.now() - trainingStartTime;
+    logInfo(`   ✅ Training completed in ${(trainingDuration/1000).toFixed(2)}s`);
+    
+    // Wait for model to be ready
+    logInfo("   Waiting 5s for model to be ready...");
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    
+    // === PHASE 2: CUSTOM CATEGORIZATION ===
+    logInfo("\n3. PHASE 2: Testing custom model categorization...");
+    const categorizationStartTime = Date.now();
+    
+    results.categorization = await categoriseTransactions(testConfig, userCategoriesForApi);
+    
+    if (results.categorization.status !== "completed") {
+      throw new Error(`Categorization failed: ${results.categorization.error || "Unknown error"}`);
+    }
+    
+    const categorizationDuration = Date.now() - categorizationStartTime;
+    logInfo(`   ✅ Custom categorization completed in ${(categorizationDuration/1000).toFixed(2)}s`);
+    logInfo(`   Categorized ${results.categorization.results.length} transactions`);
+    
+       
+    // === PHASE 3: UNIVERSAL CATEGORIZATION ===
+    logInfo("\n4. PHASE 3: Testing universal auto-categorization...");
+    const universalStartTime = Date.now();
+    
+    // Prepare config for universal test (same categorization data)
+    const universalConfig = {
+      ...testConfig,
+      categorizationDataFile: categorizationData // Use same test data for comparison
+    };
+    
+    results.universal = await testUniversalCategorization(universalConfig);
+    
+    if (results.universal.status !== "completed") {
+      throw new Error(`Universal categorization failed: ${results.universal.error || "Unknown error"}`);
+    }
+    
+    const universalDuration = Date.now() - universalStartTime;
+    logInfo(`   ✅ Universal categorization completed in ${(universalDuration/1000).toFixed(2)}s`);
+    logInfo(`   Categorized ${results.universal.results.length} transactions`);
+    
+    // === PHASE 4: COMPARISON ANALYSIS ===
+    logInfo("\n5. PHASE 4: Comparing results...");
+    
+    const customResults = results.categorization.results;
+    const universalResults = results.universal.results;
+    
+    if (customResults.length !== universalResults.length) {
+      logInfo(`   ⚠️  Result count mismatch: Custom=${customResults.length}, Universal=${universalResults.length}`);
+    }
+    
+    // Compare categorizations
+    let exactMatches = 0;
+    let similarities = [];
+    const comparisonDetails = [];
+    
+    const minLength = Math.min(customResults.length, universalResults.length);
+    
+    for (let i = 0; i < minLength; i++) {
+      const custom = customResults[i];
+      const universal = universalResults[i];
+      
+      const isExactMatch = custom.predicted_category === universal.predicted_category;
+      if (isExactMatch) exactMatches++;
+      
+      // Calculate confidence difference
+      const confidenceDiff = Math.abs((custom.confidence || 0) - (universal.confidence || 0));
+      
+      comparisonDetails.push({
+        transaction: custom.description || custom.transaction || `Transaction ${i+1}`,
+        custom_category: custom.predicted_category,
+        custom_confidence: custom.confidence || 0,
+        universal_category: universal.predicted_category,
+        universal_confidence: universal.confidence || 0,
+        exact_match: isExactMatch,
+        confidence_diff: confidenceDiff
+      });
+    }
+    
+    const matchPercentage = (exactMatches / minLength * 100).toFixed(2);
+    
+    // Calculate category distribution
+    const customCategories = customResults.reduce((acc, r) => {
+      acc[r.predicted_category] = (acc[r.predicted_category] || 0) + 1;
+      return acc;
+    }, {});
+    
+    const universalCategories = universalResults.reduce((acc, r) => {
+      acc[r.predicted_category] = (acc[r.predicted_category] || 0) + 1;
+      return acc;
+    }, {});
+    
+    results.comparison = {
+      exactMatches,
+      totalCompared: minLength,
+      matchPercentage: parseFloat(matchPercentage),
+      customCategoryCount: Object.keys(customCategories).length,
+      universalCategoryCount: Object.keys(universalCategories).length,
+      customCategories,
+      universalCategories,
+      comparisonDetails: comparisonDetails.slice(0, 10) // First 10 for logging
+    };
+    
+    // === RESULTS SUMMARY ===
+    const totalDuration = Date.now() - pipelineStartTime;
+    
+    logInfo("\n" + "=".repeat(60));
+    logInfo("🎯 COMPREHENSIVE PIPELINE TEST RESULTS");
+    logInfo("=".repeat(60));
+    
+    logInfo("\n📊 PERFORMANCE SUMMARY:");
+    logInfo(`   Total pipeline time: ${(totalDuration/1000).toFixed(2)}s`);
+    logInfo(`   Training: ${(trainingDuration/1000).toFixed(2)}s (Polling: ${results.training.usedPolling ? "Yes" : "No"})`);
+    logInfo(`   Custom categorization: ${(categorizationDuration/1000).toFixed(2)}s (Polling: ${results.categorization.usedPolling ? "Yes" : "No"})`);
+    logInfo(`   Universal categorization: ${(universalDuration/1000).toFixed(2)}s (Polling: ${results.universal.usedPolling ? "Yes" : "No"})`);
+    
+    logInfo("\n🔍 ACCURACY COMPARISON:");
+    logInfo(`   Transactions compared: ${minLength}`);
+    logInfo(`   Exact category matches: ${exactMatches}/${minLength} (${matchPercentage}%)`);
+    logInfo(`   Custom model categories used: ${Object.keys(customCategories).length}`);
+    logInfo(`   Universal model categories used: ${Object.keys(universalCategories).length}`);
+    
+    if (parseFloat(matchPercentage) >= 70) {
+      logInfo(`   ✅ High agreement (${matchPercentage}%) - Models are consistent`);
+    } else if (parseFloat(matchPercentage) >= 50) {
+      logInfo(`   ⚠️  Moderate agreement (${matchPercentage}%) - Some differences expected`);
+    } else {
+      logInfo(`   ❌ Low agreement (${matchPercentage}%) - Significant model differences`);
+    }
+    
+    logInfo("\n📋 CATEGORY USAGE COMPARISON:");
+    logInfo("   Custom Model Top Categories:");
+    Object.entries(customCategories)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 5)
+      .forEach(([cat, count]) => logInfo(`     ${cat}: ${count} transactions`));
+    
+    logInfo("   Universal Model Top Categories:");
+    Object.entries(universalCategories)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 5)
+      .forEach(([cat, count]) => logInfo(`     ${cat}: ${count} transactions`));
+    
+    logInfo("\n📝 SAMPLE COMPARISONS (first 5):");
+    results.comparison.comparisonDetails.slice(0, 5).forEach((detail, i) => {
+      const match = detail.exact_match ? "✅" : "❌";
+      logInfo(`   ${i+1}. ${match} "${detail.transaction.substring(0, 40)}..."`);
+      logInfo(`      Custom: ${detail.custom_category} (${(detail.custom_confidence*100).toFixed(1)}%)`);
+      logInfo(`      Universal: ${detail.universal_category} (${(detail.universal_confidence*100).toFixed(1)}%)`);
+    });
+    
+    logInfo("\n" + "=".repeat(60));
+    logInfo("✅ COMPREHENSIVE PIPELINE TEST COMPLETED SUCCESSFULLY");
+    logInfo("=".repeat(60));
+    
+    return {
+      status: "completed",
+      results: results,
+      durationMs: totalDuration,
+      summary: {
+        totalDuration: totalDuration,
+        trainingDuration: trainingDuration,
+        categorizationDuration: categorizationDuration,
+        universalDuration: universalDuration,
+        matchPercentage: parseFloat(matchPercentage),
+        exactMatches: exactMatches,
+        totalCompared: minLength
+      }
+    };
+    
+  } catch (error) {
+    logError(`\nFull pipeline test failed: ${error.message}`);
+    logDebug(`Error stack: ${error.stack}`);
+    
+    const durationMs = Date.now() - pipelineStartTime;
+    return {
+      status: "failed",
+      error: error.message,
+      durationMs: durationMs,
+      results: results // Return partial results if available
     };
   }
 };
@@ -1819,7 +2070,7 @@ const main = async () => {
       
       // Load categorization data for universal test
       console.log("Loading categorization data for universal test...");
-      const categorizationData = await loadCategorizationData("categorise_full.csv");
+      const categorizationData = await loadCategorizationData(TEST_FILES.DEFAULT_CATEGORIZATION);
       config.categorizationDataFile = categorizationData;
       
       const result = await testUniversalCategorization(config);
@@ -1840,21 +2091,35 @@ const main = async () => {
       process.exit(0); // Exit after this specific test
     }
 
+    if (TEST_FULL_PIPELINE) {
+      // Comprehensive pipeline test mode - tests all three flows in sequence
+      logInfo("Running Comprehensive Pipeline test mode...");
+      
+      const result = await testFullPipeline(config);
+      if (result.status !== "completed") {
+        throw new Error(`Comprehensive pipeline test failed: ${result.error || "Unknown error"}`);
+      }
+      
+      // Additional summary logging for the comprehensive test
+      console.log("\n=== COMPREHENSIVE PIPELINE FINAL SUMMARY ===");
+      const summary = result.summary;
+      console.log(`📊 Total Pipeline Duration: ${(summary.totalDuration/1000).toFixed(2)}s`);
+      console.log(`🎯 Model Agreement: ${summary.exactMatches}/${summary.totalCompared} (${summary.matchPercentage}%)`);
+      console.log(`⚡ Performance Breakdown:`);
+      console.log(`   Training: ${(summary.trainingDuration/1000).toFixed(2)}s`);
+      console.log(`   Custom Categorization: ${(summary.categorizationDuration/1000).toFixed(2)}s`);
+      console.log(`   Universal Categorization: ${(summary.universalDuration/1000).toFixed(2)}s`);
+      console.log("============================================\n");
+      
+      process.exit(0); // Exit after this specific test
+    }
+
     // 5. Load Test Data (for standard train/categorize tests)
     console.log("5. Loading Test Data (for standard train/categorize flow)...");
-    // const trainingData = await loadTrainingData("training_test.csv");
-    // const trainingData = await loadTrainingData("full_train.csv");
-    const { transactions: trainingData, uniqueCategories: uniqueTrainingCategories } = await loadTrainingData(
-      "nz_train.csv"
-    ); // Destructure results
-    // const trainingDataResult = await loadTrainingData("train_woolies_test.csv");
-    // const trainingData = trainingDataResult.transactions;
-    // uniqueTrainingCategories = trainingDataResult.uniqueCategories; // Store unique categories
-
-    // const categorizationData = await loadCategorizationData("categorise_full.csv");
-    const categorizationData = await loadCategorizationData("categorise_test.csv");
+    const { transactions: trainingData, uniqueCategories: uniqueTrainingCategories } = await loadTrainingData(TEST_FILES.DEFAULT_TRAINING);
+    const categorizationData = await loadCategorizationData(TEST_FILES.DEFAULT_CATEGORIZATION);
     console.log(`   Loaded ${trainingData.length} training records`);
-    console.log(`   Found ${uniqueTrainingCategories.length} unique categories in training data.`); // Log category count
+    console.log(`   Found ${uniqueTrainingCategories.length} unique categories in training data.`);
     console.log(`   Loaded ${categorizationData.length} categorization records\n`);
 
     // Update config with specific data files for the standard flow

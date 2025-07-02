@@ -95,9 +95,10 @@ def load_spacy_pipeline() -> Optional[Language]:
     return _nlp_pipeline
 
 
-def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
+def generate_embeddings(texts: List[str], batch_size: int = 10) -> Optional[np.ndarray]:
     """
     Generates embeddings for a list of texts using available embedding methods.
+    Processes in batches to avoid memory issues.
     
     Tries in order:
     1. Sentence Transformers (if available)
@@ -106,6 +107,7 @@ def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
 
     Args:
         texts: A list of text strings to embed.
+        batch_size: Number of texts to process at once to manage memory usage.
 
     Returns:
         A numpy array of embeddings (shape: num_texts x embedding_dim),
@@ -115,7 +117,7 @@ def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
         logger.warning("generate_embeddings called with empty list of texts.")
         return np.empty((0, 1))  # Return empty array with placeholder dim
 
-    logger.info(f"generate_embeddings called with {len(texts)} texts: {texts}")
+    logger.info(f"generate_embeddings called with {len(texts)} texts, batch_size={batch_size}")
 
     # Strategy 1: Try sentence-transformers first (most reliable)
     if SENTENCE_TRANSFORMERS_AVAILABLE:
@@ -127,7 +129,22 @@ def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
                 logger.info("Sentence-transformers model loaded successfully")
             
             logger.info(f"Generating embeddings for {len(texts)} texts using sentence-transformers...")
-            embeddings = _sentence_transformer_model.encode(texts)
+            
+            # Process in batches to avoid memory issues
+            all_embeddings = []
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i + batch_size]
+                logger.debug(f"Processing embedding batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}")
+                
+                batch_embeddings = _sentence_transformer_model.encode(batch_texts)
+                all_embeddings.append(batch_embeddings)
+                
+                # Force garbage collection after each batch
+                import gc
+                gc.collect()
+            
+            # Combine all batch embeddings
+            embeddings = np.vstack(all_embeddings)
             logger.info(f"Generated embeddings using sentence-transformers (shape: {embeddings.shape})")
             return embeddings
             
@@ -139,59 +156,74 @@ def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
     if nlp is not None:
         try:
             logger.info(f"Generating embeddings for {len(texts)} texts using spaCy transformer...")
-            # Process texts in batches using nlp.pipe for efficiency
-            docs = list(nlp.pipe(texts))
-
-            # Check if vectors are available
-            if all(doc.has_vector for doc in docs):
-                embeddings = np.array([doc.vector for doc in docs])
-                logger.info(f"Extracted embeddings using doc.vector (shape: {embeddings.shape})")
-                return embeddings
-            else:
-                logger.warning("doc.vector not available for all docs. Trying transformer data extraction.")
-                # Try to extract from transformer data
-                embeddings = []
-                for doc in docs:
-                    if hasattr(doc._, "trf_data") and doc._.trf_data is not None:
-                        try:
-                            # Get the transformer outputs
-                            trf_tensors = doc._.trf_data.tensors
-                            if len(trf_tensors) > 0:
-                                # Usually the last tensor contains the token embeddings
-                                # Shape is typically (num_tokens, hidden_dim)
-                                token_embeddings = trf_tensors[-1]
-                                
-                                # Ensure we have the right shape
-                                if len(token_embeddings.shape) >= 2:
-                                    # Apply mean pooling across tokens to get document embedding
-                                    # If shape is (num_tokens, hidden_dim), mean across axis 0
-                                    # If shape is (batch, num_tokens, hidden_dim), mean across axis -2 (tokens)
-                                    if len(token_embeddings.shape) == 3:
-                                        # Shape: (batch, tokens, hidden) - take first batch item and mean over tokens
-                                        doc_embedding = np.mean(token_embeddings[0], axis=0)
-                                    else:
-                                        # Shape: (tokens, hidden) - mean over tokens
-                                        doc_embedding = np.mean(token_embeddings, axis=0)
-                                    
-                                    embeddings.append(doc_embedding)
-                                    logger.debug(f"Document embedding shape: {doc_embedding.shape}, token_embeddings shape: {token_embeddings.shape}")
-                                else:
-                                    logger.warning(f"Unexpected token embeddings shape: {token_embeddings.shape}")
-                                    return None
-                            else:
-                                logger.warning("No tensors found in transformer data")
-                                return None
-                        except Exception as e:
-                            logger.warning(f"Error extracting transformer data for document: {e}")
-                            return None
-                    else:
-                        logger.warning("No transformer data available for document")
-                        return None
+            
+            # Process in batches to avoid memory issues
+            all_embeddings = []
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i + batch_size]
+                logger.debug(f"Processing spaCy batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}")
                 
-                if embeddings:
-                    embeddings = np.array(embeddings)
-                    logger.info(f"Extracted embeddings using transformer data (shape: {embeddings.shape})")
-                    return embeddings
+                # Process texts in batches using nlp.pipe for efficiency
+                docs = list(nlp.pipe(batch_texts))
+
+                # Check if vectors are available
+                if all(doc.has_vector for doc in docs):
+                    batch_embeddings = np.array([doc.vector for doc in docs])
+                    all_embeddings.append(batch_embeddings)
+                else:
+                    logger.warning("doc.vector not available for all docs. Trying transformer data extraction.")
+                    # Try to extract from transformer data
+                    batch_embeddings = []
+                    for doc in docs:
+                        if hasattr(doc._, "trf_data") and doc._.trf_data is not None:
+                            try:
+                                # Get the transformer outputs
+                                trf_tensors = doc._.trf_data.tensors
+                                if len(trf_tensors) > 0:
+                                    # Usually the last tensor contains the token embeddings
+                                    # Shape is typically (num_tokens, hidden_dim)
+                                    token_embeddings = trf_tensors[-1]
+                                    
+                                    # Ensure we have the right shape
+                                    if len(token_embeddings.shape) >= 2:
+                                        # Apply mean pooling across tokens to get document embedding
+                                        # If shape is (num_tokens, hidden_dim), mean across axis 0
+                                        # If shape is (batch, num_tokens, hidden_dim), mean across axis -2 (tokens)
+                                        if len(token_embeddings.shape) == 3:
+                                            # Shape: (batch, tokens, hidden) - take first batch item and mean over tokens
+                                            doc_embedding = np.mean(token_embeddings[0], axis=0)
+                                        else:
+                                            # Shape: (tokens, hidden) - mean over tokens
+                                            doc_embedding = np.mean(token_embeddings, axis=0)
+                                        
+                                        batch_embeddings.append(doc_embedding)
+                                        logger.debug(f"Document embedding shape: {doc_embedding.shape}, token_embeddings shape: {token_embeddings.shape}")
+                                    else:
+                                        logger.warning(f"Unexpected token embeddings shape: {token_embeddings.shape}")
+                                        return None
+                                else:
+                                    logger.warning("No tensors found in transformer data")
+                                    return None
+                            except Exception as e:
+                                logger.warning(f"Error extracting transformer data for document: {e}")
+                                return None
+                        else:
+                            logger.warning("No transformer data available for document")
+                            return None
+                    
+                    if batch_embeddings:
+                        all_embeddings.append(np.array(batch_embeddings))
+                    else:
+                        return None
+                        
+                # Force garbage collection after each batch
+                import gc
+                gc.collect()
+            
+            if all_embeddings:
+                embeddings = np.vstack(all_embeddings)
+                logger.info(f"Extracted embeddings using spaCy transformer (shape: {embeddings.shape})")
+                return embeddings
                     
         except Exception as e:
             logger.warning(f"spaCy transformer pipeline failed: {e}. Trying basic spaCy.")
@@ -200,10 +232,26 @@ def generate_embeddings(texts: List[str]) -> Optional[np.ndarray]:
     try:
         logger.info("Trying basic spaCy model...")
         nlp_basic = spacy.load("en_core_web_md")
-        docs = list(nlp_basic.pipe(texts))
         
-        if all(doc.has_vector for doc in docs):
-            embeddings = np.array([doc.vector for doc in docs])
+        # Process in batches
+        all_embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            docs = list(nlp_basic.pipe(batch_texts))
+            
+            if all(doc.has_vector for doc in docs):
+                batch_embeddings = np.array([doc.vector for doc in docs])
+                all_embeddings.append(batch_embeddings)
+            else:
+                logger.warning("Basic spaCy vectors not available for all docs")
+                return None
+                
+            # Force garbage collection after each batch
+            import gc
+            gc.collect()
+        
+        if all_embeddings:
+            embeddings = np.vstack(all_embeddings)
             logger.info(f"Generated embeddings using basic spaCy (shape: {embeddings.shape})")
             return embeddings
             

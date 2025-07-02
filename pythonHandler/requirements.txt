@@ -26,3 +26,7 @@ openai
 pyahocorasick>=1.4.4
 python-Levenshtein
 sentry-sdk[flask]==2.19.2
+psutil>=5.9.0
+sentence-transformers>=2.2.0
+scipy>=1.10.0
+hdbscan>=0.8.33
