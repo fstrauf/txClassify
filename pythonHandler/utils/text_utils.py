@@ -33,6 +33,13 @@ except ImportError:
     EMBEDDINGS_AVAILABLE = False
     logging.getLogger(__name__).warning("Local embedding utils not available")
 
+try:
+    from utils.memory_utils import log_memory_usage, force_garbage_collection, MemoryMonitor
+    MEMORY_UTILS_AVAILABLE = True
+except ImportError:
+    MEMORY_UTILS_AVAILABLE = False
+    logging.getLogger(__name__).warning("Memory utils not available")
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +75,7 @@ class CleaningConfig:
         self.embedding_hierarchical_threshold = 0.3  # Optimized (lower = tighter clusters)
         self.embedding_fallback_to_fuzzy = True  # Fallback to fuzzy matching if embeddings fail
         self.embedding_use_cache = True  # Enable/disable embedding caching
-        self.embedding_batch_size = 50  # Process embeddings in batches for memory efficiency
+        self.embedding_batch_size = 25  # Reduced batch size for memory efficiency (was 50)
         
         # Legacy options for backward compatibility
         self.normalize_merchants = True
@@ -579,9 +586,15 @@ def group_merchants_with_embeddings(
     # Generate embeddings if not found in cache
     if embeddings is None:
         try:
-            # Generate embeddings
-            logger.info(f"Generating embeddings for {len(valid_names)} merchant names")
-            embeddings = generate_embeddings(valid_names)
+            # Generate embeddings with memory monitoring
+            if MEMORY_UTILS_AVAILABLE:
+                memory_before = log_memory_usage(f"Generating embeddings for {len(valid_names)} merchant names")
+            else:
+                logger.info(f"Generating embeddings for {len(valid_names)} merchant names")
+            
+            # Use smaller batch size for embedding generation to prevent memory issues
+            embedding_batch_size = min(10, config.embedding_batch_size // 5)
+            embeddings = generate_embeddings(valid_names, batch_size=embedding_batch_size)
             
             if embeddings is None or embeddings.size == 0:
                 logger.warning("Failed to generate embeddings, falling back to fuzzy matching")
@@ -589,6 +602,11 @@ def group_merchants_with_embeddings(
                     return group_similar_merchants(cleaned_names, config.similarity_threshold)
                 else:
                     return {name: name for name in valid_names}
+            
+            if MEMORY_UTILS_AVAILABLE:
+                memory_after = log_memory_usage(f"Embeddings generated successfully")
+            else:
+                logger.info("Embeddings generated successfully")
             
             # Cache the generated embeddings (if caching enabled)
             if config.embedding_use_cache:
@@ -794,7 +812,7 @@ def _create_groups_from_labels(names: List[str], labels: np.ndarray) -> Dict[str
 
 # Caching for embeddings to improve performance
 _embedding_cache: Dict[str, np.ndarray] = {}
-_cache_max_size = 1000  # Maximum number of cached embeddings
+_cache_max_size = 500  # Reduced maximum number of cached embeddings for memory efficiency (was 1000)
 
 def _get_cache_key(texts: List[str]) -> str:
     """Generate a cache key for a list of texts."""
@@ -837,11 +855,38 @@ def clean_and_group_transactions(
     # Clean all texts
     cleaned_texts = [clean_transaction_text(text, config) for text in texts]
     
-    # Group similar merchants
+    # Early deduplication - only process unique texts for embeddings to save memory
+    unique_cleaned_texts = list(set(text for text in cleaned_texts if text))
+    logger.info(f"Memory optimization: Reduced from {len(cleaned_texts)} to {len(unique_cleaned_texts)} unique texts for embedding")
+    
+    # Group similar merchants on unique texts only
     if config.use_embedding_grouping and EMBEDDINGS_AVAILABLE:
-        grouping_dict = group_merchants_with_embeddings(cleaned_texts, config)
+        if unique_cleaned_texts:
+            unique_grouping_dict = group_merchants_with_embeddings(unique_cleaned_texts, config)
+        else:
+            unique_grouping_dict = {}
+        
+        # Map back to all texts
+        grouping_dict = {}
+        for cleaned_text in cleaned_texts:
+            if cleaned_text:
+                grouping_dict[cleaned_text] = unique_grouping_dict.get(cleaned_text, cleaned_text)
+            else:
+                grouping_dict[cleaned_text] = cleaned_text
+                
     elif config.use_fuzzy_matching:
-        grouping_dict = group_similar_merchants(cleaned_texts, config.similarity_threshold)
+        if unique_cleaned_texts:
+            unique_grouping_dict = group_similar_merchants(unique_cleaned_texts, config.similarity_threshold)
+        else:
+            unique_grouping_dict = {}
+            
+        # Map back to all texts
+        grouping_dict = {}
+        for cleaned_text in cleaned_texts:
+            if cleaned_text:
+                grouping_dict[cleaned_text] = unique_grouping_dict.get(cleaned_text, cleaned_text)
+            else:
+                grouping_dict[cleaned_text] = cleaned_text
     else:
         grouping_dict = {text: text for text in cleaned_texts}
     
@@ -999,10 +1044,21 @@ def _process_large_dataset_in_batches(
     canonical_mapping = {}
     canonical_embeddings = {}  # Cache embeddings for canonical names
     
+    # Force garbage collection before starting
+    if MEMORY_UTILS_AVAILABLE:
+        force_garbage_collection("batch processing start")
+    else:
+        import gc
+        gc.collect()
+    
     # Process in batches
     for i in range(0, len(valid_names), batch_size):
         batch_names = valid_names[i:i + batch_size]
-        logger.info(f"Processing batch {i//batch_size + 1}: {len(batch_names)} names")
+        logger.info(f"Processing batch {i//batch_size + 1}/{(len(valid_names)-1)//batch_size + 1}: {len(batch_names)} names")
+        
+        # Memory monitoring
+        if MEMORY_UTILS_AVAILABLE:
+            log_memory_usage(f"Batch {i//batch_size + 1}")
         
         # Get embeddings for this batch
         try:
@@ -1011,11 +1067,15 @@ def _process_large_dataset_in_batches(
                 if cached_embeddings is not None:
                     embeddings = cached_embeddings
                 else:
-                    embeddings = generate_embeddings(batch_names)
+                    # Use smaller batch size for embedding generation
+                    small_batch_size = min(10, batch_size // 2)
+                    embeddings = generate_embeddings(batch_names, batch_size=small_batch_size)
                     if embeddings is not None:
                         _cache_embeddings(batch_names, embeddings)
             else:
-                embeddings = generate_embeddings(batch_names)
+                # Use smaller batch size for embedding generation
+                small_batch_size = min(10, batch_size // 2)
+                embeddings = generate_embeddings(batch_names, batch_size=small_batch_size)
                 
             if embeddings is None or embeddings.size == 0:
                 # Fallback for this batch
@@ -1083,6 +1143,13 @@ def _process_large_dataset_in_batches(
                     canonical_mapping[group_rep] = group_rep
                     # Cache embedding for this new canonical
                     canonical_embeddings[group_rep] = group_rep_to_embedding[group_rep]
+        
+        # Force garbage collection after each batch to free memory
+        if MEMORY_UTILS_AVAILABLE:
+            force_garbage_collection(f"batch {i//batch_size + 1}")
+        else:
+            import gc
+            gc.collect()
     
     # Add back any empty names that were filtered out
     for name in all_names:

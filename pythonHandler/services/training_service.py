@@ -9,11 +9,28 @@ from utils.embedding_utils import store_embeddings
 from utils.local_embedding_utils import generate_embeddings
 from config import EMBEDDING_DIMENSION
 
+try:
+    from utils.memory_utils import MemoryMonitor, log_memory_usage, force_garbage_collection
+    from utils.performance_config import get_performance_config, update_cleaning_config_for_performance
+    PERFORMANCE_UTILS_AVAILABLE = True
+except ImportError:
+    PERFORMANCE_UTILS_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
 def process_training_request(validated_data, user_id):
     """Processes the validated training request data."""
+    # Use memory monitoring if available
+    if PERFORMANCE_UTILS_AVAILABLE:
+        with MemoryMonitor(f"Training request for user {user_id}"):
+            return _process_training_request_internal(validated_data, user_id)
+    else:
+        return _process_training_request_internal(validated_data, user_id)
+
+
+def _process_training_request_internal(validated_data, user_id):
+    """Internal training request processing with memory optimizations."""
     # temporary artificial delay to test async training 10 seconds
     try:        
         transactions = validated_data.transactions
@@ -22,6 +39,10 @@ def process_training_request(validated_data, user_id):
         logger.info(
             f"Processing training request - User: {user_id}, Items: {len(transactions)}"
         )
+        
+        if PERFORMANCE_UTILS_AVAILABLE:
+            log_memory_usage("Training start")
+        
         # Convert transactions to DataFrame
         transactions_data = [t.model_dump() for t in transactions]
         df = pd.DataFrame(transactions_data)
@@ -47,7 +68,15 @@ def process_training_request(validated_data, user_id):
             config.use_fuzzy_matching = False
             config.use_fuzzy_matching_post_clean = False
             
+            # Apply performance optimizations
+            if PERFORMANCE_UTILS_AVAILABLE:
+                update_cleaning_config_for_performance(config, len(original_descriptions))
+                log_memory_usage("Before text cleaning")
+            
             cleaned_descriptions = clean_text(original_descriptions, config)
+            
+            if PERFORMANCE_UTILS_AVAILABLE:
+                log_memory_usage("After text cleaning")
             if len(cleaned_descriptions) != len(original_descriptions):
                 logger.error(
                     f"Training Clean Error: Length mismatch for user {user_id}. Input {len(original_descriptions)}, Output {len(cleaned_descriptions)}"
@@ -131,8 +160,18 @@ def process_training_request(validated_data, user_id):
         descriptions_to_embed = df["cleaned_description"].tolist()
 
         try:
-            # === Generate Embeddings Locally ===
-            embeddings = generate_embeddings(descriptions_to_embed)
+            # === Generate Embeddings Locally with Memory Optimization ===
+            if PERFORMANCE_UTILS_AVAILABLE:
+                log_memory_usage("Before embedding generation")
+                perf_config = get_performance_config()
+                embedding_batch_size = perf_config.get_embedding_generation_batch_size()
+            else:
+                embedding_batch_size = 10  # Conservative default
+            
+            embeddings = generate_embeddings(descriptions_to_embed, batch_size=embedding_batch_size)
+            
+            if PERFORMANCE_UTILS_AVAILABLE:
+                log_memory_usage("After embedding generation")
 
             if embeddings is None:
                 logger.error(

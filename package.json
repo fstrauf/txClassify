@@ -13,6 +13,7 @@
     "test:docker": "TEST_TARGET_API_URL=http://localhost node tests/test-api-endpoints.js --verbose",
     "test:bulk-clean-group": "TEST_TARGET_API_URL=http://localhost node tests/test-api-endpoints.js --bulk-clean-group --verbose",
     "test:universal-cat": "TEST_TARGET_API_URL=http://localhost node tests/test-api-endpoints.js --test-universal-cat --verbose",
+    "test:full-pipeline": "TEST_TARGET_API_URL=http://localhost node tests/test-api-endpoints.js --test-full-pipeline --verbose",
     "test-db": "node test-db-connection.js",
     "test:clean_text": "pythonHandler/.venv/bin/python tests/test_clean_text.py",
     "debug-test": "NODE_OPTIONS='--inspect' node tests/test-api-endpoints.js --verbose",
@@ -37,8 +38,11 @@
     "scripts": {
       "test": "Runs the full test suite with a fixed test user (creates and cleans up the test user automatically)",
       "test:all": "Alias for 'test' - runs both training and categorization tests",
-      "test:train": "Runs only the training test (skips training)",
+      "test:train": "Runs only the training test (skips categorization)",
       "test:cat": "Runs only the categorization test (skips training)",
+      "test:full-pipeline": "Runs comprehensive test: training → custom categorization → universal categorization → comparison",
+      "test:universal-cat": "Runs only the universal auto-categorization test (no training required)",
+      "test:bulk-clean-group": "Tests bulk text cleaning and grouping with embedding optimization",
       "test-db": "Tests the database connection",
       "debug-test": "Runs the tests with Node.js inspector enabled for debugging",
       "start:api": "Starts the Flask API server on port 5003"
