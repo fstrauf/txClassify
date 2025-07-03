@@ -47,6 +47,23 @@ class TransactionInput(BaseModel):
     )
     amount: Optional[float] = None # Numerical amount of the transaction
 
+    @field_validator("description")
+    @classmethod
+    def description_must_not_be_empty(cls, v):
+        v = v.strip() if v else ""
+        if not v:
+            raise ValueError("Description cannot be empty")
+        return v
+
+    @field_validator("amount")
+    @classmethod
+    def amount_must_be_finite(cls, v):
+        if v is not None:
+            import math
+            if not math.isfinite(v):
+                raise ValueError("Amount must be a finite number (no NaN or infinity)")
+        return v
+
 
 class ClassifyRequest(BaseModel):
     """Request model for the /classify endpoint."""
